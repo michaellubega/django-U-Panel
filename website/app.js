@@ -1,6 +1,6 @@
 const WEB_APP_URL = 'https://u-panel-2026.web.app/';
 const WEB_APP_ALT_HOST = 'u-panel-2026.firebaseapp.com';
-const GITHUB_HOST_BASE = 'https://michaellubega.github.io/u_panel';
+const SITE_DOMAIN = 'https://orion13.us';
 
 function applyWebButton(button, noteEl, url, alternateUrl) {
   if (!button) return;
@@ -64,7 +64,7 @@ async function loadReleaseInfo() {
 function resolveDownloadUrl(file) {
   if (!file) return null;
   if (/^https?:\/\//i.test(file)) return file;
-  const base = (window.__releaseHostBase || GITHUB_HOST_BASE).replace(/\/$/, '');
+  const base = (window.__releaseHostBase || SITE_DOMAIN).replace(/\/$/, '');
   return base + '/' + file.replace(/^\//, '');
 }
 

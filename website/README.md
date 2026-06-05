@@ -6,14 +6,29 @@ Static landing page for **Android APK**, **Windows**, and a link to the **web ap
 
 | Page | URL |
 |------|-----|
-| **GitHub landing page** | https://michaellubega.github.io/u_panel/ |
-| **APK & Windows installer** | https://michaellubega.github.io/u_panel/downloads/ |
+| **Landing page** | https://orion13.us/ |
+| **APK & Windows installer** | https://orion13.us/downloads/ |
 | **Web app** | https://u-panel-2026.web.app/ |
 | **Web app (alt)** | https://u-panel-2026.firebaseapp.com/ |
 
 **APK and `.exe` installers are hosted on GitHub Pages** (`website/downloads/`). Firebase only hosts the Flutter web app and a mirror of this landing page (buttons link to GitHub for installers).
 
-This folder is published automatically to **GitHub Pages** on every push to `main` (see `.github/workflows/github-pages.yml`).
+This folder is published automatically to **GitHub Pages** on every push to `main` (see `.github/workflows/github-pages.yml`). Custom domain: **orion13.us** (`website/CNAME`).
+
+### DNS for orion13.us (at your domain registrar)
+
+Point the apex domain to GitHub Pages:
+
+| Type | Name | Value |
+|------|------|--------|
+| **A** | `@` | `185.199.108.153` |
+| **A** | `@` | `185.199.109.153` |
+| **A** | `@` | `185.199.110.153` |
+| **A** | `@` | `185.199.111.153` |
+
+Optional IPv6 (**AAAA**): `2606:50c0:8000::153` through `2606:50c0:8003::153` (same set GitHub documents for Pages).
+
+Then in **GitHub → u_panel → Settings → Pages**, set custom domain to `orion13.us` and enable **Enforce HTTPS** when available.
 
 ## Deploy everything
 
