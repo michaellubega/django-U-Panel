@@ -29,11 +29,32 @@ This folder is published automatically to **GitHub Pages** on every push to `mai
 | **A** | `@` | `185.199.111.153` | 3600 |
 
 4. **Remove** any other **A** or **ALIAS** records on `@` that point elsewhere (parking, old host, etc.).
-5. Optional **www**: add **CNAME** — Host `www`, Value `michaellubega.github.io` (then add `www.orion13.us` in GitHub Pages too if you want www).
+5. **Required for www** — add **CNAME** (fixes GitHub `InvalidDNSError` on `www.orion13.us`):
+
+| Type | Host | Value | TTL |
+|------|------|-------|-----|
+| **CNAME** | `www` | `michaellubega.github.io` | 3600 |
+
+   Do **not** point `www` at `orion13.us`. It must be `michaellubega.github.io` (no `https://`, no `/u_panel`).
+
 6. Optional IPv6 — four **AAAA** records on `@`: `2606:50c0:8000::153` … `2606:50c0:8003::153`.
-7. **GitHub** → [u_panel Settings → Pages](https://github.com/michaellubega/u_panel/settings/pages) → Custom domain: `orion13.us` → Save → wait for DNS check → **Enforce HTTPS**.
+7. **GitHub** → [u_panel Settings → Pages](https://github.com/michaellubega/u_panel/settings/pages) → Custom domain: **`orion13.us`** only (not `www.orion13.us`) → Save → wait for DNS check → **Enforce HTTPS**.
 
 DNS can take a few minutes up to 48 hours. The repo already includes `website/CNAME` with `orion13.us`.
+
+### `www.orion13.us` — InvalidDNSError
+
+GitHub checks **www** even when the custom domain is the apex. Add the **CNAME** in step 5 above, wait 15–60 minutes, then click **Check again** on GitHub Pages.
+
+Verify from your PC:
+
+```powershell
+nslookup www.orion13.us
+```
+
+You should see `michaellubega.github.io` in the answer. If `nslookup` fails, the CNAME is missing or still propagating.
+
+**If you do not want www at all:** remove `www.orion13.us` from the GitHub Pages custom-domain field (use only `orion13.us`), keep the CNAME anyway so GitHub’s check passes.
 
 ## Deploy everything
 
