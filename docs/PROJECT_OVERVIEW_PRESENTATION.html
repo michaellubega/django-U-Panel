@@ -1,0 +1,900 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="U-Panel KIU slide deck matching project overview styling.">
+  <title>U-Panel · KIU — Presentation</title>
+  <style>
+
+    :root {
+      --brand: #177245;
+      --brand-light: #2a9b63;
+      --brand-dark: #0f4d2e;
+      --text: #0a2915;
+      --muted: #64748b;
+      --surface: #f8fafc;
+      --border: #e2e8f0;
+      --max: 48rem;
+      --shadow-sm: 0 1px 2px rgba(15, 77, 46, 0.06);
+      --shadow-md: 0 8px 30px rgba(15, 77, 46, 0.08), 0 2px 8px rgba(0, 0, 0, 0.04);
+      --shadow-card: 0 4px 24px rgba(15, 77, 46, 0.07), 0 1px 3px rgba(0, 0, 0, 0.04);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      padding: clamp(1rem, 3vw, 2rem) clamp(0.75rem, 3vw, 1.5rem) 3rem;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+      font-size: 1.02rem;
+      line-height: 1.6;
+      color: var(--text);
+      background: linear-gradient(165deg, #ecfdf5 0%, #eef6f0 28%, #f1f5f9 55%, #f8fafc 100%);
+      background-attachment: fixed;
+    }
+    .page {
+      max-width: 52rem;
+      margin: 0 auto;
+    }
+    header.hero {
+      position: relative;
+      padding: 2rem clamp(1.25rem, 4vw, 2.25rem) 1.75rem;
+      background: linear-gradient(145deg, #ffffff 0%, #f0fdf4 45%, #ecfdf5 100%);
+      border-radius: 20px;
+      border: 1px solid rgba(23, 114, 69, 0.14);
+      box-shadow: var(--shadow-card);
+      overflow: hidden;
+    }
+    header.hero::before {
+      content: "";
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 5px;
+      background: linear-gradient(90deg, var(--brand-dark), var(--brand), var(--brand-light), var(--brand));
+      border-radius: 20px 20px 0 0;
+    }
+    h1.brand-lockup {
+      margin: 0.35rem 0 0.25rem;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 0.55rem 0.85rem;
+      line-height: 1.12;
+    }
+    h1.brand-lockup .brand-name {
+      font-size: clamp(1.85rem, 5vw, 2.35rem);
+      font-weight: 700;
+      letter-spacing: -0.03em;
+      color: var(--brand-dark);
+    }
+    h1.brand-lockup .brand-org {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0.32em 0.75em 0.36em;
+      font-size: clamp(1.2rem, 3.4vw, 1.55rem);
+      font-weight: 800;
+      letter-spacing: 0.2em;
+      text-indent: 0.2em;
+      color: #fff;
+      background: linear-gradient(145deg, #0a2915 0%, var(--brand-dark) 35%, var(--brand) 100%);
+      border-radius: 12px;
+      box-shadow: 0 3px 14px rgba(15, 77, 46, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+      border: 1px solid rgba(255, 255, 255, 0.38);
+    }
+    .meta { color: var(--muted); font-size: 0.9rem; }
+    .tagline {
+      margin: 0.85rem 0 0;
+      font-size: 1.02rem;
+      font-weight: 500;
+      color: var(--text);
+      max-width: 38em;
+      line-height: 1.5;
+    }
+    .lede {
+      margin: 0 0 0.75rem;
+      font-size: 0.98rem;
+      color: var(--text);
+    }
+    p.tight {
+      margin: 0 0 0.65rem;
+      font-size: 0.95rem;
+      color: var(--text);
+      max-width: 40em;
+    }
+    figure.diagram figcaption.short-cap {
+      font-size: 0.78rem;
+      opacity: 0.9;
+    }
+    main {
+      margin-top: 1.25rem;
+      padding: clamp(1.25rem, 3vw, 2rem) clamp(1rem, 3vw, 1.75rem) 2rem;
+      background: rgba(255, 255, 255, 0.78);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border-radius: 20px;
+      border: 1px solid rgba(255, 255, 255, 0.85);
+      box-shadow: var(--shadow-md);
+    }
+    h2 {
+      margin: 2.25rem 0 0.85rem;
+      padding-bottom: 0.45rem;
+      font-size: 1.22rem;
+      font-weight: 700;
+      color: var(--brand-dark);
+      border-bottom: 2px solid rgba(23, 114, 69, 0.2);
+      letter-spacing: -0.02em;
+    }
+    h2:first-of-type { margin-top: 0; }
+    p { margin: 0 0 0.9rem; }
+    ul { margin: 0 0 1rem; padding-left: 1.2rem; }
+    li { margin-bottom: 0.45rem; }
+    li::marker { color: var(--brand); }
+    .table-wrap {
+      margin: 0.5rem 0 1rem;
+      border-radius: 14px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow-sm);
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.9rem;
+      margin: 0;
+    }
+    th, td {
+      text-align: left;
+      padding: 0.65rem 0.75rem;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    tr:last-child td, tr:last-child th { border-bottom: none; }
+    tbody tr:nth-child(even) td { background: rgba(248, 250, 252, 0.85); }
+    th { background: linear-gradient(180deg, #f0fdf4, #ecfdf5); font-weight: 600; color: var(--brand-dark); }
+    thead th { background: linear-gradient(180deg, #e8fff0, #d8f5e4); }
+    figure.diagram {
+      margin: 1.15rem 0 1.5rem;
+      padding: 1.35rem 1rem 1.15rem;
+      border-radius: 18px;
+      background: linear-gradient(180deg, #ffffff 0%, #fafefd 55%, #f4faf7 100%);
+      border: 1px solid rgba(226, 232, 240, 0.95);
+      box-shadow: 0 10px 40px rgba(15, 77, 46, 0.07), inset 0 1px 0 rgba(255, 255, 255, 0.95);
+      overflow-x: auto;
+    }
+    figure.diagram.diagram--compact {
+      padding: 1rem 0.75rem;
+    }
+    figure.diagram figcaption {
+      margin: 0.85rem 0 0;
+      padding-top: 0.35rem;
+      font-size: 0.84rem;
+      color: var(--muted);
+      text-align: center;
+      font-weight: 500;
+      border-top: 1px solid rgba(226, 232, 240, 0.8);
+    }
+    figure.diagram svg {
+      display: block;
+      margin: 0 auto;
+      width: 100%;
+      max-width: 680px;
+      height: auto;
+      filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.03));
+    }
+    .flow {
+      font-size: 0.92rem;
+      color: var(--muted);
+      margin-top: 0.65rem;
+    }
+    footer {
+      margin: 2rem auto 0;
+      padding: 1.25rem 1rem;
+      text-align: center;
+      font-size: 0.84rem;
+      color: var(--muted);
+    }
+    footer .footer-org {
+      font-weight: 900;
+      letter-spacing: 0.14em;
+      color: var(--brand-dark);
+      font-size: 0.95em;
+    }
+    code {
+      font-size: 0.88em;
+      background: rgba(23, 114, 69, 0.08);
+      padding: 0.12em 0.35em;
+      border-radius: 6px;
+    }
+    @media print {
+      body { background: #fff; padding: 0.5rem; }
+      .page { max-width: none; }
+      header.hero, main { box-shadow: none; break-inside: avoid; }
+      figure.diagram { break-inside: avoid; box-shadow: none; }
+    }
+  
+
+    body.pres-deck {
+      overflow-x: hidden;
+      margin: 0;
+      min-height: 100vh;
+      padding: clamp(1rem, 3vw, 2rem) clamp(0.75rem, 3vw, 1.5rem) 4.75rem;
+    }
+    .pres-toplink {
+      position: fixed;
+      top: clamp(0.5rem, 1.5vw, 0.75rem);
+      right: clamp(0.5rem, 1.5vw, 0.75rem);
+      z-index: 100;
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: var(--brand-dark);
+      background: rgba(255, 255, 255, 0.95);
+      padding: 0.35rem 0.75rem;
+      border-radius: 10px;
+      border: 1px solid rgba(23, 114, 69, 0.2);
+      text-decoration: none;
+      box-shadow: var(--shadow-sm);
+    }
+    .pres-toplink:hover { text-decoration: underline; }
+    .deck { position: relative; min-height: 100vh; }
+    section.slide {
+      display: none;
+      min-height: 100vh;
+      padding: clamp(1rem, 3vw, 2rem) clamp(0.75rem, 3vw, 1.5rem) 4.75rem;
+      overflow-y: auto;
+      -webkit-overflow-scrolling: touch;
+      box-sizing: border-box;
+    }
+    section.slide.active { display: block; }
+    section.slide--title {
+      display: none;
+      align-items: center;
+      justify-content: center;
+    }
+    section.slide--title.active { display: flex; }
+    section.slide .page { max-width: 52rem; margin: 0 auto; width: 100%; }
+    section.slide--title .page {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+    section.slide--title .hero { width: 100%; }
+    .pres-nav {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      z-index: 99;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem 1rem;
+      padding: 0.6rem 1rem;
+      background: rgba(255, 255, 255, 0.94);
+      backdrop-filter: blur(14px);
+      -webkit-backdrop-filter: blur(14px);
+      border-top: 1px solid var(--border);
+      box-shadow: 0 -4px 20px rgba(15, 77, 46, 0.06);
+      font-size: 0.88rem;
+      color: var(--muted);
+    }
+    .pres-nav button {
+      font: inherit;
+      cursor: pointer;
+      padding: 0.45rem 1rem;
+      border-radius: 10px;
+      border: 1px solid rgba(23, 114, 69, 0.35);
+      background: #fff;
+      color: var(--brand-dark);
+      font-weight: 600;
+    }
+    .pres-nav button:hover { background: #f0fdf4; }
+    .pres-nav button:disabled { opacity: 0.45; cursor: not-allowed; }
+    .pres-nav kbd {
+      font-size: 0.75rem;
+      padding: 0.1em 0.35em;
+      border-radius: 4px;
+      border: 1px solid var(--border);
+      background: #f8fafc;
+    }
+    @media print {
+      body.pres-deck { padding: 0; overflow: visible; }
+      .pres-nav, .pres-toplink { display: none !important; }
+      section.slide {
+        display: block !important;
+        page-break-after: always;
+        min-height: auto;
+        overflow: visible;
+        padding: 1rem;
+      }
+      section.slide:last-child { page-break-after: auto; }
+    }
+
+  </style>
+</head>
+<body class="pres-deck">
+  <a class="pres-toplink" href="PROJECT_OVERVIEW.html">Full document</a>
+  <div class="deck" id="deck">
+    <section class="slide slide--title active" id="slide-0" tabindex="-1" aria-label="Title">
+      <div class="page">
+        <header class="hero">
+    <h1 class="brand-lockup"><span class="brand-name">U-Panel</span><span class="brand-org">KIU</span></h1>
+    <p class="meta">Version 1.0.0 · Digital university operations — attendance, notices, course work, reports</p>
+    <p class="tagline">Less paper · one digital workspace · <strong>QA</strong> + students · Flutter + Firebase</p>
+  </header>
+      </div>
+    </section>
+    <section class="slide" id="slide-1" tabindex="-1">
+      <div class="page">
+        <main>
+<h2>1. Overview</h2>
+    <p class="tight"><strong>U-Panel</strong> at <strong>KIU</strong> — university ops in one app: attendance, notices, course work, reports. Phone · web · desktop.</p>
+
+    <figure class="diagram diagram--compact" aria-labelledby="fig-s-student-cap">
+      <svg viewBox="0 0 640 92" role="img" aria-labelledby="fig-s-student-title fig-s-student-desc">
+        <title id="fig-s-student-title">Typical student journey</title>
+        <desc id="fig-s-student-desc">Sign in, check in to class, read notices — a short digital path.</desc>
+        <defs>
+          <linearGradient id="g-student-line" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stop-color="#177245" stop-opacity="0.35"/>
+            <stop offset="50%" stop-color="#177245" stop-opacity="0.9"/>
+            <stop offset="100%" stop-color="#2a9b63" stop-opacity="0.5"/>
+          </linearGradient>
+          <marker id="m-student" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+            <polygon points="0 0, 7 3.5, 0 7" fill="#177245"/>
+          </marker>
+        </defs>
+        <text x="320" y="28" text-anchor="middle" font-size="12" font-weight="700" fill="#0f4d2e">Student</text>
+        <line x1="48" y1="68" x2="592" y2="68" stroke="url(#g-student-line)" stroke-width="3" stroke-linecap="round"/>
+        <rect x="32" y="44" width="120" height="44" rx="12" fill="#fff" stroke="#177245" stroke-width="2"/>
+        <text x="92" y="72" text-anchor="middle" font-size="11" font-weight="600" fill="#0a2915">Sign in</text>
+        <line x1="152" y1="66" x2="188" y2="66" stroke="#177245" stroke-width="2" marker-end="url(#m-student)"/>
+        <rect x="196" y="44" width="148" height="44" rx="12" fill="#177245"/>
+        <text x="270" y="72" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">Check-in</text>
+        <line x1="344" y1="66" x2="380" y2="66" stroke="#177245" stroke-width="2" marker-end="url(#m-student)"/>
+        <rect x="388" y="44" width="200" height="44" rx="12" fill="#fff" stroke="#0f4d2e" stroke-width="2"/>
+        <text x="488" y="72" text-anchor="middle" font-size="11" font-weight="600" fill="#0a2915">Notices · work</text>
+      </svg>
+      <figcaption class="short-cap" id="fig-s-student-cap">Student</figcaption>
+    </figure>
+
+    <figure class="diagram" aria-labelledby="fig1-cap">
+      <svg viewBox="0 0 640 118" role="img" aria-labelledby="fig1-title fig1-desc">
+        <title id="fig1-title">Who connects to U-Panel at KIU</title>
+        <desc id="fig1-desc">Campus users use the U-Panel app for KIU; the app uses Firebase in the cloud.</desc>
+        <defs>
+          <linearGradient id="f1-hub-grad" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%" stop-color="#1f9a5e"/>
+            <stop offset="100%" stop-color="#177245"/>
+          </linearGradient>
+          <marker id="f1-arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
+            <polygon points="0 0, 9 4.5, 0 9" fill="#177245"/>
+          </marker>
+        </defs>
+        <!-- Users (one card: avoids double-arrow gap bugs) -->
+        <rect x="16" y="28" width="168" height="62" rx="12" fill="#fff" stroke="#177245" stroke-width="2"/>
+        <text x="100" y="52" text-anchor="middle" font-size="11" font-weight="700" fill="#0f4d2e">Campus users</text>
+        <text x="100" y="72" text-anchor="middle" font-size="11" font-weight="600" fill="#0a2915">Student · QA-Staff</text>
+        <!-- Arrow: flush to box edges (marker refX lands on next rect) -->
+        <line x1="184" y1="59" x2="218" y2="59" stroke="#177245" stroke-width="2.5" stroke-linecap="round" marker-end="url(#f1-arrow)"/>
+        <!-- App -->
+        <rect x="220" y="22" width="132" height="74" rx="14" fill="url(#f1-hub-grad)" stroke="#0f4d2e" stroke-width="1.5"/>
+        <text x="232" y="56" font-size="12" font-weight="800" fill="#fff">U-Panel</text>
+        <rect x="288" y="40" width="40" height="22" rx="7" fill="#fff" stroke="#0f4d2e" stroke-width="1.25"/>
+        <text x="308" y="56" text-anchor="middle" font-size="10" font-weight="900" fill="#0f4d2e" letter-spacing="0.06em">KIU</text>
+        <text x="286" y="82" text-anchor="middle" font-size="9" fill="#e8fff0">Flutter app</text>
+        <line x1="352" y1="59" x2="386" y2="59" stroke="#177245" stroke-width="2.5" stroke-linecap="round" marker-end="url(#f1-arrow)"/>
+        <!-- Cloud: two text lines so nothing clips -->
+        <rect x="388" y="22" width="236" height="74" rx="14" fill="#fff" stroke="#0f4d2e" stroke-width="2"/>
+        <text x="506" y="50" text-anchor="middle" font-size="13" font-weight="700" fill="#0f4d2e">Firebase</text>
+        <text x="506" y="70" text-anchor="middle" font-size="10" fill="#64748b">Auth · Firestore (<tspan font-weight="600" fill="#475569">upanel</tspan>) · Storage · FCM</text>
+        <text x="506" y="86" text-anchor="middle" font-size="10" fill="#64748b">Cloud Functions</text>
+      </svg>
+      <figcaption class="short-cap" id="fig1-cap">People → app → cloud</figcaption>
+    </figure>
+        </main>
+      </div>
+    </section>
+    <section class="slide" id="slide-2" tabindex="-1">
+      <div class="page">
+        <main>
+<h2>2. Pain</h2>
+
+    <figure class="diagram diagram--compact" aria-labelledby="fig-friction-cap">
+      <svg viewBox="0 0 640 118" role="img" aria-labelledby="fig-friction-title fig-friction-desc">
+        <title id="fig-friction-title">Operational friction today</title>
+        <desc id="fig-friction-desc">Five clusters of pain that U-Panel is designed to remove.</desc>
+        <text x="320" y="22" text-anchor="middle" font-size="12" font-weight="700" fill="#0f4d2e">Friction</text>
+        <rect x="12" y="38" width="116" height="68" rx="12" fill="#fff" stroke="#fca5a5" stroke-width="1.5"/>
+        <text x="70" y="62" text-anchor="middle" font-size="9" font-weight="700" fill="#b91c1c">Paper</text>
+        <text x="70" y="78" text-anchor="middle" font-size="8" fill="#64748b">Sheets &amp;</text>
+        <text x="70" y="90" text-anchor="middle" font-size="8" fill="#64748b">reprints</text>
+        <rect x="138" y="38" width="116" height="68" rx="12" fill="#fff" stroke="#fdba74" stroke-width="1.5"/>
+        <text x="196" y="62" text-anchor="middle" font-size="9" font-weight="700" fill="#c2410c">Chasing</text>
+        <text x="196" y="78" text-anchor="middle" font-size="8" fill="#64748b">Email /</text>
+        <text x="196" y="90" text-anchor="middle" font-size="8" fill="#64748b">confirmations</text>
+        <rect x="264" y="38" width="116" height="68" rx="12" fill="#fff" stroke="#c4b5fd" stroke-width="1.5"/>
+        <text x="322" y="62" text-anchor="middle" font-size="9" font-weight="700" fill="#5b21b6">Rework</text>
+        <text x="322" y="78" text-anchor="middle" font-size="8" fill="#64748b">Retyping</text>
+        <text x="322" y="90" text-anchor="middle" font-size="8" fill="#64748b">same data</text>
+        <rect x="390" y="38" width="116" height="68" rx="12" fill="#fff" stroke="#93c5fd" stroke-width="1.5"/>
+        <text x="448" y="62" text-anchor="middle" font-size="9" font-weight="700" fill="#1d4ed8">Visibility</text>
+        <text x="448" y="78" text-anchor="middle" font-size="8" fill="#64748b">No live</text>
+        <text x="448" y="90" text-anchor="middle" font-size="8" fill="#64748b">roll-up view</text>
+        <rect x="516" y="38" width="112" height="68" rx="12" fill="#fff" stroke="#94a3b8" stroke-width="1.5"/>
+        <text x="572" y="62" text-anchor="middle" font-size="9" font-weight="700" fill="#475569">Wi‑Fi gaps</text>
+        <text x="572" y="80" text-anchor="middle" font-size="8" fill="#64748b">Tools that</text>
+        <text x="572" y="92" text-anchor="middle" font-size="8" fill="#64748b">fail offline</text>
+      </svg>
+      <figcaption class="short-cap" id="fig-friction-cap">Today’s drag</figcaption>
+    </figure>
+        </main>
+      </div>
+    </section>
+    <section class="slide" id="slide-3" tabindex="-1">
+      <div class="page">
+        <main>
+<h2>3. Shift</h2>
+
+    <figure class="diagram diagram--compact" aria-labelledby="fig-qa-flow-cap">
+      <svg viewBox="0 0 640 112" role="img" aria-labelledby="fig-qa-flow-title fig-qa-flow-desc">
+        <title id="fig-qa-flow-title">QA daily flow in U-Panel</title>
+        <desc id="fig-qa-flow-desc">Dashboard to sessions, notices, then reports in one linear flow.</desc>
+        <defs>
+          <marker id="m-qa" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+            <polygon points="0 0, 7 3.5, 0 7" fill="#177245"/>
+          </marker>
+        </defs>
+        <text x="320" y="22" text-anchor="middle" font-size="12" font-weight="700" fill="#0f4d2e">QA-Staff — one linear day in the app</text>
+        <rect x="20" y="44" width="130" height="52" rx="14" fill="#fff" stroke="#177245" stroke-width="2"/>
+        <text x="85" y="76" text-anchor="middle" font-size="10" font-weight="700" fill="#0a2915">Dashboard</text>
+        <line x1="150" y1="70" x2="178" y2="70" stroke="#177245" stroke-width="2" marker-end="url(#m-qa)"/>
+        <rect x="186" y="44" width="142" height="52" rx="14" fill="#e8fff0" stroke="#177245" stroke-width="2"/>
+        <text x="257" y="72" text-anchor="middle" font-size="10" font-weight="700" fill="#0f4d2e">Lists &amp;</text>
+        <text x="257" y="86" text-anchor="middle" font-size="10" font-weight="700" fill="#0f4d2e">sessions</text>
+        <line x1="328" y1="70" x2="356" y2="70" stroke="#177245" stroke-width="2" marker-end="url(#m-qa)"/>
+        <rect x="364" y="44" width="124" height="52" rx="14" fill="#177245"/>
+        <text x="426" y="76" text-anchor="middle" font-size="10" font-weight="700" fill="#fff">Notices</text>
+        <line x1="488" y1="70" x2="516" y2="70" stroke="#177245" stroke-width="2" marker-end="url(#m-qa)"/>
+        <rect x="524" y="44" width="96" height="52" rx="14" fill="#fff" stroke="#0f4d2e" stroke-width="2"/>
+        <text x="572" y="76" text-anchor="middle" font-size="10" font-weight="700" fill="#0a2915">Reports</text>
+      </svg>
+      <figcaption class="short-cap" id="fig-qa-flow-cap">QA flow</figcaption>
+    </figure>
+
+    <figure class="diagram" aria-labelledby="fig2-cap">
+      <svg viewBox="0 0 640 248" role="img" aria-labelledby="fig2-title fig2-desc">
+        <title id="fig2-title">Before and after U-Panel</title>
+        <desc id="fig2-desc">Each row contrasts today’s manual pattern with the matching U-Panel capability.</desc>
+        <defs>
+          <linearGradient id="f2-after-pill" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stop-color="#ecfdf5"/>
+            <stop offset="100%" stop-color="#d1fae5"/>
+          </linearGradient>
+          <marker id="f2-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+            <polygon points="0 0, 8 4, 0 8" fill="#177245"/>
+          </marker>
+        </defs>
+        <text x="320" y="22" text-anchor="middle" font-size="12" font-weight="700" fill="#0f4d2e">Same jobs — different way of working</text>
+        <text x="148" y="44" text-anchor="middle" font-size="10" font-weight="700" fill="#991b1b">Before (today)</text>
+        <text x="492" y="44" text-anchor="middle" font-size="10" font-weight="700" fill="#0f4d2e">After (U-Panel · KIU)</text>
+        <!-- Row 1: attendance -->
+        <rect x="20" y="54" width="256" height="36" rx="8" fill="#fef2f2" stroke="#fecaca" stroke-width="1.5"/>
+        <text x="148" y="77" text-anchor="middle" font-size="10" font-weight="600" fill="#7f1d1d">Paper lists · sign-in sheets</text>
+        <line x1="276" y1="72" x2="312" y2="72" stroke="#177245" stroke-width="2" marker-end="url(#f2-arrow)"/>
+        <rect x="318" y="54" width="302" height="36" rx="8" fill="url(#f2-after-pill)" stroke="#177245" stroke-width="1.5"/>
+        <text x="469" y="77" text-anchor="middle" font-size="10" font-weight="600" fill="#0a2915">Digital sessions · phone check-in</text>
+        <!-- Row 2: notices -->
+        <rect x="20" y="98" width="256" height="36" rx="8" fill="#fef2f2" stroke="#fecaca" stroke-width="1.5"/>
+        <text x="148" y="121" text-anchor="middle" font-size="10" font-weight="600" fill="#7f1d1d">Notices: boards · print · email only</text>
+        <line x1="276" y1="116" x2="312" y2="116" stroke="#177245" stroke-width="2" marker-end="url(#f2-arrow)"/>
+        <rect x="318" y="98" width="302" height="36" rx="8" fill="url(#f2-after-pill)" stroke="#177245" stroke-width="1.5"/>
+        <text x="469" y="121" text-anchor="middle" font-size="10" font-weight="600" fill="#0a2915">Publish once · push to devices</text>
+        <!-- Row 3: QA work -->
+        <rect x="20" y="142" width="256" height="36" rx="8" fill="#fef2f2" stroke="#fecaca" stroke-width="1.5"/>
+        <text x="148" y="165" text-anchor="middle" font-size="10" font-weight="600" fill="#7f1d1d">QA: retype data · chase replies</text>
+        <line x1="276" y1="160" x2="312" y2="160" stroke="#177245" stroke-width="2" marker-end="url(#f2-arrow)"/>
+        <rect x="318" y="142" width="302" height="36" rx="8" fill="url(#f2-after-pill)" stroke="#177245" stroke-width="1.5"/>
+        <text x="469" y="165" text-anchor="middle" font-size="10" font-weight="600" fill="#0a2915">One app · dashboards · automation</text>
+        <!-- Row 4: source of truth -->
+        <rect x="20" y="186" width="256" height="36" rx="8" fill="#fef2f2" stroke="#fecaca" stroke-width="1.5"/>
+        <text x="148" y="209" text-anchor="middle" font-size="10" font-weight="600" fill="#7f1d1d">Truth split across files &amp; people</text>
+        <line x1="276" y1="204" x2="312" y2="204" stroke="#177245" stroke-width="2" marker-end="url(#f2-arrow)"/>
+        <rect x="318" y="186" width="302" height="36" rx="8" fill="url(#f2-after-pill)" stroke="#177245" stroke-width="1.5"/>
+        <text x="469" y="209" text-anchor="middle" font-size="10" font-weight="600" fill="#0a2915">Single source · Firestore <tspan font-weight="700">upanel</tspan></text>
+      </svg>
+      <figcaption class="short-cap" id="fig2-cap">Before → after</figcaption>
+    </figure>
+        </main>
+      </div>
+    </section>
+    <section class="slide" id="slide-4" tabindex="-1">
+      <div class="page">
+        <main>
+<h2>4. Product</h2>
+
+    <figure class="diagram" aria-labelledby="fig-features-cap">
+      <svg viewBox="0 0 640 268" role="img" aria-labelledby="fig-features-title fig-features-desc">
+        <title id="fig-features-title">Product map</title>
+        <desc id="fig-features-desc">Feature tiles and attendance lifecycle strip.</desc>
+        <defs>
+          <marker id="fe-arr" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+            <polygon points="0 0, 6 3, 0 6" fill="#94a3b8"/>
+          </marker>
+          <linearGradient id="fe-tile" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%" stop-color="#ffffff"/><stop offset="100%" stop-color="#f0fdf4"/>
+          </linearGradient>
+        </defs>
+        <text x="320" y="24" text-anchor="middle" font-size="13" font-weight="700" fill="#0f4d2e">Surfaces</text>
+        <rect x="16" y="40" width="142" height="56" rx="14" fill="url(#fe-tile)" stroke="#177245" stroke-width="1.5"/>
+        <text x="87" y="74" text-anchor="middle" font-size="11" font-weight="700" fill="#0a2915">Auth</text>
+        <rect x="170" y="40" width="142" height="56" rx="14" fill="#fff" stroke="#177245" stroke-width="1.5"/>
+        <text x="241" y="74" text-anchor="middle" font-size="11" font-weight="700" fill="#0a2915">Roles</text>
+        <rect x="324" y="40" width="142" height="56" rx="14" fill="#fff" stroke="#177245" stroke-width="1.5"/>
+        <text x="395" y="74" text-anchor="middle" font-size="11" font-weight="700" fill="#0a2915">Attendance</text>
+        <rect x="478" y="40" width="146" height="56" rx="14" fill="#fff" stroke="#177245" stroke-width="1.5"/>
+        <text x="551" y="74" text-anchor="middle" font-size="11" font-weight="700" fill="#0a2915">Notices</text>
+        <rect x="16" y="106" width="142" height="56" rx="14" fill="#fff" stroke="#177245" stroke-width="1.5"/>
+        <text x="87" y="140" text-anchor="middle" font-size="11" font-weight="700" fill="#0a2915">Course work</text>
+        <rect x="170" y="106" width="142" height="56" rx="14" fill="#fff" stroke="#177245" stroke-width="1.5"/>
+        <text x="241" y="140" text-anchor="middle" font-size="11" font-weight="700" fill="#0a2915">Dashboard</text>
+        <rect x="324" y="106" width="142" height="56" rx="14" fill="#fff" stroke="#177245" stroke-width="1.5"/>
+        <text x="395" y="140" text-anchor="middle" font-size="11" font-weight="700" fill="#0a2915">Reports</text>
+        <rect x="478" y="106" width="146" height="56" rx="14" fill="#177245"/>
+        <text x="551" y="140" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">Functions</text>
+        <text x="320" y="186" text-anchor="middle" font-size="11" font-weight="700" fill="#64748b">Attendance lifecycle</text>
+        <rect x="20" y="198" width="130" height="44" rx="10" fill="#fff" stroke="#177245" stroke-width="1.5"/>
+        <text x="85" y="226" text-anchor="middle" font-size="9" font-weight="600" fill="#0a2915">Open session</text>
+        <line x1="150" y1="220" x2="168" y2="220" stroke="#94a3b8" stroke-width="2" marker-end="url(#fe-arr)"/>
+        <rect x="172" y="198" width="132" height="44" rx="10" fill="#e8fff0" stroke="#177245" stroke-width="1.5"/>
+        <text x="238" y="226" text-anchor="middle" font-size="9" font-weight="600" fill="#0f4d2e">Check-in</text>
+        <line x1="304" y1="220" x2="322" y2="220" stroke="#94a3b8" stroke-width="2" marker-end="url(#fe-arr)"/>
+        <rect x="326" y="198" width="124" height="44" rx="10" fill="#177245"/>
+        <text x="388" y="226" text-anchor="middle" font-size="9" font-weight="700" fill="#fff">Finalize</text>
+        <line x1="450" y1="220" x2="468" y2="220" stroke="#94a3b8" stroke-width="2" marker-end="url(#fe-arr)"/>
+        <rect x="472" y="198" width="148" height="44" rx="10" fill="#fff" stroke="#0f4d2e" stroke-width="1.5"/>
+        <text x="546" y="226" text-anchor="middle" font-size="9" font-weight="600" fill="#0a2915">Missed → push</text>
+      </svg>
+      <figcaption class="short-cap" id="fig-features-cap">Modules + roll flow</figcaption>
+    </figure>
+
+    <figure class="diagram" aria-labelledby="fig3-cap">
+      <svg viewBox="0 0 640 280" role="img" aria-labelledby="fig3-title fig3-desc">
+        <title id="fig3-title">Notice to push pipeline</title>
+        <desc id="fig3-desc">QA publishes digitally once; automation delivers to students without printing or manual distribution lists.</desc>
+        <defs>
+          <marker id="arrow2" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto">
+            <polygon points="0 0, 8 4, 0 8" fill="#177245"/>
+          </marker>
+        </defs>
+        <rect x="20" y="110" width="88" height="44" rx="8" fill="#fff" stroke="#177245" stroke-width="2"/>
+        <text x="64" y="137" text-anchor="middle" font-size="12" font-weight="600" fill="#0a2915">QA-Staff</text>
+        <line x1="108" y1="132" x2="148" y2="132" stroke="#177245" stroke-width="2" marker-end="url(#arrow2)"/>
+        <rect x="152" y="98" width="100" height="68" rx="8" fill="#e8fff0" stroke="#177245" stroke-width="2"/>
+        <text x="202" y="125" text-anchor="middle" font-size="11" font-weight="600" fill="#0f4d2e">Create</text>
+        <text x="202" y="142" text-anchor="middle" font-size="11" font-weight="600" fill="#0f4d2e">notice</text>
+        <line x1="252" y1="132" x2="288" y2="132" stroke="#177245" stroke-width="2" marker-end="url(#arrow2)"/>
+        <rect x="292" y="92" width="120" height="80" rx="8" fill="#fff" stroke="#0f4d2e" stroke-width="2"/>
+        <text x="352" y="118" text-anchor="middle" font-size="11" font-weight="700" fill="#0f4d2e">Firestore</text>
+        <text x="352" y="136" text-anchor="middle" font-size="10" fill="#64748b">document</text>
+        <text x="352" y="152" text-anchor="middle" font-size="10" fill="#64748b">db: upanel</text>
+        <line x1="412" y1="132" x2="448" y2="132" stroke="#177245" stroke-width="2" marker-end="url(#arrow2)"/>
+        <rect x="452" y="98" width="100" height="68" rx="8" fill="#177245"/>
+        <text x="502" y="125" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">Cloud</text>
+        <text x="502" y="142" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">Function</text>
+        <line x1="552" y1="132" x2="588" y2="132" stroke="#177245" stroke-width="2" marker-end="url(#arrow2)"/>
+        <rect x="20" y="210" width="600" height="48" rx="8" fill="#fff" stroke="#177245" stroke-width="2"/>
+        <text x="320" y="232" text-anchor="middle" font-size="11" font-weight="600" fill="#0a2915">FCM → topic subscribers (e.g. all_notices, list_*, stu_*) → student devices</text>
+        <path d="M 502 166 L 502 198 L 320 198 L 320 206" fill="none" stroke="#177245" stroke-width="2" marker-end="url(#arrow2)"/>
+        <text x="320" y="88" text-anchor="middle" font-size="10" fill="#64748b" font-weight="600">Publish once → devices</text>
+      </svg>
+      <figcaption class="short-cap" id="fig3-cap">Notice → push</figcaption>
+    </figure>
+        </main>
+      </div>
+    </section>
+    <section class="slide" id="slide-5" tabindex="-1">
+      <div class="page">
+        <main>
+<h2>5. Architecture</h2>
+    <figure class="diagram" aria-labelledby="fig4-cap">
+      <svg viewBox="0 0 680 318" role="img" aria-labelledby="fig4-title fig4-desc">
+        <title id="fig4-title">Layered system architecture</title>
+        <desc id="fig4-desc">Green zone is the Flutter app; blue zone is Firebase. Solid green arrows are live network traffic; dashed gray is on-device only. Firestore feeds Cloud Functions; Functions send FCM.</desc>
+        <defs>
+          <linearGradient id="f4gL" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%" stop-color="#ecfdf5"/><stop offset="100%" stop-color="#d8fae8"/>
+          </linearGradient>
+          <linearGradient id="f4gR" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%" stop-color="#f0f9ff"/><stop offset="100%" stop-color="#e0f2fe"/>
+          </linearGradient>
+          <linearGradient id="f4gFS" x1="0%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%" stop-color="#ffffff"/><stop offset="100%" stop-color="#ecfdf5"/>
+          </linearGradient>
+          <linearGradient id="f4gFn" x1="0%" y1="0%" x2="100%" y2="0%">
+            <stop offset="0%" stop-color="#15803d"/><stop offset="100%" stop-color="#177245"/>
+          </linearGradient>
+          <filter id="f4sh" x="-8%" y="-8%" width="116%" height="116%">
+            <feDropShadow dx="0" dy="2" stdDeviation="2" flood-opacity="0.12"/>
+          </filter>
+          <marker id="f4m" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
+            <polygon points="0 0, 9 4.5, 0 9" fill="#15803d"/>
+          </marker>
+          <marker id="f4md" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+            <polygon points="0 0, 7 3.5, 0 7" fill="#64748b"/>
+          </marker>
+        </defs>
+        <text x="340" y="22" text-anchor="middle" font-size="11" font-weight="800" fill="#0f4d2e">U-Panel <tspan fill="#94a3b8" font-weight="600">·</tspan> <tspan font-size="12" font-weight="900" fill="#177245" letter-spacing="0.12em">KIU</tspan></text>
+        <rect x="14" y="30" width="304" height="226" rx="16" fill="url(#f4gL)" stroke="#86efac" stroke-width="1.25"/>
+        <rect x="362" y="30" width="304" height="226" rx="16" fill="url(#f4gR)" stroke="#93c5fd" stroke-width="1.25"/>
+        <rect x="326" y="108" width="28" height="92" rx="6" fill="#fff" stroke="#e2e8f0" stroke-width="1" opacity="0.98"/>
+        <path d="M 334 148 L 340 142 L 346 148 M 334 160 L 340 166 L 346 160" fill="none" stroke="#94a3b8" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+        <text x="340" y="178" text-anchor="middle" font-size="7" font-weight="800" fill="#94a3b8">sync</text>
+        <text x="166" y="46" text-anchor="middle" font-size="11" font-weight="800" fill="#14532d">Flutter</text>
+        <text x="514" y="46" text-anchor="middle" font-size="11" font-weight="800" fill="#1e40af">Firebase</text>
+        <rect x="30" y="54" filter="url(#f4sh)" width="268" height="38" rx="11" fill="#fff" stroke="#177245" stroke-width="1.35"/>
+        <text x="166" y="78" text-anchor="middle" font-size="10" font-weight="600" fill="#0a2915">UI · shell · responsive</text>
+        <rect x="30" y="100" filter="url(#f4sh)" width="268" height="50" rx="11" fill="#bbf7d0" stroke="#16a34a" stroke-width="1.5"/>
+        <text x="166" y="122" text-anchor="middle" font-size="10" font-weight="800" fill="#14532d">Features</text>
+        <text x="166" y="138" text-anchor="middle" font-size="9" fill="#166534">attendance · notices · course work · reports</text>
+        <rect x="30" y="158" filter="url(#f4sh)" width="268" height="38" rx="11" fill="#fff" stroke="#177245" stroke-width="1.35"/>
+        <text x="166" y="182" text-anchor="middle" font-size="10" font-weight="600" fill="#0a2915">Core — auth · theme · connectivity · push · SDK</text>
+        <rect x="30" y="204" filter="url(#f4sh)" width="268" height="44" rx="11" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1.35"/>
+        <text x="166" y="226" text-anchor="middle" font-size="10" font-weight="700" fill="#475569">On-device</text>
+        <text x="166" y="242" text-anchor="middle" font-size="9" fill="#64748b">Hive queues · SharedPreferences</text>
+        <rect x="378" y="54" filter="url(#f4sh)" width="272" height="34" rx="10" fill="#fff" stroke="#2563eb" stroke-width="1.35"/>
+        <text x="514" y="76" text-anchor="middle" font-size="10" font-weight="600" fill="#1e3a8a">Firebase Auth</text>
+        <rect x="378" y="96" filter="url(#f4sh)" width="272" height="58" rx="11" fill="url(#f4gFS)" stroke="#0f4d2e" stroke-width="2.25"/>
+        <text x="514" y="120" text-anchor="middle" font-size="11" font-weight="800" fill="#0f4d2e">Cloud Firestore</text>
+        <text x="514" y="138" text-anchor="middle" font-size="9" fill="#475569">database <tspan font-weight="800" fill="#0f4d2e">upanel</tspan> · system of record</text>
+        <rect x="378" y="162" width="128" height="36" rx="9" fill="#fff" stroke="#94a3b8" stroke-width="1.2"/>
+        <text x="442" y="184" text-anchor="middle" font-size="9" font-weight="600" fill="#334155">Storage</text>
+        <rect x="514" y="162" width="136" height="36" rx="9" fill="#fff" stroke="#94a3b8" stroke-width="1.2"/>
+        <text x="582" y="184" text-anchor="middle" font-size="9" font-weight="600" fill="#334155">FCM</text>
+        <rect x="378" y="206" filter="url(#f4sh)" width="272" height="44" rx="11" fill="url(#f4gFn)" stroke="#14532d" stroke-width="1.2"/>
+        <text x="514" y="233" text-anchor="middle" font-size="10" font-weight="800" fill="#fff">Cloud Functions · triggers + scheduler</text>
+        <path d="M 298 124 Q 338 124 378 126" fill="none" stroke="#15803d" stroke-width="2.75" marker-end="url(#f4m)"/>
+        <rect x="308" y="92" width="72" height="18" rx="5" fill="#fff" stroke="#bbf7d0" stroke-width="1"/>
+        <text x="344" y="105" text-anchor="middle" font-size="7" font-weight="800" fill="#15803d">APP ↔ DATA</text>
+        <path d="M 298 177 L 332 177 L 332 71 L 378 71" fill="none" stroke="#15803d" stroke-width="2.25" marker-end="url(#f4m)"/>
+        <rect x="300" y="52" width="52" height="16" rx="4" fill="#fff" stroke="#bbf7d0" stroke-width="1"/>
+        <text x="326" y="64" font-size="7" font-weight="800" fill="#15803d">SIGN-IN</text>
+        <line x1="514" y1="154" x2="514" y2="206" stroke="#15803d" stroke-width="3" marker-end="url(#f4m)"/>
+        <rect x="524" y="168" width="44" height="16" rx="4" fill="#ecfdf5" stroke="#86efac" stroke-width="1"/>
+        <text x="546" y="180" text-anchor="middle" font-size="7" font-weight="800" fill="#15803d">TRIGGER</text>
+        <line x1="582" y1="206" x2="582" y2="198" stroke="#15803d" stroke-width="2.5" marker-end="url(#f4m)"/>
+        <rect x="548" y="182" width="40" height="15" rx="4" fill="#fff" stroke="#86efac" stroke-width="1"/>
+        <text x="568" y="193" text-anchor="middle" font-size="7" font-weight="800" fill="#15803d">PUSH</text>
+        <line x1="166" y1="150" x2="166" y2="204" stroke="#64748b" stroke-width="2" stroke-dasharray="5 4" marker-end="url(#f4md)"/>
+        <rect x="48" y="186" width="88" height="16" rx="4" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1"/>
+        <text x="92" y="198" text-anchor="middle" font-size="7" font-weight="700" fill="#64748b">OFFLINE QUEUE</text>
+        <rect x="24" y="258" width="632" height="22" rx="8" fill="#f8fafc" stroke="#e2e8f0"/>
+        <text x="340" y="274" text-anchor="middle" font-size="8" font-weight="600" fill="#475569">Legend:</text>
+        <line x1="88" y1="273" x2="118" y2="273" stroke="#15803d" stroke-width="2.5" marker-end="url(#f4m)"/>
+        <text x="168" y="276" text-anchor="start" font-size="8" fill="#64748b">live traffic</text>
+        <line x1="248" y1="273" x2="278" y2="273" stroke="#64748b" stroke-width="2" stroke-dasharray="4 3"/>
+        <text x="288" y="276" text-anchor="start" font-size="8" fill="#64748b">device-only</text>
+        <line x1="392" y1="273" x2="422" y2="273" stroke="#15803d" stroke-width="2.5" marker-end="url(#f4m)"/>
+        <text x="432" y="276" text-anchor="start" font-size="8" fill="#64748b">automation / push</text>
+        <rect x="24" y="284" width="632" height="30" rx="10" fill="#fff" stroke="#cbd5e1" stroke-width="1.15"/>
+        <text x="340" y="303" text-anchor="middle" font-size="9" font-weight="600" fill="#475569">Offline check-ins queue on-device, then sync into Firestore when online</text>
+      </svg>
+      <figcaption class="short-cap" id="fig4-cap">Client + cloud + automation</figcaption>
+    </figure>
+        </main>
+      </div>
+    </section>
+    <section class="slide" id="slide-6" tabindex="-1">
+      <div class="page">
+        <main>
+<h2>6. Stack</h2>
+
+    <figure class="diagram" aria-labelledby="fig-stack-cap">
+      <svg viewBox="0 0 640 278" role="img" aria-labelledby="fig-stack-title fig-stack-desc">
+        <title id="fig-stack-title">Technology stack</title>
+        <desc id="fig-stack-desc">Layers from UI to devices.</desc>
+        <rect x="40" y="20" width="560" height="36" rx="10" fill="#177245"/>
+        <text x="320" y="44" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">Flutter 3 · Dart 3 · Material 3</text>
+        <rect x="40" y="64" width="560" height="36" rx="10" fill="#fff" stroke="#0f4d2e" stroke-width="1.5"/>
+        <text x="320" y="88" text-anchor="middle" font-size="10" font-weight="600" fill="#0a2915">Auth · Firestore (<tspan font-weight="700">upanel</tspan>) · Storage · FCM</text>
+        <rect x="40" y="108" width="560" height="32" rx="10" fill="#e8fff0" stroke="#177245" stroke-width="1.5"/>
+        <text x="320" y="129" text-anchor="middle" font-size="10" font-weight="600" fill="#0f4d2e">Cloud Functions · scheduler · triggers</text>
+        <rect x="40" y="148" width="272" height="32" rx="10" fill="#f1f5f9" stroke="#94a3b8"/>
+        <text x="176" y="169" text-anchor="middle" font-size="9" font-weight="600" fill="#475569">Device · GPS · camera</text>
+        <rect x="328" y="148" width="272" height="32" rx="10" fill="#f1f5f9" stroke="#94a3b8"/>
+        <text x="464" y="169" text-anchor="middle" font-size="9" font-weight="600" fill="#475569">Hive · offline · prefs</text>
+        <rect x="40" y="188" width="560" height="28" rx="8" fill="#fff" stroke="#cbd5e1"/>
+        <text x="320" y="207" text-anchor="middle" font-size="9" fill="#64748b">Push · local notifications · connectivity</text>
+        <text x="320" y="236" text-anchor="middle" font-size="11" font-weight="700" fill="#0f4d2e">Ship everywhere</text>
+        <rect x="48" y="244" width="72" height="26" rx="8" fill="#fff" stroke="#177245" stroke-width="1.2"/>
+        <text x="84" y="261" text-anchor="middle" font-size="8" font-weight="600">Android</text>
+        <rect x="132" y="244" width="56" height="26" rx="8" fill="#fff" stroke="#177245" stroke-width="1.2"/>
+        <text x="160" y="261" text-anchor="middle" font-size="8" font-weight="600">iOS</text>
+        <rect x="200" y="244" width="52" height="26" rx="8" fill="#fff" stroke="#177245" stroke-width="1.2"/>
+        <text x="226" y="261" text-anchor="middle" font-size="8" font-weight="600">Web</text>
+        <rect x="264" y="244" width="76" height="26" rx="8" fill="#fff" stroke="#177245" stroke-width="1.2"/>
+        <text x="302" y="261" text-anchor="middle" font-size="8" font-weight="600">Windows</text>
+        <rect x="352" y="244" width="64" height="26" rx="8" fill="#fff" stroke="#177245" stroke-width="1.2"/>
+        <text x="384" y="261" text-anchor="middle" font-size="8" font-weight="600">macOS</text>
+        <text x="432" y="261" font-size="10" fill="#177245">+</text>
+        <rect x="448" y="244" width="152" height="26" rx="8" fill="#ecfdf5" stroke="#177245" stroke-width="1.2"/>
+        <text x="524" y="261" text-anchor="middle" font-size="8" font-weight="600" fill="#0f4d2e">lints · tests</text>
+      </svg>
+      <figcaption class="short-cap" id="fig-stack-cap">Layers + targets</figcaption>
+    </figure>
+        </main>
+      </div>
+    </section>
+    <section class="slide" id="slide-7" tabindex="-1">
+      <div class="page">
+        <main>
+<h2>7. Roles</h2>
+
+    <figure class="diagram" aria-labelledby="fig5-cap">
+      <svg viewBox="0 0 640 200" role="img" aria-labelledby="fig5-title fig5-desc">
+        <title id="fig5-title">Roles and primary screens</title>
+        <desc id="fig5-desc">Students stay lightweight; QA gets a focused console for daily operational work.</desc>
+        <rect x="16" y="36" width="288" height="148" rx="10" fill="#fff" stroke="#177245" stroke-width="2"/>
+        <text x="160" y="62" text-anchor="middle" font-size="12" font-weight="700" fill="#0f4d2e">Student</text>
+        <rect x="36" y="78" width="108" height="32" rx="6" fill="#e8fff0" stroke="#177245"/>
+        <text x="90" y="98" text-anchor="middle" font-size="10" font-weight="600" fill="#0a2915">Attendance</text>
+        <rect x="156" y="78" width="128" height="32" rx="6" fill="#e8fff0" stroke="#177245"/>
+        <text x="220" y="98" text-anchor="middle" font-size="10" font-weight="600" fill="#0a2915">Notices</text>
+        <rect x="36" y="122" width="248" height="32" rx="6" fill="#f1f5f9" stroke="#cbd5e1"/>
+        <text x="160" y="142" text-anchor="middle" font-size="10" fill="#475569">Course works · Profile / settings</text>
+        <rect x="336" y="36" width="288" height="148" rx="10" fill="#fff" stroke="#0f4d2e" stroke-width="2"/>
+        <text x="480" y="62" text-anchor="middle" font-size="12" font-weight="700" fill="#0f4d2e">QA-Staff</text>
+        <rect x="356" y="78" width="88" height="28" rx="6" fill="#e8fff0" stroke="#177245"/>
+        <text x="400" y="94" text-anchor="middle" font-size="9" font-weight="600" fill="#0a2915">Dashboard</text>
+        <rect x="452" y="78" width="88" height="28" rx="6" fill="#e8fff0" stroke="#177245"/>
+        <text x="496" y="94" text-anchor="middle" font-size="9" font-weight="600" fill="#0a2915">Attendance</text>
+        <rect x="548" y="78" width="64" height="28" rx="6" fill="#e8fff0" stroke="#177245"/>
+        <text x="580" y="94" text-anchor="middle" font-size="9" font-weight="600" fill="#0a2915">Notices</text>
+        <rect x="356" y="114" width="88" height="28" rx="6" fill="#e8fff0" stroke="#177245"/>
+        <text x="400" y="130" text-anchor="middle" font-size="9" font-weight="600" fill="#0a2915">Reports</text>
+        <rect x="452" y="114" width="160" height="28" rx="6" fill="#f1f5f9" stroke="#cbd5e1"/>
+        <text x="532" y="130" text-anchor="middle" font-size="9" fill="#475569">Course works · Settings</text>
+        <text x="320" y="24" text-anchor="middle" font-size="11" fill="#64748b" font-weight="600">Simplified surfaces — less clutter for QA day-to-day</text>
+      </svg>
+      <figcaption class="short-cap" id="fig5-cap">Who touches what</figcaption>
+    </figure>
+        </main>
+      </div>
+    </section>
+    <section class="slide" id="slide-8" tabindex="-1">
+      <div class="page">
+        <main>
+<h2>8. Value</h2>
+
+    <figure class="diagram" aria-labelledby="fig-pillars-cap">
+      <svg viewBox="0 0 640 168" role="img" aria-labelledby="fig-pillars-title fig-pillars-desc">
+        <title id="fig-pillars-title">Three pillars of value</title>
+        <desc id="fig-pillars-desc">Less paper, modern experience, simpler QA work.</desc>
+        <defs>
+          <linearGradient id="gp1" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="#ecfdf5"/><stop offset="100%" stop-color="#d1fae5"/></linearGradient>
+          <linearGradient id="gp2" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="#f0f9ff"/><stop offset="100%" stop-color="#e0f2fe"/></linearGradient>
+          <linearGradient id="gp3" x1="0%" y1="0%" x2="0%" y2="100%"><stop offset="0%" stop-color="#fffbeb"/><stop offset="100%" stop-color="#fef3c7"/></linearGradient>
+        </defs>
+        <text x="320" y="26" text-anchor="middle" font-size="13" font-weight="700" fill="#0f4d2e">Outcomes</text>
+        <rect x="20" y="44" width="180" height="108" rx="16" fill="url(#gp1)" stroke="#177245" stroke-width="1.5"/>
+        <circle cx="110" cy="78" r="18" fill="#177245" opacity="0.9"/>
+        <path d="M 102 78 L 108 84 L 122 68" fill="none" stroke="#fff" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+        <text x="110" y="118" text-anchor="middle" font-size="11" font-weight="700" fill="#0f4d2e">Less paper</text>
+        <rect x="230" y="44" width="180" height="108" rx="16" fill="url(#gp2)" stroke="#0284c7" stroke-width="1.5"/>
+        <circle cx="320" cy="78" r="18" fill="#0284c7" opacity="0.9"/>
+        <rect x="312" y="70" width="16" height="10" rx="2" fill="#fff" opacity="0.95"/>
+        <path d="M 308 88 L 320 72 L 332 88" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
+        <text x="320" y="118" text-anchor="middle" font-size="11" font-weight="700" fill="#0c4a6e">Modern UX</text>
+        <rect x="440" y="44" width="180" height="108" rx="16" fill="url(#gp3)" stroke="#d97706" stroke-width="1.5"/>
+        <circle cx="530" cy="78" r="18" fill="#d97706" opacity="0.95"/>
+        <path d="M 520 78 L 530 68 L 540 78 M 530 68 L 530 88" stroke="#fff" stroke-width="2.2" stroke-linecap="round"/>
+        <text x="530" y="118" text-anchor="middle" font-size="11" font-weight="700" fill="#92400e">Simpler QA</text>
+      </svg>
+      <figcaption class="short-cap" id="fig-pillars-cap">Why it matters</figcaption>
+    </figure>
+        </main>
+      </div>
+    </section>
+    <section class="slide" id="slide-9" tabindex="-1">
+      <div class="page">
+        <main>
+<h2>9. Next</h2>
+
+    <figure class="diagram" aria-labelledby="fig-roadmap-cap">
+      <svg viewBox="0 0 680 152" role="img" aria-labelledby="fig-roadmap-title fig-roadmap-desc">
+        <title id="fig-roadmap-title">Product roadmap</title>
+        <desc id="fig-roadmap-desc">Four waves from what ships today to later platform themes; order is indicative, not a fixed schedule.</desc>
+        <defs>
+          <marker id="rm-arr" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+            <polygon points="0 0, 7 3.5, 0 7" fill="#177245"/>
+          </marker>
+        </defs>
+        <text x="340" y="22" text-anchor="middle" font-size="12" font-weight="800" fill="#0f4d2e">Roadmap waves</text>
+        <text x="340" y="38" text-anchor="middle" font-size="9" fill="#64748b">Indicative themes — priority set with KIU</text>
+        <rect x="16" y="50" width="142" height="78" rx="12" fill="#177245"/>
+        <text x="87" y="78" text-anchor="middle" font-size="10" font-weight="800" fill="#fff">Now</text>
+        <text x="87" y="96" text-anchor="middle" font-size="8" fill="#ecfdf5">Core product live</text>
+        <text x="87" y="112" text-anchor="middle" font-size="8" fill="#d1fae5">Attendance · notices ·</text>
+        <text x="87" y="124" text-anchor="middle" font-size="8" fill="#d1fae5">course work · reports</text>
+        <line x1="158" y1="89" x2="174" y2="89" stroke="#177245" stroke-width="2.5" marker-end="url(#rm-arr)"/>
+        <rect x="178" y="50" width="142" height="78" rx="12" fill="#fff" stroke="#177245" stroke-width="2"/>
+        <text x="249" y="76" text-anchor="middle" font-size="9" font-weight="800" fill="#0f4d2e">Next</text>
+        <text x="249" y="92" text-anchor="middle" font-size="8" fill="#334155">Finance flows</text>
+        <text x="249" y="106" text-anchor="middle" font-size="8" fill="#334155">Richer materials</text>
+        <text x="249" y="120" text-anchor="middle" font-size="8" fill="#64748b">Ops + learning depth</text>
+        <line x1="320" y1="89" x2="336" y2="89" stroke="#177245" stroke-width="2.5" marker-end="url(#rm-arr)"/>
+        <rect x="340" y="50" width="150" height="78" rx="12" fill="#fff" stroke="#177245" stroke-width="2"/>
+        <text x="415" y="76" text-anchor="middle" font-size="9" font-weight="800" fill="#0f4d2e">Then</text>
+        <text x="415" y="92" text-anchor="middle" font-size="8" fill="#334155">Messaging / channels</text>
+        <text x="415" y="106" text-anchor="middle" font-size="8" fill="#334155">Deeper analytics &amp; exports</text>
+        <text x="415" y="120" text-anchor="middle" font-size="8" fill="#64748b">Engagement + insight</text>
+        <line x1="490" y1="89" x2="506" y2="89" stroke="#177245" stroke-width="2.5" marker-end="url(#rm-arr)"/>
+        <rect x="510" y="50" width="154" height="78" rx="12" fill="#f8fafc" stroke="#94a3b8" stroke-width="2"/>
+        <text x="587" y="76" text-anchor="middle" font-size="9" font-weight="800" fill="#475569">Later</text>
+        <text x="587" y="92" text-anchor="middle" font-size="8" fill="#334155">Digital forms · e-sign</text>
+        <text x="587" y="106" text-anchor="middle" font-size="8" fill="#334155">Accessibility · languages</text>
+        <text x="587" y="120" text-anchor="middle" font-size="8" fill="#64748b">Multi-env · security review</text>
+        <text x="340" y="146" text-anchor="middle" font-size="8" fill="#94a3b8">Not a committed timeline — scope moves with campus needs</text>
+      </svg>
+      <figcaption class="short-cap" id="fig-roadmap-cap">Roadmap waves</figcaption>
+    </figure>
+        </main>
+      </div>
+    </section>
+    <section class="slide" id="slide-10" tabindex="-1">
+      <div class="page">
+        <main>
+<h2>10. Close</h2>
+    <p class="tight">One system of record · less paper · automation where it counts · built to grow.</p>
+        </main>
+        <footer>
+    <strong>U-Panel</strong> <span aria-hidden="true">·</span> <strong class="footer-org">KIU</strong> <span aria-hidden="true">·</span> Project overview
+  </footer>
+      </div>
+    </section>
+  </div>
+  <nav class="pres-nav" aria-label="Slide navigation">
+    <button type="button" id="pres-prev" aria-label="Previous slide">Previous</button>
+    <button type="button" id="pres-next" aria-label="Next slide">Next</button>
+    <span id="pres-counter" aria-live="polite"></span>
+    <span><kbd>←</kbd> <kbd>→</kbd> or <kbd>Space</kbd></span>
+  </nav>
+  <script>
+(function () {
+  var slides = Array.prototype.slice.call(document.querySelectorAll("section.slide"));
+  var i = 0;
+  var c = document.getElementById("pres-counter");
+  var prev = document.getElementById("pres-prev");
+  var next = document.getElementById("pres-next");
+  function show(n) {
+    i = Math.max(0, Math.min(slides.length - 1, n));
+    slides.forEach(function (s, j) { s.classList.toggle("active", j === i); });
+    if (c) c.textContent = (i + 1) + " / " + slides.length;
+    if (prev) prev.disabled = i === 0;
+    if (next) next.disabled = i === slides.length - 1;
+    slides[i].focus({ preventScroll: true });
+  }
+  function go(d) { show(i + d); }
+  if (prev) prev.addEventListener("click", function () { go(-1); });
+  if (next) next.addEventListener("click", function () { go(1); });
+  document.addEventListener("keydown", function (e) {
+    var tag = e.target && e.target.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || e.target.isContentEditable) return;
+    if (e.key === " " && (tag === "BUTTON" || tag === "A")) return;
+    if (e.key === "ArrowRight" || e.key === "PageDown" || e.key === " ") {
+      e.preventDefault();
+      go(1);
+    } else if (e.key === "ArrowLeft" || e.key === "PageUp") {
+      e.preventDefault();
+      go(-1);
+    } else if (e.key === "Home") { e.preventDefault(); show(0); }
+    else if (e.key === "End") { e.preventDefault(); show(slides.length - 1); }
+  });
+  show(0);
+})();
+  </script>
+</body>
+</html>

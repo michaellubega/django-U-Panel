@@ -1,0 +1,64 @@
+{
+  "functions": {
+    "source": "functions"
+  },
+  "firestore": [
+    {
+      "database": "upanel",
+      "rules": "firestore.rules",
+      "indexes": "firestore.indexes.json"
+    }
+  ],
+  "storage": {
+    "rules": "storage.rules"
+  },
+  "hosting": {
+    "public": "build/web",
+    "ignore": ["firebase.json", "**/.*", "**/node_modules/**"],
+    "rewrites": [
+      {
+        "source": "**",
+        "destination": "/index.html"
+      }
+    ],
+    "headers": [
+      {
+        "source": "/download/downloads/**/*.apk",
+        "headers": [
+          {
+            "key": "Content-Type",
+            "value": "application/vnd.android.package-archive"
+          }
+        ]
+      },
+      {
+        "source": "/download/downloads/**/*.exe",
+        "headers": [
+          {
+            "key": "Content-Type",
+            "value": "application/octet-stream"
+          }
+        ]
+      }
+    ]
+  },
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "u-panel-2026",
+          "appId": "1:307189985628:android:a69186445bdfb8a40c9199",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "u-panel-2026",
+          "configurations": {
+            "windows": "1:307189985628:web:21c285d4478770fd0c9199"
+          }
+        }
+      }
+    }
+  }
+}

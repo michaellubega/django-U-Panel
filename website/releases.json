@@ -1,0 +1,31 @@
+{
+    "version":  "1.0.0",
+    "build":  1,
+    "releasedAt":  "2026-06-05",
+    "ios":  {
+                "label":  "iPhone \u0026 iPad",
+                "status":  "coming_soon",
+                "webUrl":  "https://u-panel-2026.web.app/",
+                "message":  "Native iOS app coming soon. Use the web app in Safari for now."
+            },
+    "android":  {
+                    "file":  "downloads/U-Panel-1.0.0-android.apk",
+                    "label":  "Android APK",
+                    "minAndroid":  "7.0 (Nougat)",
+                    "available":  true,
+                    "size":  "54.5 MB"
+                },
+    "windows":  {
+                    "file":  "downloads/U-Panel-1.0.0-windows-setup.exe",
+                    "label":  "Windows installer",
+                    "minWindows":  "Windows 10 (64-bit)",
+                    "available":  true,
+                    "size":  "15.1 MB"
+                },
+    "web":  {
+                "url":  "https://u-panel-2026.web.app/",
+                "alternateUrl":  "https://u-panel-2026.firebaseapp.com/",
+                "label":  "Web app",
+                "available":  true
+            }
+}

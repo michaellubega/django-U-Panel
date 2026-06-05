@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="Download U-Panel for Android and Windows. iPhone and iPad: use the web app (iOS app coming soon). Kampala International University."
+    />
+    <title>Download U-Panel</title>
+    <link rel="icon" href="assets/icon.png" type="image/png" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="header-glow" aria-hidden="true"></div>
+      <div class="container header-inner">
+        <div class="brand-lockup animate-in" style="--delay: 0.05s">
+          <img src="assets/icon.png" width="72" height="72" alt="U-Panel app icon" class="app-icon" />
+          <div>
+            <p class="eyebrow">Kampala International University</p>
+          </div>
+        </div>
+        <div class="animate-in" style="--delay: 0.18s">
+          <p class="lead">
+            Official installers and web access for students, lecturers, and staff.
+            Attendance, notices, and dashboards — on phone, PC, or browser.
+          </p>
+          <span class="version-pill" id="version-label">Loading version…</span>
+        </div>
+      </div>
+    </header>
+
+    <main class="container">
+      <section class="download-grid" aria-label="Download options">
+        <article class="card animate-card" style="--delay: 0.1s">
+          <div class="card-head">
+            <div class="platform-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="currentColor">
+                <path
+                  d="M17.6 9.48l1.84-3.18c.16-.27.04-.62-.24-.74-2.87-1.12-6.22-1.12-9.09 0-.28.12-.4.47-.24.74l1.84 3.18c.12.2.36.31.61.28 1.44-.2 2.88-.2 4.32 0 .25.03.49-.08.61-.28zM6.79 14.58l-1.9 3.29c-.16.28-.02.63.26.75 2.92 1.15 6.34 1.15 9.26 0 .28-.12.42-.47.26-.75l-1.9-3.29c-.12-.21-.37-.32-.63-.28-1.5.22-3.01.22-4.51 0-.26-.04-.51.07-.63.28zM12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2z"
+                />
+              </svg>
+            </div>
+            <div>
+              <h2>Android</h2>
+              <p class="meta">APK for phones and tablets</p>
+            </div>
+          </div>
+          <ul class="req-list">
+            <li>Android 7.0 (Nougat) or newer</li>
+            <li>Allow installs from your browser if prompted</li>
+            <li>Location permission for on-campus check-in</li>
+          </ul>
+          <p class="note" id="android-note">Checking availability…</p>
+          <a
+            id="android-download"
+            class="btn btn-primary is-disabled"
+            aria-disabled="true"
+          >
+            Download APK
+          </a>
+        </article>
+
+        <article class="card card-ios animate-card" style="--delay: 0.2s">
+          <div class="card-head">
+            <div class="platform-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="currentColor">
+                <path
+                  d="M16.5 3c-.74 2.46-2.59 4.43-5 5.04.58 3.57 3.85 5.22 6.5 5.22-1.12 2.33-3.13 4.24-5.5 5.24-3.38 1.55-6.73.98-8.5-.02C2.5 16.5 1.5 12.5 3.5 8.5 5 5.5 8.5 3 12 3c1.2 0 2.4.2 3.5.5.65-.9 1.45-1.6 2.35-2.1L16.5 3z"
+                />
+              </svg>
+            </div>
+            <div>
+              <h2>iPhone &amp; iPad</h2>
+              <p class="meta">
+                <span class="coming-soon-badge">Coming soon</span>
+                App Store install
+              </p>
+            </div>
+          </div>
+          <ul class="req-list">
+            <li>iOS 13 or newer (iPhone &amp; iPad)</li>
+            <li>Native app not on the App Store yet</li>
+            <li>Use Safari and the web app in the meantime</li>
+          </ul>
+          <p class="note" id="ios-note">
+            Open in Safari — add to Home Screen for an app-like shortcut.
+          </p>
+          <div class="card-actions">
+            <span class="btn btn-muted" aria-disabled="true">App Store — coming soon</span>
+            <a
+              id="ios-web"
+              class="btn btn-primary"
+              href="https://u-panel-2026.web.app/"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Use web app on iOS
+            </a>
+          </div>
+        </article>
+
+        <article class="card animate-card" style="--delay: 0.3s">
+          <div class="card-head">
+            <div class="platform-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="currentColor">
+                <path
+                  d="M3 5.5A2.5 2.5 0 0 1 5.5 3h13A2.5 2.5 0 0 1 21 5.5v13a2.5 2.5 0 0 1-2.5 2.5h-13A2.5 2.5 0 0 1 3 18.5v-13zM5.5 5a.5.5 0 0 0-.5.5V11h15V5.5a.5.5 0 0 0-.5-.5h-13zM5 13v5.5a.5.5 0 0 0 .5.5h13a.5.5 0 0 0 .5-.5V13H5z"
+                />
+              </svg>
+            </div>
+            <div>
+              <h2>Windows</h2>
+              <p class="meta">Desktop app (64-bit)</p>
+            </div>
+          </div>
+          <ul class="req-list">
+            <li>Windows 10 or 11, 64-bit</li>
+            <li>Run the installer and follow the setup steps</li>
+            <li>Internet required for sign-in and sync</li>
+          </ul>
+          <p class="note" id="windows-note">Checking availability…</p>
+          <a
+            id="windows-download"
+            class="btn btn-primary is-disabled"
+            aria-disabled="true"
+          >
+            Download installer
+          </a>
+        </article>
+
+        <article class="card animate-card" style="--delay: 0.4s">
+          <div class="card-head">
+            <div class="platform-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" fill="currentColor">
+                <path
+                  d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm7.93 9h-3.18a15.3 15.3 0 0 0-1.07-4.02A8.03 8.03 0 0 1 19.93 11zM12 4c.97 0 2.53 2.11 3.24 7H8.76C9.47 6.11 11.03 4 12 4zM8.14 6.98A15.3 15.3 0 0 0 7.07 11H3.89a8.03 8.03 0 0 1 4.25-4.02zM3.89 13h3.18c.25 1.45.7 2.82 1.07 4.02A8.03 8.03 0 0 1 3.89 13zm4.25 4.02c.37-1.2.82-2.57 1.07-4.02h3.24c-.71 4.89-2.27 7-3.24 7-1.01 0-2.6-2.15-3.31-7zM12 20c.97 0 2.53-2.11 3.24-7h-3.24c.71 4.89 2.27 7 3.24 7zm4.86-2.98A15.3 15.3 0 0 0 18.93 13h3.18a8.03 8.03 0 0 1-4.25 4.02zM16.76 13c-.25-1.45-.7-2.82-1.07-4.02h3.18a8.03 8.03 0 0 1-4.11 4.02z"
+                />
+              </svg>
+            </div>
+            <div>
+              <h2>Web</h2>
+              <p class="meta">Use in Chrome, Edge, Firefox, or Safari</p>
+            </div>
+          </div>
+          <ul class="req-list">
+            <li>Modern browser with JavaScript enabled</li>
+            <li>No install — opens in a new tab</li>
+            <li>Wide window recommended for staff menus</li>
+          </ul>
+          <a
+            id="web-open"
+            class="btn btn-primary"
+            href="https://u-panel-2026.web.app/"
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            Open web app
+          </a>
+        </article>
+      </section>
+
+      <section class="section reveal">
+        <h3>Install steps</h3>
+        <div class="steps">
+          <div class="step reveal" style="--delay: 0.05s">
+            <strong>1. Choose platform</strong>
+            Download Android or Windows, use the web app (including on iPhone and
+            iPad until the iOS app launches), and use official university links only.
+          </div>
+          <div class="step reveal" style="--delay: 0.12s">
+            <strong>2. Install or open</strong>
+            Android: open the APK and confirm install. Windows: run the
+            installer, then open U-Panel from the Start menu. Web: sign in in
+            your browser — no install needed.
+          </div>
+          <div class="step reveal" style="--delay: 0.19s">
+            <strong>3. Sign in</strong>
+            Students use @studmc.kiu.ac.ug email. Staff use KIU-#### and the
+            password from your administrator.
+          </div>
+        </div>
+      </section>
+
+      <section class="section reveal">
+        <h3>Need help?</h3>
+        <p class="note">
+          Contact your faculty or university IT support if downloads are
+          unavailable or you need help installing the app.
+        </p>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <div class="container">
+        <p>U-Panel · Kampala International University · Attendance &amp; notices</p>
+      </div>
+    </footer>
+
+    <script src="app.js"></script>
+  </body>
+</html>
