@@ -33,9 +33,7 @@ migrate_working_dir/
 /build/
 /coverage/
 
-# Download site binaries (generate with scripts/prepare-download-site.ps1)
-website/downloads/*.apk
-website/downloads/*.exe
+# Inno Setup output (copy into website/downloads/ before commit/deploy)
 installer/*.exe
 
 # Symbolication related
