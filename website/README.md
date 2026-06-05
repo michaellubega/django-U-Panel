@@ -2,15 +2,18 @@
 
 Static landing page for **Android APK**, **Windows**, and a link to the **web app**.
 
-## Live URLs (after deploy)
+## Live URLs
 
 | Page | URL |
 |------|-----|
+| **GitHub landing page** | https://michaellubega.github.io/u_panel/ |
 | **Web app** | https://u-panel-2026.web.app/ |
 | **Web app (alt)** | https://u-panel-2026.firebaseapp.com/ |
-| **Downloads** | https://u-panel-2026.web.app/download/ |
+| **Firebase downloads** | https://u-panel-2026.web.app/download/ |
 
-Firebase Hosting serves the Flutter web build at the **site root**. This download folder is copied to `build/web/download/` before deploy.
+This folder is published automatically to **GitHub Pages** on every push to `main` (see `.github/workflows/github-pages.yml`).
+
+Firebase Hosting serves the Flutter web build at the **site root**. The same download page is also copied to `build/web/download/` before Firebase deploy.
 
 ## Deploy everything
 

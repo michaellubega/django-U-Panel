@@ -1,6 +1,10 @@
 # u_panel
 
+**Landing page (downloads & web app):** https://michaellubega.github.io/u_panel/
+
 **University operations platform** — leadership, finance, attendance, learning, and communication in one place.
+
+Download the **Android APK**, **Windows installer**, or open the **web app** from the landing page above.
 
 - **Desktop**: Fixed left sidebar, top bar (search, notifications, profile), card-based main area.
 - **Mobile**: Bottom navigation (varies by role; includes Attendance, Notices, Profile), large cards, drawer for full menu.
