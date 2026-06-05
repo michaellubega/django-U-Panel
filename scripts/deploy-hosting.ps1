@@ -21,5 +21,5 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Write-Host ""
 Write-Host "Live URLs:"
 Write-Host "  Web app:   https://u-panel-2026.web.app/"
-Write-Host "  Landing:   https://orion13.us/"
-Write-Host "  Installers: https://orion13.us/downloads/"
+Write-Host "  Landing:   https://kiu.orion13.us/"
+Write-Host "  Installers: https://kiu.orion13.us/downloads/"

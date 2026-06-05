@@ -1,6 +1,6 @@
 # u_panel
 
-**Landing page (downloads & web app):** https://orion13.us/ (also **https://kiu.orion13.us** → redirects here)
+**Landing page (downloads & web app):** https://kiu.orion13.us/ (also https://orion13.us/ if apex A records are set)
 
 **University operations platform** — leadership, finance, attendance, learning, and communication in one place.
 
