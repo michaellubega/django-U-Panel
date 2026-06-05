@@ -1,5 +1,5 @@
 # Publishes website/ as the GitHub Pages landing page for this repo.
-# Live URL: https://kiu.orion13.us/ (custom domain; CNAME in website/)
+# Live URL: https://orion13.us/ (kiu.orion13.us redirects via Spaceship)
 
 name: GitHub Pages landing page
 

@@ -6,40 +6,55 @@ Static landing page for **Android APK**, **Windows**, and a link to the **web ap
 
 | Page | URL |
 |------|-----|
-| **Landing page** | https://kiu.orion13.us/ |
-| **APK & Windows installer** | https://kiu.orion13.us/downloads/ |
+| **Landing page** | https://orion13.us/ |
+| **Short alias** | https://kiu.orion13.us/ → redirects to orion13.us |
+| **APK & Windows installer** | https://orion13.us/downloads/ |
 | **Web app** | https://u-panel-2026.web.app/ |
 | **Web app (alt)** | https://u-panel-2026.firebaseapp.com/ |
 
 **APK and `.exe` installers are hosted on GitHub Pages** (`website/downloads/`). Firebase only hosts the Flutter web app and a mirror of this landing page (buttons link to GitHub for installers).
 
-This folder is published automatically to **GitHub Pages** on every push to `main` (see `.github/workflows/github-pages.yml`). Custom domain: **kiu.orion13.us** (`website/CNAME`).
+This folder is published automatically to **GitHub Pages** on every push to `main`. Custom domain: **orion13.us** (`website/CNAME`).
 
-### DNS on Spaceship (kiu.orion13.us → GitHub Pages)
+### DNS on Spaceship
 
-1. Sign in at [spaceship.com](https://www.spaceship.com) → **Domains** → **orion13.us**.
-2. **Nameservers** → use **Spaceship DNS**.
-3. Open **DNS / Advanced DNS** → **Add record**:
+#### 1. Apex — orion13.us (GitHub Pages)
 
-| Type | Host | Value | TTL |
-|------|------|-------|-----|
-| **CNAME** | `kiu` | `michaellubega.github.io` | 3600 |
+Four **A** records on `@`:
 
-Use `michaellubega.github.io` only — no `https://`, no `/u_panel`.
+| Type | Host | Value |
+|------|------|-------|
+| A | `@` | `185.199.108.153` |
+| A | `@` | `185.199.109.153` |
+| A | `@` | `185.199.110.153` |
+| A | `@` | `185.199.111.153` |
 
-4. **GitHub** → [u_panel Settings → Pages](https://github.com/michaellubega/u_panel/settings/pages) → Custom domain: **`kiu.orion13.us`** → Save → wait for DNS check → **Enforce HTTPS**.
+Optional **www** CNAME: Host `www`, Value `michaellubega.github.io`
 
-5. Optional: redirect **orion13.us** → **kiu.orion13.us** in Spaceship (**URL redirect** or forwarding) so the short apex still works.
+#### 2. Alias — kiu.orion13.us → orion13.us
 
-DNS can take a few minutes up to 48 hours.
+In Spaceship → **orion13.us** → **DNS** (or **URL redirect / forwarding**):
+
+- **Remove** any **CNAME** on `kiu` that points to `michaellubega.github.io` (that sends kiu to GitHub directly).
+- Add **URL redirect** (or forwarding):
+  - **Host:** `kiu`
+  - **Target:** `https://orion13.us`
+  - Use **permanent (301)** if Spaceship offers it.
+
+Visitors who open **kiu.orion13.us** will land on **orion13.us** in the browser.
+
+#### 3. GitHub Pages
+
+[u_panel Settings → Pages](https://github.com/michaellubega/u_panel/settings/pages) → Custom domain: **`orion13.us`** → **Enforce HTTPS**.
 
 Verify:
 
 ```powershell
+nslookup orion13.us
 nslookup kiu.orion13.us
 ```
 
-You should see `michaellubega.github.io` in the answer.
+`orion13.us` should return the four GitHub A addresses. `kiu.orion13.us` should resolve to Spaceship’s redirect/forwarding (not GitHub directly).
 
 ## Deploy everything
 
@@ -52,36 +67,21 @@ Or step by step:
 ```powershell
 flutter build web --release
 flutter build apk --release
-# Build Windows with Inno Setup, then copy or output to:
-#   installer/U-Panel-<version>-windows-setup.exe
 .\scripts\prepare-download-site.ps1
 firebase deploy --only hosting
 ```
 
 ### Windows installer (Inno Setup)
 
-1. `flutter build windows --release`
-2. Compile your Inno Setup script to produce a `.exe` installer.
-3. Place the file at `Desktop\output\UPanelSetup.exe`, `installer/U-Panel-<version>-windows-setup.exe`, or run:
-
 ```powershell
 .\scripts\prepare-download-site.ps1 -WindowsInstaller "C:\path\to\U-Panel-Setup.exe"
 ```
 
-The script copies it to `website/downloads/`, updates `releases.json` with GitHub download URLs, and enables the download buttons. Commit and push to `main` so GitHub Pages serves the new binaries.
+Commit and push to `main` so GitHub Pages serves updated binaries.
 
 ## Local preview
 
-Download page only:
-
 ```powershell
 cd website
-python -m http.server 8080
-```
-
-Flutter web (after `flutter build web`):
-
-```powershell
-cd build/web
 python -m http.server 8080
 ```
