@@ -15,20 +15,25 @@ Static landing page for **Android APK**, **Windows**, and a link to the **web ap
 
 This folder is published automatically to **GitHub Pages** on every push to `main` (see `.github/workflows/github-pages.yml`). Custom domain: **orion13.us** (`website/CNAME`).
 
-### DNS for orion13.us (at your domain registrar)
+### DNS on Spaceship (orion13.us → GitHub Pages)
 
-Point the apex domain to GitHub Pages:
+1. Sign in at [spaceship.com](https://www.spaceship.com) → **Domains** → **orion13.us**.
+2. **Nameservers** → use **Spaceship DNS** (not external/parking DNS).
+3. Open **DNS / Advanced DNS** → **Add record** (create **four separate A records**):
 
-| Type | Name | Value |
-|------|------|--------|
-| **A** | `@` | `185.199.108.153` |
-| **A** | `@` | `185.199.109.153` |
-| **A** | `@` | `185.199.110.153` |
-| **A** | `@` | `185.199.111.153` |
+| Type | Host | Value | TTL |
+|------|------|-------|-----|
+| **A** | `@` | `185.199.108.153` | 3600 (or Auto) |
+| **A** | `@` | `185.199.109.153` | 3600 |
+| **A** | `@` | `185.199.110.153` | 3600 |
+| **A** | `@` | `185.199.111.153` | 3600 |
 
-Optional IPv6 (**AAAA**): `2606:50c0:8000::153` through `2606:50c0:8003::153` (same set GitHub documents for Pages).
+4. **Remove** any other **A** or **ALIAS** records on `@` that point elsewhere (parking, old host, etc.).
+5. Optional **www**: add **CNAME** — Host `www`, Value `michaellubega.github.io` (then add `www.orion13.us` in GitHub Pages too if you want www).
+6. Optional IPv6 — four **AAAA** records on `@`: `2606:50c0:8000::153` … `2606:50c0:8003::153`.
+7. **GitHub** → [u_panel Settings → Pages](https://github.com/michaellubega/u_panel/settings/pages) → Custom domain: `orion13.us` → Save → wait for DNS check → **Enforce HTTPS**.
 
-Then in **GitHub → u_panel → Settings → Pages**, set custom domain to `orion13.us` and enable **Enforce HTTPS** when available.
+DNS can take a few minutes up to 48 hours. The repo already includes `website/CNAME` with `orion13.us`.
 
 ## Deploy everything
 
