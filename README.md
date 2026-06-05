@@ -1,4 +1,4 @@
-# kiu
+# u_panel
 
 **University operations platform** — leadership, finance, attendance, learning, and communication in one place.
 
