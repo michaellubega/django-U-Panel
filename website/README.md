@@ -31,17 +31,23 @@ Four **A** records on `@`:
 
 Optional **www** CNAME: Host `www`, Value `michaellubega.github.io`
 
-#### 2. Alias — kiu.orion13.us → orion13.us
+#### 2. Alias — kiu.orion13.us → orion13.us (URL Redirect, not DNS)
 
-In Spaceship → **orion13.us** → **DNS** (or **URL redirect / forwarding**):
+Spaceship puts redirects in the **domain panel**, not under Advanced DNS.
 
-- **Remove** any **CNAME** on `kiu` that points to `michaellubega.github.io` (that sends kiu to GitHub directly).
-- Add **URL redirect** (or forwarding):
-  - **Host:** `kiu`
-  - **Target:** `https://orion13.us`
-  - Use **permanent (301)** if Spaceship offers it.
+1. **Launchpad** → **Domain list** → click **orion13.us**.
+2. In the **right-hand side panel**, choose **URL redirect** (not “DNS” / “Advanced DNS”).
+   - Or: **Connections** → **+** on the domain → **URL Redirects**.
+3. **First remove** any **CNAME** or **A** record for host **`kiu`** under **Advanced DNS** (otherwise Spaceship shows *“only one hosting service is allowed”*).
+4. In **URL redirect**:
+   - **From / source:** `kiu` (i.e. `kiu.orion13.us`)
+   - **To / destination:** `https://orion13.us`
+   - **Type:** **301 permanent** (not “masked” / frame)
+5. **Save**.
 
-Visitors who open **kiu.orion13.us** will land on **orion13.us** in the browser.
+Nameservers must be **Spaceship DNS** for URL redirect to work.
+
+**Do not** add a URL redirect on `@` (apex) — that would break GitHub Pages. Only redirect the **`kiu`** subdomain.
 
 #### 3. GitHub Pages
 
