@@ -2,6 +2,7 @@
     "version":  "1.0.0",
     "build":  1,
     "releasedAt":  "2026-06-05",
+    "hostBase":  "https://michaellubega.github.io/u_panel",
     "ios":  {
                 "label":  "iPhone \u0026 iPad",
                 "status":  "coming_soon",
@@ -9,14 +10,14 @@
                 "message":  "Native iOS app coming soon. Use the web app in Safari for now."
             },
     "android":  {
-                    "file":  "downloads/U-Panel-1.0.0-android.apk",
+                    "file":  "https://michaellubega.github.io/u_panel/downloads/U-Panel-1.0.0-android.apk",
                     "label":  "Android APK",
                     "minAndroid":  "7.0 (Nougat)",
                     "available":  true,
                     "size":  "54.5 MB"
                 },
     "windows":  {
-                    "file":  "downloads/U-Panel-1.0.0-windows-setup.exe",
+                    "file":  "https://michaellubega.github.io/u_panel/downloads/U-Panel-1.0.0-windows-setup.exe",
                     "label":  "Windows installer",
                     "minWindows":  "Windows 10 (64-bit)",
                     "available":  true,

@@ -7,13 +7,13 @@ Static landing page for **Android APK**, **Windows**, and a link to the **web ap
 | Page | URL |
 |------|-----|
 | **GitHub landing page** | https://michaellubega.github.io/u_panel/ |
+| **APK & Windows installer** | https://michaellubega.github.io/u_panel/downloads/ |
 | **Web app** | https://u-panel-2026.web.app/ |
 | **Web app (alt)** | https://u-panel-2026.firebaseapp.com/ |
-| **Firebase downloads** | https://u-panel-2026.web.app/download/ |
+
+**APK and `.exe` installers are hosted on GitHub Pages** (`website/downloads/`). Firebase only hosts the Flutter web app and a mirror of this landing page (buttons link to GitHub for installers).
 
 This folder is published automatically to **GitHub Pages** on every push to `main` (see `.github/workflows/github-pages.yml`).
-
-Firebase Hosting serves the Flutter web build at the **site root**. The same download page is also copied to `build/web/download/` before Firebase deploy.
 
 ## Deploy everything
 
@@ -42,7 +42,7 @@ firebase deploy --only hosting
 .\scripts\prepare-download-site.ps1 -WindowsInstaller "C:\path\to\U-Panel-Setup.exe"
 ```
 
-The script copies it to `website/downloads/` and enables the download button.
+The script copies it to `website/downloads/`, updates `releases.json` with GitHub download URLs, and enables the download buttons. Commit and push to `main` so GitHub Pages serves the new binaries.
 
 ## Local preview
 

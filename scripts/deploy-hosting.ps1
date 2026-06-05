@@ -1,7 +1,7 @@
 # Builds Flutter web + stages download page, then deploys Firebase Hosting.
 # Result:
 #   https://u-panel-2026.web.app/           -> U-Panel web app
-#   https://u-panel-2026.web.app/download/  -> APK / Windows installer page
+#   https://u-panel-2026.web.app/download/  -> landing page (installers link to GitHub)
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
@@ -21,4 +21,5 @@ if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 Write-Host ""
 Write-Host "Live URLs:"
 Write-Host "  Web app:   https://u-panel-2026.web.app/"
-Write-Host "  Downloads: https://u-panel-2026.web.app/download/"
+Write-Host "  Landing:   https://michaellubega.github.io/u_panel/"
+Write-Host "  Installers: https://michaellubega.github.io/u_panel/downloads/"

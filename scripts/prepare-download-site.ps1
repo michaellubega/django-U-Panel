@@ -28,6 +28,7 @@ if ($Version -eq "") {
 $website = Join-Path $root "website"
 $downloads = Join-Path $website "downloads"
 $assets = Join-Path $website "assets"
+$githubPagesBase = "https://michaellubega.github.io/u_panel"
 New-Item -ItemType Directory -Force -Path $downloads, $assets | Out-Null
 
 $iconSrc = Join-Path $root "kiu\playstore.png"
@@ -47,6 +48,7 @@ $release = [ordered]@{
     version    = $Version
     build      = $Build
     releasedAt = (Get-Date -Format "yyyy-MM-dd")
+    hostBase   = $githubPagesBase
     ios        = [ordered]@{
         label   = "iPhone & iPad"
         status  = "coming_soon"
@@ -54,13 +56,13 @@ $release = [ordered]@{
         message = "Native iOS app coming soon. Use the web app in Safari for now."
     }
     android    = [ordered]@{
-        file         = "downloads/U-Panel-$Version-android.apk"
+        file         = "$githubPagesBase/downloads/U-Panel-$Version-android.apk"
         label        = "Android APK"
         minAndroid   = "7.0 (Nougat)"
         available    = $false
     }
     windows    = [ordered]@{
-        file         = "downloads/U-Panel-$Version-windows-setup.exe"
+        file         = "$githubPagesBase/downloads/U-Panel-$Version-windows-setup.exe"
         label        = "Windows installer"
         minWindows   = "Windows 10 (64-bit)"
         available    = $false
@@ -74,7 +76,7 @@ $release = [ordered]@{
 }
 
 $apkSrc = Join-Path $root "build\app\outputs\flutter-apk\app-release.apk"
-$apkDst = Join-Path $website $release.android.file
+$apkDst = Join-Path $downloads "U-Panel-$Version-android.apk"
 if (Test-Path $apkSrc) {
     Copy-Item $apkSrc $apkDst -Force
     $release.android.available = $true
@@ -84,7 +86,7 @@ if (Test-Path $apkSrc) {
     Write-Warning "APK not found. Run: flutter build apk --release"
 }
 
-$winDst = Join-Path $website $release.windows.file
+$winDst = Join-Path $downloads "U-Panel-$Version-windows-setup.exe"
 $winSrc = $null
 
 function Find-WindowsInstaller {
@@ -160,12 +162,10 @@ if (Test-Path $webFlutterIndex) {
     if (Test-Path (Join-Path $website "assets")) {
         Copy-Item (Join-Path $website "assets") (Join-Path $downloadDest "assets") -Recurse -Force
     }
-    if (Test-Path (Join-Path $website "downloads")) {
-        Copy-Item (Join-Path $website "downloads") (Join-Path $downloadDest "downloads") -Recurse -Force
-    }
-    Write-Host "Staged download page: $downloadDest"
-    Write-Host "  Web app URL:  https://u-panel-2026.web.app/"
-    Write-Host "  Downloads URL: https://u-panel-2026.web.app/download/"
+    Write-Host "Staged download page: $downloadDest (installers hosted on GitHub Pages, not copied)"
+    Write-Host "  Web app URL:       https://u-panel-2026.web.app/"
+    Write-Host "  Landing page URL:  $githubPagesBase/"
+    Write-Host "  APK / Windows URL: $githubPagesBase/downloads/"
 } else {
     Write-Warning "Flutter web build not found. Run: flutter build web --release"
     Write-Warning "Then re-run this script before firebase deploy --only hosting"

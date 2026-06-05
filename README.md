@@ -4,7 +4,7 @@
 
 **University operations platform** — leadership, finance, attendance, learning, and communication in one place.
 
-Download the **Android APK**, **Windows installer**, or open the **web app** from the landing page above.
+Download the **Android APK** and **Windows installer** from GitHub (landing page above). The **web app** runs on Firebase.
 
 - **Desktop**: Fixed left sidebar, top bar (search, notifications, profile), card-based main area.
 - **Mobile**: Bottom navigation (varies by role; includes Attendance, Notices, Profile), large cards, drawer for full menu.

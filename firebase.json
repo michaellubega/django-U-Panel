@@ -20,26 +20,6 @@
         "source": "**",
         "destination": "/index.html"
       }
-    ],
-    "headers": [
-      {
-        "source": "/download/downloads/**/*.apk",
-        "headers": [
-          {
-            "key": "Content-Type",
-            "value": "application/vnd.android.package-archive"
-          }
-        ]
-      },
-      {
-        "source": "/download/downloads/**/*.exe",
-        "headers": [
-          {
-            "key": "Content-Type",
-            "value": "application/octet-stream"
-          }
-        ]
-      }
     ]
   },
   "flutter": {

@@ -1,5 +1,6 @@
 const WEB_APP_URL = 'https://u-panel-2026.web.app/';
 const WEB_APP_ALT_HOST = 'u-panel-2026.firebaseapp.com';
+const GITHUB_HOST_BASE = 'https://michaellubega.github.io/u_panel';
 
 function applyWebButton(button, noteEl, url, alternateUrl) {
   if (!button) return;
@@ -36,6 +37,7 @@ async function loadReleaseInfo() {
     if (!res.ok) throw new Error('Could not load release info');
     const text = await res.text();
     const data = JSON.parse(text.replace(/^\uFEFF/, ''));
+    if (data.hostBase) window.__releaseHostBase = data.hostBase;
 
     const versionText = `Version ${data.version} (build ${data.build})`;
     if (versionEl) versionEl.textContent = versionText;
@@ -59,17 +61,27 @@ async function loadReleaseInfo() {
   }
 }
 
+function resolveDownloadUrl(file) {
+  if (!file) return null;
+  if (/^https?:\/\//i.test(file)) return file;
+  const base = (window.__releaseHostBase || GITHUB_HOST_BASE).replace(/\/$/, '');
+  return base + '/' + file.replace(/^\//, '');
+}
+
 function configureDownload(platform, button, noteEl) {
   if (!button) return;
 
-  const available = platform?.available === true && platform?.file;
+  const href = resolveDownloadUrl(platform?.file);
+  const available = platform?.available === true && href;
   if (available) {
-    button.href = platform.file;
-    button.setAttribute('download', '');
+    button.href = href;
+    button.removeAttribute('download');
+    button.setAttribute('target', '_blank');
+    button.setAttribute('rel', 'noopener noreferrer');
     button.classList.remove('is-disabled');
     button.removeAttribute('aria-disabled');
     if (noteEl && platform.size) {
-      noteEl.textContent = `File size: ${platform.size}`;
+      noteEl.textContent = `File size: ${platform.size} · hosted on GitHub`;
     }
     return;
   }
