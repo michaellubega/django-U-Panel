@@ -28,7 +28,7 @@ if ($Version -eq "") {
 $website = Join-Path $root "website"
 $downloads = Join-Path $website "downloads"
 $assets = Join-Path $website "assets"
-$siteDomain = "https://orion13.us"
+$siteDomain = "https://kiu.orion13.us"
 New-Item -ItemType Directory -Force -Path $downloads, $assets | Out-Null
 
 $iconSrc = Join-Path $root "kiu\playstore.png"

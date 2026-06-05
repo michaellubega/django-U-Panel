@@ -1,6 +1,6 @@
 # u_panel
 
-**Landing page (downloads & web app):** https://orion13.us/
+**Landing page (downloads & web app):** https://kiu.orion13.us/
 
 **University operations platform** — leadership, finance, attendance, learning, and communication in one place.
 
