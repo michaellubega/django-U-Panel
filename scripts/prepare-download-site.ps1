@@ -156,6 +156,7 @@ if (Test-Path $webFlutterIndex) {
     if (Test-Path $downloadDest) { Remove-Item $downloadDest -Recurse -Force }
     New-Item -ItemType Directory -Force -Path $downloadDest | Out-Null
     Copy-Item (Join-Path $website "index.html") $downloadDest -Force
+    Copy-Item (Join-Path $website "privacy.html") $downloadDest -Force
     Copy-Item (Join-Path $website "styles.css") $downloadDest -Force
     Copy-Item (Join-Path $website "app.js") $downloadDest -Force
     Copy-Item (Join-Path $website "releases.json") $downloadDest -Force

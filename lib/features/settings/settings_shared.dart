@@ -4,6 +4,7 @@ import '../../core/auth/auth_repository.dart';
 import '../../core/connectivity/app_connectivity.dart';
 import '../../core/navigation/app_navigator.dart';
 import '../../core/theme/app_theme.dart';
+import 'privacy_policy_screen.dart';
 
 String settingsInitialsFrom(String? fullName, String? email) {
   final name = fullName?.trim();
@@ -105,7 +106,7 @@ Widget settingsSecurityCard({
   );
 }
 
-Widget settingsAboutCard() {
+Widget settingsAboutCard(BuildContext context) {
   return Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
@@ -119,12 +120,30 @@ Widget settingsAboutCard() {
       ),
       const SizedBox(height: 8),
       Card(
-        child: ListTile(
-          leading: Icon(Icons.school_rounded, color: AppTheme.primary),
-          title: const Text('Kampala International University'),
-          subtitle: const Text(
-            'Class notices and attendance use this app for on-campus sessions.',
-          ),
+        child: Column(
+          children: [
+            ListTile(
+              leading: Icon(Icons.school_rounded, color: AppTheme.primary),
+              title: const Text('Kampala International University'),
+              subtitle: const Text(
+                'Class notices and attendance use this app for on-campus sessions.',
+              ),
+            ),
+            const Divider(height: 1),
+            ListTile(
+              leading: Icon(Icons.privacy_tip_outlined, color: AppTheme.primary),
+              title: const Text('Privacy Policy'),
+              subtitle: const Text('How U-Panel collects and uses your data'),
+              trailing: const Icon(Icons.chevron_right_rounded),
+              onTap: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const PrivacyPolicyScreen(),
+                  ),
+                );
+              },
+            ),
+          ],
         ),
       ),
     ],

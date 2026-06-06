@@ -210,7 +210,7 @@ class _LecturerSettingsScreenState extends State<LecturerSettingsScreen> {
                   );
                 },
               ),
-              settingsAboutCard(),
+              settingsAboutCard(context),
               const SizedBox(height: 24),
             ],
           ),

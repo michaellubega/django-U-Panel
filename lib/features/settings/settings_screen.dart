@@ -689,25 +689,7 @@ class _SettingsScreenState extends State<SettingsScreen>
                 ],
               ),
             ),
-            const SizedBox(height: 16),
-            Text(
-              'About',
-              style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                    fontWeight: FontWeight.w600,
-                    color: AppTheme.textSecondary,
-                  ),
-            ),
-            const SizedBox(height: 8),
-            Card(
-              child: ListTile(
-                leading:
-                    Icon(Icons.school_rounded, color: AppTheme.primary),
-                title: const Text('Kampala International University'),
-                subtitle: const Text(
-                  'Class notices and attendance use this app for on-campus sessions.',
-                ),
-              ),
-            ),
+            settingsAboutCard(context),
             ],
           ),
         );

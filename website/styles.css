@@ -395,6 +395,94 @@ main {
   text-align: center;
 }
 
+.site-footer a {
+  color: var(--brand);
+  text-decoration: none;
+}
+
+.site-footer a:hover {
+  text-decoration: underline;
+}
+
+/* Legal / privacy pages */
+.site-header-compact {
+  padding-bottom: 1.25rem;
+}
+
+.site-header-compact .header-inner {
+  gap: 0.75rem;
+}
+
+.legal-title {
+  margin: 0.15rem 0 0;
+  font-size: clamp(1.35rem, 3vw, 1.75rem);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.legal-updated {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.legal-page {
+  padding: 1.5rem 0 2.5rem;
+}
+
+.legal-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: clamp(1.25rem, 3vw, 2rem);
+}
+
+.legal-card section {
+  margin-top: 1.75rem;
+}
+
+.legal-card h2 {
+  margin: 0 0 0.65rem;
+  font-size: 1.05rem;
+  font-weight: 650;
+  color: var(--text);
+}
+
+.legal-card p,
+.legal-card li {
+  color: var(--text);
+}
+
+.legal-card ul {
+  margin: 0.5rem 0 0;
+  padding-left: 1.25rem;
+}
+
+.legal-card li {
+  margin-bottom: 0.45rem;
+}
+
+.legal-intro {
+  margin: 0;
+  font-size: 1.02rem;
+}
+
+.legal-back {
+  margin: 2rem 0 0;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--border);
+}
+
+.legal-back a {
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.legal-back a:hover {
+  text-decoration: underline;
+}
+
 /* Entrance animations */
 .animate-in,
 .animate-card {
