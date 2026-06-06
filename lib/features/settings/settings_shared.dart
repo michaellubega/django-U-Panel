@@ -4,6 +4,7 @@ import '../../core/auth/auth_repository.dart';
 import '../../core/connectivity/app_connectivity.dart';
 import '../../core/navigation/app_navigator.dart';
 import '../../core/theme/app_theme.dart';
+import 'delete_account_screen.dart';
 import 'privacy_policy_screen.dart';
 
 String settingsInitialsFrom(String? fullName, String? email) {
@@ -139,6 +140,20 @@ Widget settingsAboutCard(BuildContext context) {
                 Navigator.of(context).push(
                   MaterialPageRoute<void>(
                     builder: (_) => const PrivacyPolicyScreen(),
+                  ),
+                );
+              },
+            ),
+            const Divider(height: 1),
+            ListTile(
+              leading: Icon(Icons.person_remove_outlined, color: AppTheme.primary),
+              title: const Text('Delete account'),
+              subtitle: const Text('Request removal of your U-Panel account'),
+              trailing: const Icon(Icons.chevron_right_rounded),
+              onTap: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const DeleteAccountScreen(),
                   ),
                 );
               },

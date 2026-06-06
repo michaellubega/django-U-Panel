@@ -483,6 +483,26 @@ main {
   text-decoration: underline;
 }
 
+.legal-steps {
+  display: grid;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.legal-steps .step {
+  padding: 1rem 1.1rem;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 0.95rem;
+}
+
+.legal-steps .step strong {
+  display: block;
+  margin-bottom: 0.35rem;
+  color: var(--text);
+}
+
 /* Entrance animations */
 .animate-in,
 .animate-card {
