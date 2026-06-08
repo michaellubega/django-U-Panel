@@ -1,49 +1,257 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <!--
-    If you are serving your web app in a path other than the root, change the
-    href value below to reflect the base path you are serving from.
-
-    The path provided below has to start and end with a slash "/" in order for
-    it to work correctly.
-
-    For more details:
-    * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base
-
-    This is a placeholder for base href that will be replaced by the value of
-    the `--base-href` argument provided to `flutter build`.
-  -->
   <base href="$FLUTTER_BASE_HREF">
 
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="description" content="A new Flutter project.">
+  <meta name="description" content="U-Panel attendance and campus tools for KIU.">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-  <!-- iOS meta tags & icons -->
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
   <meta name="apple-mobile-web-app-title" content="U-Panel">
   <link rel="apple-touch-icon" href="icons/Icon-192.png">
-
-  <!-- Favicon -->
   <link rel="icon" type="image/png" href="favicon.png"/>
 
   <title>U-Panel</title>
   <link rel="manifest" href="manifest.json">
+
+  <link rel="preload" href="icons/Icon-192.png" as="image">
+  <link rel="preload" href="flutter_bootstrap.js" as="script">
+  <link rel="preload" href="main.dart.js" as="script">
+  <link rel="preload" href="canvaskit/chromium/canvaskit.js" as="script">
+  <link rel="preload" href="canvaskit/chromium/canvaskit.wasm" as="fetch" crossorigin>
+
+  <style>
+    #upanel-splash {
+      position: fixed;
+      inset: 0;
+      z-index: 99999;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 20px;
+      background: linear-gradient(165deg, #f4f8fc 0%, #e8f0f8 100%);
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      color: #102033;
+      transition: opacity 0.2s ease, visibility 0.2s ease;
+    }
+    #upanel-splash.upanel-splash-hide {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+    .upanel-splash-logo {
+      width: 72px;
+      height: 72px;
+      border-radius: 18px;
+      object-fit: cover;
+      display: block;
+      box-shadow: 0 8px 24px rgba(1, 117, 194, 0.28);
+      background: #fff;
+    }
+    .upanel-splash-spinner {
+      width: 36px;
+      height: 36px;
+      border: 3px solid rgba(1, 117, 194, 0.18);
+      border-top-color: #0175C2;
+      border-radius: 50%;
+      animation: upanel-spin 0.75s linear infinite;
+    }
+    @keyframes upanel-spin {
+      to { transform: rotate(360deg); }
+    }
+    #upanel-splash-status {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 500;
+      color: #425466;
+    }
+    #upanel-boot-retry {
+      display: none;
+      margin-top: 8px;
+      border: 0;
+      border-radius: 12px;
+      padding: 12px 20px;
+      font-size: 15px;
+      font-weight: 600;
+      background: #0175C2;
+      color: #fff;
+      cursor: pointer;
+    }
+  </style>
 </head>
 <body>
-  <!-- Firebase JS SDK (required for Flutter web) -->
-  <script src="https://www.gstatic.com/firebasejs/11.3.1/firebase-app-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/11.3.1/firebase-firestore-compat.js"></script>
-  <script src="https://www.gstatic.com/firebasejs/11.3.1/firebase-messaging-compat.js"></script>
-  <script src="flutter_bootstrap.js" async></script>
+  <div id="upanel-splash" role="status" aria-live="polite" aria-busy="true">
+    <img
+      class="upanel-splash-logo"
+      src="icons/Icon-192.png"
+      alt="U-Panel"
+      width="72"
+      height="72"
+      onerror="this.onerror=null;this.src='favicon.png';"
+    />
+    <div class="upanel-splash-spinner" aria-hidden="true"></div>
+    <p id="upanel-splash-status">Loading U-Panel…</p>
+    <button id="upanel-boot-retry" type="button" onclick="window.upanelRetryBoot()">Retry</button>
+  </div>
+
   <script>
-    window.addEventListener('load', function () {
+    (function upanelSessionHint() {
+      try {
+        var raw = localStorage.getItem('flutter.auth_session_cache_v1');
+        window.upanelCachedSessionHint =
+          raw != null && String(raw).trim().length > 0;
+      } catch (_) {
+        window.upanelCachedSessionHint = null;
+      }
+    })();
+
+    window.upanelSetBootStatus = function (message) {
+      var el = document.getElementById('upanel-splash-status');
+      if (el && message) el.textContent = message;
+    };
+
+    window.upanelHideSplash = function () {
+      if (window.__upanelSplashHidden) return;
+      window.__upanelSplashHidden = true;
+      var splash = document.getElementById('upanel-splash');
+      if (!splash) return;
+      splash.classList.add('upanel-splash-hide');
+      splash.setAttribute('aria-busy', 'false');
+      window.setTimeout(function () {
+        if (splash.parentNode) splash.parentNode.removeChild(splash);
+      }, 220);
+    };
+
+    window.upanelShowBootRetry = function (message) {
+      window.upanelSetBootStatus(message || 'Still loading U-Panel…');
+      var retry = document.getElementById('upanel-boot-retry');
+      if (retry) retry.style.display = 'inline-block';
+    };
+
+    window.upanelClearBootTimeout = function () {
+      if (window.__upanelBootTimeoutId) {
+        window.clearTimeout(window.__upanelBootTimeoutId);
+        window.__upanelBootTimeoutId = null;
+      }
+    };
+
+    window.upanelMarkBootOk = function () {
+      window.__upanelBootOk = true;
+      window.upanelClearBootTimeout();
+      var retry = document.getElementById('upanel-boot-retry');
+      if (retry) retry.style.display = 'none';
+    };
+
+    window.upanelRetryBoot = function () {
+      var retry = document.getElementById('upanel-boot-retry');
+      if (retry) retry.style.display = 'none';
+      window.upanelSetBootStatus('Loading U-Panel…');
+      window.__upanelBootstrapStarted = false;
+      window.__upanelBootRetries = 0;
+      window.upanelBootFlutter();
+      window.upanelScheduleBootTimeout();
+    };
+
+    window.addEventListener('flutter-first-frame', function () {
+      window.upanelMarkBootOk();
+      window.upanelHideSplash();
       if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.register('firebase-messaging-sw.js');
+        navigator.serviceWorker
+          .register('firebase-messaging-sw.js')
+          .catch(function () {});
       }
     });
+
+    window.upanelLoadScriptOnce = function (id, src) {
+      return new Promise(function (resolve, reject) {
+        var existing = document.getElementById(id);
+        if (existing) {
+          if (existing.getAttribute('data-upanel-loaded') === '1') {
+            resolve();
+            return;
+          }
+          existing.addEventListener('load', function () { resolve(); });
+          existing.addEventListener('error', reject);
+          return;
+        }
+        var s = document.createElement('script');
+        s.id = id;
+        s.src = src;
+        s.defer = true;
+        s.onload = function () {
+          s.setAttribute('data-upanel-loaded', '1');
+          resolve();
+        };
+        s.onerror = reject;
+        document.head.appendChild(s);
+      });
+    };
+
+    window.upanelEnsureFirebaseMessagingScript = function () {
+      if (typeof firebase !== 'undefined' && firebase.messaging) {
+        return Promise.resolve();
+      }
+      return window
+        .upanelLoadScriptOnce(
+          'upanel-firebase-app-compat',
+          'https://www.gstatic.com/firebasejs/11.3.1/firebase-app-compat.js'
+        )
+        .then(function () {
+          if (typeof firebase !== 'undefined' && firebase.messaging) {
+            return;
+          }
+          return window.upanelLoadScriptOnce(
+            'upanel-fcm-compat',
+            'https://www.gstatic.com/firebasejs/11.3.1/firebase-messaging-compat.js'
+          );
+        });
+    };
+
+    window.upanelBootFlutter = function () {
+      if (window.__upanelBootstrapStarted) return;
+      window.__upanelBootstrapStarted = true;
+      window.__upanelBootRetries = window.__upanelBootRetries || 0;
+
+      var s = document.createElement('script');
+      s.src = 'flutter_bootstrap.js';
+      s.async = true;
+      s.onerror = function () {
+        window.__upanelBootRetries += 1;
+        window.__upanelBootstrapStarted = false;
+        if (window.__upanelBootRetries < 4) {
+          window.upanelSetBootStatus('Loading U-Panel…');
+          window.setTimeout(window.upanelBootFlutter, 600 * window.__upanelBootRetries);
+          return;
+        }
+        window.upanelShowBootRetry(
+          'Connection is slow. The app is still trying — tap Retry if needed.'
+        );
+      };
+      document.body.appendChild(s);
+    };
+
+    window.upanelScheduleBootTimeout = function () {
+      window.upanelClearBootTimeout();
+      window.__upanelBootTimeoutId = window.setTimeout(function () {
+        if (window.__upanelBootOk || window.__upanelSplashHidden) return;
+        if (window.__upanelNativeGateShown) return;
+        window.upanelShowBootRetry(
+          'Still loading U-Panel… Tap Retry if this takes too long.'
+        );
+      }, 90000);
+    };
+
+    (function upanelEarlyBoot() {
+      window.upanelBootFlutter();
+      window.upanelScheduleBootTimeout();
+    })();
   </script>
+
+  <script async src="upanel_brand.js"></script>
+  <script async src="android_web_gate.js"></script>
 </body>
 </html>

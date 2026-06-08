@@ -25,6 +25,9 @@ class NoticeRecord {
     this.targetListTitle,
     this.targetStudentId,
     this.sessionCode,
+    this.sessionId,
+    this.targetLecturerUid,
+    this.scheduledSlotAt,
     this.kind,
     this.expiresAt,
   });
@@ -42,6 +45,11 @@ class NoticeRecord {
   /// When [audience] is [NoticeAudienceKind.student], roster student Firestore id.
   final String? targetStudentId;
   final String? sessionCode;
+  final String? sessionId;
+  /// When [audience] targets a lecturer (`lecturerTakeAttendance`).
+  final String? targetLecturerUid;
+  /// Scheduled lesson slot this notice refers to (campus local time).
+  final DateTime? scheduledSlotAt;
   final String? kind;
   final DateTime? expiresAt;
 
@@ -77,6 +85,9 @@ class NoticeRecord {
       targetListTitle: (data['targetListTitle'] as String?)?.trim(),
       targetStudentId: (data['targetStudentId'] as String?)?.trim(),
       sessionCode: (data['sessionCode'] as String?)?.trim(),
+      sessionId: (data['sessionId'] as String?)?.trim(),
+      targetLecturerUid: (data['targetLecturerUid'] as String?)?.trim(),
+      scheduledSlotAt: (data['scheduledSlotAt'] as Timestamp?)?.toDate(),
       kind: (data['kind'] as String?)?.trim(),
       expiresAt: expiresAt,
     );
@@ -94,32 +105,93 @@ String _audienceToField(NoticeAudienceKind k) {
   }
 }
 
-/// Whether [n] should appear in the shell / notices list for this user.
-bool noticeVisibleToUser(
+/// When a notice becomes visible to recipients and eligible for push delivery.
+DateTime noticeEffectiveAt(NoticeRecord n) => n.scheduledFor ?? n.createdAt;
+
+/// True once [NoticeRecord.scheduledFor] has passed (or was never set).
+bool noticeIsLive(NoticeRecord n, [DateTime? now]) {
+  final at = now ?? DateTime.now();
+  final sched = n.scheduledFor;
+  return sched == null || !sched.isAfter(at);
+}
+
+/// Admins and list-owning lecturers may preview upcoming scheduled notices.
+bool noticeAllowsPendingPreview({
+  required NoticeRecord n,
+  required bool admin,
+  bool lecturer = false,
+  Set<String> lecturerListIds = const {},
+}) {
+  if (admin) {
+    return n.audience == NoticeAudienceKind.allAppUsers &&
+        noticeNotifiesAdmin(n);
+  }
+  if (lecturer && n.audience == NoticeAudienceKind.classList) {
+    final listId = n.targetListId?.trim() ?? '';
+    return listId.isNotEmpty && lecturerListIds.contains(listId);
+  }
+  return false;
+}
+
+/// Session-code broadcasts are suppressed for remote-learning sessions.
+bool isRemoteLearningSessionCodeNotice(NoticeRecord n) {
+  if ((n.kind ?? '').toLowerCase() != 'sessioncode') return false;
+  final sessionId = n.sessionId?.trim() ?? '';
+  if (sessionId.isNotEmpty) {
+    final sess = AttendanceStore.sessionById(sessionId);
+    if (sess != null) return sess.remoteLearning;
+  }
+  final code = n.sessionCode?.trim() ?? '';
+  if (code.isEmpty) return false;
+  final normalized = normalizeSessionCodeInput(code);
+  for (final s in AttendanceStore.sessions) {
+    if (normalizeSessionCodeInput(s.sessionCode) == normalized) {
+      return s.remoteLearning;
+    }
+  }
+  return false;
+}
+
+/// QA / admin push + badge eligibility: broadcast notices only (not per-list).
+bool noticeNotifiesAdmin(NoticeRecord n) {
+  if (n.audience != NoticeAudienceKind.allAppUsers) return false;
+  final k = (n.kind ?? '').toLowerCase();
+  if (k == 'sessioncode' || k == 'missedsession') return false;
+  if (k == 'lecturertakeattendance') return false;
+  return true;
+}
+
+/// Whether [n] matches this user's audience (ignoring schedule).
+bool noticeAudienceMatchesUser(
   NoticeRecord n, {
   required bool admin,
   bool lecturer = false,
   Set<String> lecturerListIds = const {},
+  String? lecturerFirebaseUid,
   required String? studentId,
   required Set<String> signedListIds,
 }) {
+  final k = (n.kind ?? '').toLowerCase();
   if (admin) {
-    // Session / absence notices are for students only.
-    final k = (n.kind ?? '').toLowerCase();
-    if (k == 'sessioncode' || k == 'missedsession') return false;
-    return true;
+    return noticeNotifiesAdmin(n);
   }
   if (lecturer) {
-    final k = (n.kind ?? '').toLowerCase();
     final listId = n.targetListId?.trim() ?? '';
+    if (k == 'lecturertakeattendance') {
+      final target = n.targetLecturerUid?.trim() ?? '';
+      final uid = lecturerFirebaseUid?.trim() ?? '';
+      return target.isNotEmpty && uid.isNotEmpty && target == uid;
+    }
     // Session codes and missed-lesson alerts are for students only.
     if (k == 'missedsession' || k == 'sessioncode') return false;
+    if (k == 'qastartattendance') return false;
     if (n.audience == NoticeAudienceKind.allAppUsers) return true;
     if (n.audience == NoticeAudienceKind.classList) {
       return listId.isNotEmpty && lecturerListIds.contains(listId);
     }
     return false;
   }
+  if (k == 'lecturertakeattendance' || k == 'qastartattendance') return false;
   if (n.audience == NoticeAudienceKind.allAppUsers) return true;
   if (n.audience == NoticeAudienceKind.student) {
     final tid = n.targetStudentId?.trim() ?? '';
@@ -127,10 +199,41 @@ bool noticeVisibleToUser(
     final sid = studentId?.trim() ?? '';
     return sid.isNotEmpty && tid == sid;
   }
+  if (isRemoteLearningSessionCodeNotice(n)) return false;
   final listId = n.targetListId;
   if (listId == null || listId.isEmpty) return false;
   if (studentId == null || studentId.isEmpty) return false;
   return signedListIds.contains(listId);
+}
+
+/// Whether [n] should appear in the shell / notices list for this user.
+bool noticeVisibleToUser(
+  NoticeRecord n, {
+  required bool admin,
+  bool lecturer = false,
+  Set<String> lecturerListIds = const {},
+  String? lecturerFirebaseUid,
+  required String? studentId,
+  required Set<String> signedListIds,
+}) {
+  if (!noticeAudienceMatchesUser(
+    n,
+    admin: admin,
+    lecturer: lecturer,
+    lecturerListIds: lecturerListIds,
+    lecturerFirebaseUid: lecturerFirebaseUid,
+    studentId: studentId,
+    signedListIds: signedListIds,
+  )) {
+    return false;
+  }
+  if (noticeIsLive(n)) return true;
+  return noticeAllowsPendingPreview(
+    n: n,
+    admin: admin,
+    lecturer: lecturer,
+    lecturerListIds: lecturerListIds,
+  );
 }
 
 /// Loads and publishes notices in `FirestoreCollections.notices`.
@@ -177,6 +280,7 @@ class NoticesRepository {
     required bool admin,
     bool lecturer = false,
     Set<String> lecturerListIds = const {},
+    String? lecturerFirebaseUid,
     required String? studentId,
     required Set<String> signedListIds,
     int limit = 100,
@@ -190,12 +294,14 @@ class NoticesRepository {
         admin: admin,
         lecturer: lecturer,
         lecturerListIds: lecturerListIds,
+        lecturerFirebaseUid: lecturerFirebaseUid,
         studentId: studentId,
         signedListIds: signedListIds,
       )) {
         continue;
       }
-      if (seenAt == null || n.createdAt.isAfter(seenAt)) {
+      if (!noticeIsLive(n)) continue;
+      if (seenAt == null || noticeEffectiveAt(n).isAfter(seenAt)) {
         c++;
       }
     }
@@ -230,6 +336,9 @@ class NoticesRepository {
     }
 
     final now = DateTime.now();
+    if (draft.scheduledFor != null && !draft.scheduledFor!.isAfter(now)) {
+      return 'Scheduled time must be in the future.';
+    }
     final map = <String, dynamic>{
       'title': draft.title.trim(),
       'body': draft.body.trim(),
@@ -268,6 +377,9 @@ class NoticesRepository {
     required AttendanceSession session,
     required String createdBy,
   }) async {
+    if (session.remoteLearning) {
+      return null;
+    }
     final code = normalizeSessionCodeInput(session.sessionCode);
     final map = <String, dynamic>{
       'title': list.displayTitle,

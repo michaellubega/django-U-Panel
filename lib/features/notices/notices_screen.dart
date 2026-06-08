@@ -9,9 +9,13 @@ import '../attendance/data/attendance_repository.dart';
 import '../attendance/models/attendance_models.dart';
 import 'create_notice_screen.dart';
 import 'data/notices_repository.dart';
+import '../../core/navigation/app_section.dart';
+import '../../core/navigation/screen_refresh.dart';
 
 class NoticesScreen extends StatefulWidget {
-  const NoticesScreen({super.key});
+  const NoticesScreen({super.key, this.shellSection = AppSection.notices});
+
+  final AppSection shellSection;
 
   @override
   State<NoticesScreen> createState() => _NoticesScreenState();
@@ -83,11 +87,15 @@ class _NoticesScreenState extends State<NoticesScreen>
       if (!mounted) return;
       final visible = _visibleNoticesFor(list);
       if (visible.isNotEmpty) {
-        var newest = visible.first.createdAt;
+        DateTime? newest;
         for (final n in visible) {
-          if (n.createdAt.isAfter(newest)) newest = n.createdAt;
+          if (!noticeIsLive(n)) continue;
+          final t = noticeEffectiveAt(n);
+          if (newest == null || t.isAfter(newest)) newest = t;
         }
-        await NoticesRepository.instance.markSeenAt(_userSeenKey(), newest);
+        if (newest != null) {
+          await NoticesRepository.instance.markSeenAt(_userSeenKey(), newest);
+        }
       }
       setState(() {
         _notices = list;
@@ -119,6 +127,7 @@ class _NoticesScreenState extends State<NoticesScreen>
       admin: _isAdminUser(),
       lecturer: _isLecturerUser(),
       lecturerListIds: _lecturerListIds(),
+      lecturerFirebaseUid: AuthRepository.instance.currentFirebaseUid,
       studentId: student?.id,
       signedListIds: signedListIds,
     );
@@ -267,7 +276,10 @@ class _NoticesScreenState extends State<NoticesScreen>
         final admin = _isAdminUser();
         final canCreate = _canCreateNotice();
         final visible = _visibleNotices();
-        return Column(
+        return ScreenRefreshRegistrar(
+          section: widget.shellSection,
+          onRefresh: _refreshRemoteData,
+          child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             if (narrow)
@@ -357,8 +369,11 @@ class _NoticesScreenState extends State<NoticesScreen>
               ),
             const SizedBox(height: 24),
             Expanded(
-              child: SingleChildScrollView(
-                child: Column(
+              child: PullToRefreshScrollable(
+                onRefresh: _refreshRemoteData,
+                child: SingleChildScrollView(
+                  physics: const AlwaysScrollableScrollPhysics(),
+                  child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Card(
@@ -416,7 +431,8 @@ class _NoticesScreenState extends State<NoticesScreen>
                           body: visible[i].body,
                           author: visible[i].author,
                           time: _formatNoticeTime(context, visible[i]),
-                          scheduled: visible[i].scheduledFor != null,
+                          scheduled: visible[i].scheduledFor != null &&
+                              visible[i].scheduledFor!.isAfter(DateTime.now()),
                           audienceLine:
                               visible[i].audience == NoticeAudienceKind.allAppUsers
                                   ? 'All app users'
@@ -474,7 +490,9 @@ class _NoticesScreenState extends State<NoticesScreen>
                 ),
               ),
             ),
+            ),
           ],
+        ),
         );
       },
     );

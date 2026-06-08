@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../core/connectivity/app_connectivity.dart';
+import '../../core/navigation/screen_refresh.dart';
 import '../../core/theme/app_theme.dart';
 import 'data/attendance_offline_sync.dart';
 import 'data/attendance_repository.dart';
@@ -10,10 +11,7 @@ import 'data/pending_check_in_queue.dart';
 import 'data/pending_retention.dart';
 import 'data/pending_session_code_queue.dart';
 import 'data/pending_session_create_queue.dart';
-import 'data/pending_session_code_sync.dart';
 import 'models/attendance_models.dart';
-import 'attendance_top_feedback.dart';
-
 class PendingSessionsScreen extends StatefulWidget {
   const PendingSessionsScreen({super.key});
 
@@ -33,10 +31,10 @@ class _PendingSessionsScreenState extends State<PendingSessionsScreen> {
   void initState() {
     super.initState();
     AppConnectivity.instance.addListener(_onConnectivityChanged);
-    _reload();
+    unawaited(_reload(waitForSync: false));
     _pollTimer = Timer.periodic(const Duration(seconds: 3), (_) {
       if (mounted && !_loading) {
-        unawaited(_pollQueuesFromDisk());
+        unawaited(_loadQueuesFromDisk(clearLoading: false));
       }
     });
   }
@@ -48,11 +46,14 @@ class _PendingSessionsScreenState extends State<PendingSessionsScreen> {
     super.dispose();
   }
 
-  /// Light refresh from disk so new rows appear right after queueing elsewhere.
-  Future<void> _pollQueuesFromDisk() async {
-    if (!mounted || _loading) return;
+  /// Local queues only — no network drain (instant offline open).
+  Future<void> _loadQueuesFromDisk({required bool clearLoading}) async {
+    if (clearLoading && mounted) {
+      setState(() => _loading = true);
+    }
     try {
       final all = await PendingSessionCodeQueue.loadAll();
+      final lastSync = await PendingSessionCodeQueue.loadLastSyncResult();
       final checkIns = await PendingCheckInQueue.loadAll();
       final creates = await PendingSessionCreateQueue.loadAll();
       all.sort((a, b) => b.capturedAt.compareTo(a.capturedAt));
@@ -62,39 +63,41 @@ class _PendingSessionsScreenState extends State<PendingSessionsScreen> {
         _items = all;
         _checkIns = checkIns;
         _sessionCreates = creates;
+        _lastSync = lastSync;
+        if (clearLoading) _loading = false;
       });
-    } catch (_) {}
+    } catch (_) {
+      if (mounted && clearLoading) {
+        setState(() => _loading = false);
+      }
+    }
   }
 
-  void _onConnectivityChanged() {
-    if (!mounted) return;
-    // Refresh immediately so status labels and retry behavior reflect connectivity.
-    _reload();
-  }
-
-  Future<void> _reload() async {
-    setState(() => _loading = true);
+  /// Upload / purge after UI is visible — must not block first paint.
+  Future<void> _runBackgroundSync() async {
     try {
       if (AppConnectivity.instance.isOnline) {
         await AttendanceOfflineSync.drainAllInOrder();
       } else {
         await AttendanceOfflineSync.purgeExpiredPendingOnly();
       }
-      final all = await PendingSessionCodeQueue.loadAll();
-      final lastSync = await PendingSessionCodeQueue.loadLastSyncResult();
-      final checkIns = await PendingCheckInQueue.loadAll();
-      final creates = await PendingSessionCreateQueue.loadAll();
-      if (!mounted) return;
-      all.sort((a, b) => b.capturedAt.compareTo(a.capturedAt));
-      checkIns.sort((a, b) => b.capturedAt.compareTo(a.capturedAt));
-      setState(() {
-        _items = all;
-        _checkIns = checkIns;
-        _sessionCreates = creates;
-        _lastSync = lastSync;
-      });
-    } finally {
-      if (mounted) setState(() => _loading = false);
+      await _loadQueuesFromDisk(clearLoading: false);
+    } catch (_) {}
+  }
+
+  void _onConnectivityChanged() {
+    if (!mounted) return;
+    unawaited(_loadQueuesFromDisk(clearLoading: false));
+    unawaited(_runBackgroundSync());
+  }
+
+  /// [waitForSync] true on pull-to-refresh; false on first open (local-first).
+  Future<void> _reload({bool waitForSync = true}) async {
+    await _loadQueuesFromDisk(clearLoading: true);
+    if (waitForSync) {
+      await _runBackgroundSync();
+    } else {
+      unawaited(_runBackgroundSync());
     }
   }
 
@@ -127,9 +130,9 @@ class _PendingSessionsScreenState extends State<PendingSessionsScreen> {
       case PendingSessionCodeStatus.needsRegistration:
         return 'Needs registration';
       case PendingSessionCodeStatus.invalidOrExpired:
-        return 'Invalid/expired';
+        return 'Session mismatch';
       case PendingSessionCodeStatus.deviceBlocked:
-        return 'Device blocked';
+        return 'Another student';
     }
   }
 
@@ -435,12 +438,19 @@ class _PendingSessionsScreenState extends State<PendingSessionsScreen> {
     if (!mounted) return;
     var student = AttendanceStore.findStudentByReg(e.registrationNumber);
     if (student == null) {
-      final added = await showDialog<StudentRecord>(
-        context: context,
-        builder: (ctx) => _QuickJoinDialog(registrationNumber: e.registrationNumber),
-      );
-      if (!mounted || added == null) return;
-      student = added;
+      student = await AttendanceRepository.instance
+          .registerStudentFromAuthProfile(e.registrationNumber);
+      if (!mounted) return;
+      if (student == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Could not load your registered name. Sign in again and retry.',
+            ),
+          ),
+        );
+        return;
+      }
     }
     if (e.listId == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -467,12 +477,7 @@ class _PendingSessionsScreenState extends State<PendingSessionsScreen> {
       );
     }
     await AttendanceOfflineSync.drainAllInOrder();
-    await _reload();
-    if (!mounted) return;
-    showAttendanceTopSuccessBanner(
-      context,
-      'Registration saved. Pending session retried.',
-    );
+    await _reload(waitForSync: false);
   }
 
   Future<String?> _pickCourse(BuildContext context, AttendanceList list) async {
@@ -523,10 +528,7 @@ class _PendingSessionsScreenState extends State<PendingSessionsScreen> {
       appBar: AppBar(
         title: const Text('Offline pending sessions'),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh_rounded),
-            onPressed: _reload,
-          ),
+          RefreshIconButton(onRefresh: () => _reload(waitForSync: true)),
         ],
       ),
       body: _loading
@@ -557,8 +559,9 @@ class _PendingSessionsScreenState extends State<PendingSessionsScreen> {
                   ),
                 )
               : RefreshIndicator(
-                  onRefresh: _reload,
+                  onRefresh: () => _reload(waitForSync: true),
                   child: ListView(
+                    physics: kRefreshScrollPhysics,
                     padding: const EdgeInsets.all(16),
                     children: _pendingListChildren(context, online),
                   ),
@@ -566,62 +569,3 @@ class _PendingSessionsScreenState extends State<PendingSessionsScreen> {
     );
   }
 }
-
-class _QuickJoinDialog extends StatefulWidget {
-  const _QuickJoinDialog({required this.registrationNumber});
-  final String registrationNumber;
-
-  @override
-  State<_QuickJoinDialog> createState() => _QuickJoinDialogState();
-}
-
-class _QuickJoinDialogState extends State<_QuickJoinDialog> {
-  final _nameC = TextEditingController();
-  bool _busy = false;
-
-  @override
-  void dispose() {
-    _nameC.dispose();
-    super.dispose();
-  }
-
-  Future<void> _submit() async {
-    final name = _nameC.text.trim();
-    if (name.isEmpty) return;
-    setState(() => _busy = true);
-    try {
-      final student = await AttendanceRepository.instance.registerStudent(
-        name,
-        widget.registrationNumber,
-        deriveStudentInitialsFromName(name),
-      );
-      if (!mounted) return;
-      Navigator.of(context).pop(student);
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text('Register on roster'),
-      content: TextField(
-        controller: _nameC,
-        decoration: const InputDecoration(labelText: 'Full name'),
-        textCapitalization: TextCapitalization.words,
-      ),
-      actions: [
-        TextButton(
-          onPressed: _busy ? null : () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
-        ),
-        FilledButton(
-          onPressed: _busy ? null : _submit,
-          child: const Text('Save'),
-        ),
-      ],
-    );
-  }
-}
-

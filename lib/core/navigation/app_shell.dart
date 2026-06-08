@@ -8,11 +8,13 @@ import '../constants/app_constants.dart';
 import '../auth/auth_repository.dart';
 import '../auth/user_role.dart';
 import '../../features/dashboard/dashboard_screen.dart';
+import '../../features/dashboard/kiu_admin_dashboard_screen.dart';
 import '../../features/dashboard/lecturer_dashboard_screen.dart';
 import '../../features/attendance/attendance_list_hierarchy.dart';
 import '../../features/attendance/attendance_screen.dart';
 import '../../features/attendance/data/attendance_offline_sync.dart';
 import '../../features/attendance/data/attendance_repository.dart';
+import '../../features/attendance/data/attendance_remote_list_watch.dart';
 import '../../features/attendance/models/attendance_models.dart';
 import '../../features/notices/notices_screen.dart';
 import '../../features/notices/data/notices_repository.dart';
@@ -21,46 +23,12 @@ import '../../features/settings/settings_screen.dart';
 import '../../features/settings/lecturer_settings_screen.dart';
 import '../../features/settings/staff_admin_hub_screen.dart';
 import '../push/push_controller.dart';
-
-enum AppSection {
-  dashboard,
-  attendance,
-  notices,
-  reports,
-  settings,
-}
-
-extension AppSectionX on AppSection {
-  String get label {
-    switch (this) {
-      case AppSection.dashboard:
-        return 'Dashboard';
-      case AppSection.attendance:
-        return 'Attendance';
-      case AppSection.notices:
-        return 'Notices';
-      case AppSection.reports:
-        return 'Reports';
-      case AppSection.settings:
-        return 'Settings';
-    }
-  }
-
-  IconData get icon {
-    switch (this) {
-      case AppSection.dashboard:
-        return Icons.dashboard_rounded;
-      case AppSection.attendance:
-        return Icons.people_alt_rounded;
-      case AppSection.notices:
-        return Icons.campaign_rounded;
-      case AppSection.reports:
-        return Icons.analytics_rounded;
-      case AppSection.settings:
-        return Icons.settings_rounded;
-    }
-  }
-}
+import '../location/student_location_priming.dart';
+import '../offline/pending_offline_coordinator.dart';
+import '../notifications/notification_maintenance_coordinator.dart';
+import '../platform/web_fast_boot.dart';
+import 'app_section.dart';
+import 'screen_refresh.dart';
 
 /// Desktop: fixed left sidebar + top bar + main content.
 /// Mobile: bottom nav + top bar + main content.
@@ -71,20 +39,20 @@ class AppShell extends StatefulWidget {
   State<AppShell> createState() => _AppShellState();
 }
 
-class _AppShellState extends State<AppShell> {
+class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   late final ValueNotifier<AppSection> _currentSection;
+  final _refreshHost = ScreenRefreshHost();
   final _scaffoldKey = GlobalKey<ScaffoldState>();
   Timer? _noticesCounterTimer;
   int _unseenNotices = 0;
   bool _wasOnline = true;
   UserRole? _sectionCacheRole;
   final Map<AppSection, Widget> _sectionWidgets = {};
-  UserRole? _cachedTabStackRole;
-  List<Widget>? _cachedTabStackChildren;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     final auth = AuthRepository.instance;
     _currentSection = ValueNotifier(
       auth.roleCheckDone
@@ -98,8 +66,15 @@ class _AppShellState extends State<AppShell> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _applyDefaultSectionForRole();
       unawaited(_bootstrapAttendanceStore());
-      unawaited(PushController.instance.syncTopicsForCurrentUser());
-      _refreshUnseenNotices();
+      WebFastBoot.afterFirstFrame(() {
+        unawaited(PushController.instance.initialize());
+        unawaited(PushController.instance.syncTopicsForCurrentUser());
+        unawaited(AttendanceRemoteListWatch.instance.start());
+        unawaited(StudentLocationPriming.instance.primeOnAppOpen());
+        PendingOfflineCoordinator.instance.start();
+        unawaited(NotificationMaintenanceCoordinator.onSignedIn());
+        unawaited(_refreshUnseenNotices());
+      });
     });
     _noticesCounterTimer = Timer.periodic(
         const Duration(seconds: 30), (_) => _refreshUnseenNotices());
@@ -107,43 +82,87 @@ class _AppShellState extends State<AppShell> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    PendingOfflineCoordinator.instance.stop();
     _currentSection.dispose();
+    _refreshHost.dispose();
     AuthRepository.instance.removeListener(_onAuthRepo);
     AppConnectivity.instance.removeListener(_onConnectivityChanged);
     _noticesCounterTimer?.cancel();
     super.dispose();
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    PendingOfflineCoordinator.instance.onLifecycleState(state);
+    if (state == AppLifecycleState.resumed) {
+      unawaited(AppConnectivity.instance.probeNow());
+      unawaited(_bootstrapAttendanceStore());
+      unawaited(StudentLocationPriming.instance.primeOnAppOpen());
+    }
+  }
+
   Future<void> _warmAttendanceForOffline() async {
-    await AttendanceRepository.instance.loadAll(
-      scopeToLecturerUid: AttendanceRepository.currentLecturerLoadScopeUid(),
+    final auth = AuthRepository.instance;
+    for (var i = 0; i < 12 && !auth.roleCheckDone; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+    if (!auth.roleCheckDone) return;
+    if (auth.resolvedRole == UserRole.student) {
+      await AttendanceRepository.instance.loadStudentAttendanceForProfile(
+        force: false,
+      );
+      return;
+    }
+    await AttendanceRepository.instance.loadAttendanceListsFirst();
+    unawaited(
+      AttendanceRepository.instance.loadAll(
+        scopeToLecturerUid: AttendanceRepository.currentLecturerLoadScopeUid(),
+      ),
     );
   }
 
   Future<void> _bootstrapAttendanceStore() async {
-    if (AppConnectivity.instance.isOnline) {
-      await AttendanceOfflineSync.drainAllInOrder();
-    } else {
-      await _warmAttendanceForOffline();
-    }
-    if (mounted) _precacheSectionWidgets();
+    if (mounted) _precacheCurrentSectionWidget();
+    try {
+      await AttendanceRepository.instance.warmFromLocalSnapshot();
+      final auth = AuthRepository.instance;
+      final student = auth.roleCheckDone
+          ? auth.resolvedRole == UserRole.student
+          : auth.currentRegistrationNumber?.trim().isNotEmpty == true;
+      if (student) {
+        unawaited(
+          AttendanceRepository.instance.loadStudentAttendanceForProfile(
+            force: false,
+          ),
+        );
+      } else if (AppConnectivity.instance.isOnline) {
+        unawaited(AttendanceRepository.instance.loadAttendanceListsFirst());
+        unawaited(_backgroundSyncAfterWarm());
+      } else if (!AttendanceRepository.instance.hasCachedStore) {
+        await _warmAttendanceForOffline();
+      }
+    } catch (_) {}
   }
 
-  /// Build every tab once so the first switch does not pay [initState] cost.
-  void _precacheSectionWidgets() {
+  Future<void> _backgroundSyncAfterWarm() async {
+    try {
+      unawaited(AttendanceOfflineSync.drainAllInOrder());
+      await AttendanceRepository.instance.bootstrapLoadIfNeeded();
+    } catch (_) {}
+  }
+
+  /// Build only the active tab so login does not mount every screen at once.
+  void _precacheCurrentSectionWidget() {
     final role = _resolvedRole();
     _ensureSectionCacheForRole(role);
-    for (final s in _navSectionsForRole(role)) {
-      _sectionWidget(s, role);
-    }
-    _cachedTabStackChildren = null;
-    _cachedTabStackRole = null;
-    _tabStackChildren();
+    _sectionWidget(_currentSection.value, role);
   }
 
   /// Upload pending offline work first, then one [loadAll] inside the drain pipeline.
   Future<void> _onConnectivityRestored() async {
-    await AttendanceOfflineSync.drainAllInOrder();
+    await AttendanceOfflineSync.drainSessionValidationFirst();
+    unawaited(AttendanceOfflineSync.drainAllInOrder());
   }
 
   void _onConnectivityChanged() {
@@ -151,6 +170,12 @@ class _AppShellState extends State<AppShell> {
     final nowOnline = AppConnectivity.instance.isOnline;
     if (nowOnline && !_wasOnline) {
       unawaited(_onConnectivityRestored());
+    } else if (!nowOnline && _wasOnline) {
+      unawaited(
+        AttendanceRepository.instance.loadStudentAttendanceForProfile(
+          force: false,
+        ),
+      );
     }
     _wasOnline = nowOnline;
   }
@@ -159,13 +184,12 @@ class _AppShellState extends State<AppShell> {
     return AuthRepository.instance.resolvedRole;
   }
 
-  bool get _rolesPending => !AuthRepository.instance.roleCheckDone;
-
   AppSection _defaultSectionForRole(UserRole role) {
     switch (role) {
       case UserRole.admin:
       case UserRole.qaStaff:
       case UserRole.lecturer:
+      case UserRole.kiuAdmin:
         return AppSection.dashboard;
       case UserRole.student:
         return AppSection.attendance;
@@ -192,8 +216,6 @@ class _AppShellState extends State<AppShell> {
     if (roleChanged) {
       _sectionWidgets.clear();
       _sectionCacheRole = role;
-      _cachedTabStackChildren = null;
-      _cachedTabStackRole = null;
     }
     if (!allowed.contains(_currentSection.value)) {
       _currentSection.value = _defaultSectionForRole(role);
@@ -203,36 +225,20 @@ class _AppShellState extends State<AppShell> {
     }
     if (roleChanged) {
       setState(() {});
-      _precacheSectionWidgets();
+      _precacheCurrentSectionWidget();
     }
     _refreshUnseenNotices();
     unawaited(PushController.instance.syncTopicsForCurrentUser());
+    unawaited(AttendanceRemoteListWatch.instance.start());
+    if (roleChanged) {
+      unawaited(StudentLocationPriming.instance.primeOnAppOpen());
+    }
   }
 
   void _ensureSectionCacheForRole(UserRole role) {
     if (_sectionCacheRole == role) return;
     _sectionWidgets.clear();
     _sectionCacheRole = role;
-    _cachedTabStackChildren = null;
-    _cachedTabStackRole = null;
-  }
-
-  List<Widget> _tabStackChildren() {
-    final role = _resolvedRole();
-    _ensureSectionCacheForRole(role);
-    if (_cachedTabStackRole == role && _cachedTabStackChildren != null) {
-      return _cachedTabStackChildren!;
-    }
-    final sections = _navSectionsForRole(role);
-    _cachedTabStackChildren = [
-      for (final s in sections)
-        RepaintBoundary(
-          key: ValueKey('tab_${role.name}_${s.name}'),
-          child: _sectionWidget(s, role),
-        ),
-    ];
-    _cachedTabStackRole = role;
-    return _cachedTabStackChildren!;
   }
 
   String _noticeUserKey() {
@@ -268,18 +274,20 @@ class _AppShellState extends State<AppShell> {
           admin: admin,
           lecturer: lecturer,
           lecturerListIds: lecturerListIds,
+          lecturerFirebaseUid: AuthRepository.instance.currentFirebaseUid,
           studentId: student?.id,
           signedListIds: signedListIds,
         );
         if (!visible) continue;
+        if (!noticeIsLive(n)) continue;
         if (newestVisible == null ||
-            n.createdAt.isAfter(newestVisible.createdAt)) {
+            noticeEffectiveAt(n).isAfter(noticeEffectiveAt(newestVisible))) {
           newestVisible = n;
         }
       }
       if (newestVisible != null) {
         await NoticesRepository.instance
-            .markSeenAt(_noticeUserKey(), newestVisible.createdAt);
+            .markSeenAt(_noticeUserKey(), noticeEffectiveAt(newestVisible));
       }
       if (mounted) {
         setState(() => _unseenNotices = 0);
@@ -309,6 +317,7 @@ class _AppShellState extends State<AppShell> {
         admin: admin,
         lecturer: lecturer,
         lecturerListIds: lecturerListIds,
+        lecturerFirebaseUid: AuthRepository.instance.currentFirebaseUid,
         studentId: student?.id,
         signedListIds: signedListIds,
       );
@@ -391,6 +400,7 @@ class _AppShellState extends State<AppShell> {
           AppSection.settings,
         ];
       case UserRole.lecturer:
+      case UserRole.kiuAdmin:
         return const [
           AppSection.dashboard,
           AppSection.attendance,
@@ -419,6 +429,7 @@ class _AppShellState extends State<AppShell> {
           AppSection.settings,
         ];
       case UserRole.lecturer:
+      case UserRole.kiuAdmin:
         return const [
           AppSection.dashboard,
           AppSection.attendance,
@@ -437,7 +448,10 @@ class _AppShellState extends State<AppShell> {
   String _mobileLabel(AppSection s) {
     switch (s) {
       case AppSection.dashboard:
-        return _resolvedRole() == UserRole.lecturer ? 'Home' : 'Dashboard';
+        return _resolvedRole() == UserRole.lecturer ||
+                _resolvedRole() == UserRole.kiuAdmin
+            ? 'Home'
+            : 'Dashboard';
       case AppSection.settings:
         return 'Profile';
       default:
@@ -456,16 +470,18 @@ class _AppShellState extends State<AppShell> {
         switch (role) {
           case UserRole.admin:
           case UserRole.qaStaff:
-            return const DashboardScreen();
+            return DashboardScreen(shellSection: section);
           case UserRole.lecturer:
-            return const LecturerDashboardScreen();
+            return LecturerDashboardScreen(shellSection: section);
+          case UserRole.kiuAdmin:
+            return const KiuAdminDashboardScreen();
           case UserRole.student:
-            return const AttendanceScreen();
+            return AttendanceScreen(shellSection: section);
         }
       case AppSection.attendance:
-        return const AttendanceScreen();
+        return AttendanceScreen(shellSection: section);
       case AppSection.notices:
-        return const NoticesScreen();
+        return NoticesScreen(shellSection: section);
       case AppSection.reports:
         if (!role.hasStaffOperationalAccess) {
           return const _StaffUnavailablePlaceholder(
@@ -473,15 +489,16 @@ class _AppShellState extends State<AppShell> {
             message: 'Reports are available to QA staff only.',
           );
         }
-        return const ReportsScreen();
+        return ReportsScreen(shellSection: section);
       case AppSection.settings:
         switch (role) {
           case UserRole.lecturer:
-            return const LecturerSettingsScreen();
+            return LecturerSettingsScreen(shellSection: section);
+          case UserRole.kiuAdmin:
           case UserRole.admin:
           case UserRole.qaStaff:
           case UserRole.student:
-            return const SettingsScreen();
+            return SettingsScreen(shellSection: section);
         }
     }
   }
@@ -493,19 +510,15 @@ class _AppShellState extends State<AppShell> {
     );
   }
 
-  /// Tab bodies stay mounted; only [IndexedStack.index] updates on section change.
+  /// Only the visible tab is built so login does not mount every screen at once.
   Widget _buildSectionStack() {
-    final tabs = _tabStackChildren();
-    final sections = _navSections();
     return ValueListenableBuilder<AppSection>(
       valueListenable: _currentSection,
       builder: (context, section, _) {
-        var index = sections.indexOf(section);
-        if (index < 0) index = 0;
-        return IndexedStack(
-          index: index,
-          sizing: StackFit.expand,
-          children: tabs,
+        final role = _resolvedRole();
+        return RepaintBoundary(
+          key: ValueKey('tab_${role.name}_${section.name}'),
+          child: _sectionWidget(section, role),
         );
       },
     );
@@ -710,7 +723,9 @@ class _AppShellState extends State<AppShell> {
                 ),
               ),
             ),
-            const SizedBox(width: 16),
+            const SizedBox(width: 8),
+            ShellRefreshButton(iconColor: AppTheme.textPrimary),
+            const SizedBox(width: 8),
             IconButton(
               icon: Icon(Icons.notifications_outlined,
                   color: AppTheme.textPrimary),
@@ -726,6 +741,7 @@ class _AppShellState extends State<AppShell> {
             ),
           ] else ...[
             const Spacer(),
+            ShellRefreshButton(iconColor: Colors.white),
             IconButton(
               icon:
                   const Icon(Icons.notifications_outlined, color: Colors.white),
@@ -809,35 +825,29 @@ class _AppShellState extends State<AppShell> {
     );
   }
 
-  String _offlineBannerMessage() {
-    final repo = AttendanceRepository.instance;
-    final synced = repo.localSnapshotSyncedAt;
-    if (repo.isUsingLocalSnapshot && synced != null) {
-      final local = synced.toLocal();
-      final stamp =
-          '${local.year}-${local.month.toString().padLeft(2, '0')}-${local.day.toString().padLeft(2, '0')} '
-          '${local.hour.toString().padLeft(2, '0')}:${local.minute.toString().padLeft(2, '0')}';
-      return 'Offline — showing attendance saved at $stamp. '
-          'Check-ins queue until you are back online.';
+  Widget _connectivityBanner({required bool mobile}) {
+    if (!AppConnectivity.instance.initialized) {
+      return const SizedBox.shrink();
     }
-    return 'You are offline. Actions will sync automatically when internet returns.';
-  }
-
-  Widget _offlineBanner({required bool mobile}) {
+    final online = AppConnectivity.instance.isOnline;
     return Container(
       width: double.infinity,
       padding: EdgeInsets.symmetric(
         horizontal: mobile ? 12 : 16,
         vertical: mobile ? 8 : 10,
       ),
-      color: AppTheme.warning,
+      color: online ? AppTheme.success : AppTheme.warning,
       child: Row(
         children: [
-          const Icon(Icons.wifi_off_rounded, color: Colors.white, size: 18),
+          Icon(
+            online ? Icons.wifi_rounded : Icons.wifi_off_rounded,
+            color: Colors.white,
+            size: 18,
+          ),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              _offlineBannerMessage(),
+              online ? 'You are online' : 'You are offline',
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
                     color: Colors.white,
                     fontWeight: FontWeight.w600,
@@ -882,21 +892,6 @@ class _AppShellState extends State<AppShell> {
     return ListenableBuilder(
       listenable: AuthRepository.instance,
       builder: (context, _) {
-        if (_rolesPending) {
-          return const Scaffold(
-            body: Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  CircularProgressIndicator(),
-                  SizedBox(height: 16),
-                  Text('Loading your account…'),
-                ],
-              ),
-            ),
-          );
-        }
         return _buildShell(context);
       },
     );
@@ -911,10 +906,7 @@ class _AppShellState extends State<AppShell> {
         ListenableBuilder(
           listenable: AppConnectivity.instance,
           builder: (context, _) {
-            if (AppConnectivity.instance.isOnline) {
-              return const SizedBox.shrink();
-            }
-            return _offlineBanner(mobile: mobile);
+            return _connectivityBanner(mobile: mobile);
           },
         ),
       ],
@@ -952,9 +944,12 @@ class _AppShellState extends State<AppShell> {
   }
 
   Widget _buildShell(BuildContext context) {
-    return AppShellScope(
-      goToSection: _setSection,
-      child: Scaffold(
+    return ScreenRefreshScope(
+      host: _refreshHost,
+      currentSection: _currentSection,
+      child: AppShellScope(
+        goToSection: _setSection,
+        child: Scaffold(
         key: _scaffoldKey,
         body: _isDesktop
             ? Row(
@@ -987,6 +982,9 @@ class _AppShellState extends State<AppShell> {
                     ),
                   ),
                   backgroundColor: AppTheme.primary,
+                  actions: const [
+                    ShellRefreshButton(iconColor: Colors.white),
+                  ],
                 ),
                 drawer: Drawer(
                   backgroundColor: AppTheme.primary,
@@ -1098,6 +1096,7 @@ class _AppShellState extends State<AppShell> {
                 ),
                 bottomNavigationBar: _buildBottomNav(),
               ),
+        ),
       ),
     );
   }

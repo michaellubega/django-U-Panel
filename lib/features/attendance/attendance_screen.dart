@@ -4,23 +4,34 @@ import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
 import '../../core/auth/auth_repository.dart';
 import '../../core/auth/student_registration_number.dart';
+import '../../core/auth/user_role.dart';
 import '../../core/firebase/firestore_collections.dart';
 import '../../core/firebase/u_panel_firestore.dart';
 import '../../core/connectivity/app_connectivity.dart';
 import '../../core/device/device_identity.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/widgets/content_skeleton.dart';
 import '../../core/location/location_permission.dart';
+import '../../core/location/location_resolving_panel.dart';
+import '../../core/location/student_location_priming.dart';
+import 'roll_cell_status.dart';
 import 'models/attendance_models.dart';
 import 'assigned_lecturer_field.dart';
 import 'attendance_list_hierarchy.dart';
+import 'check_in_outcome.dart';
+import 'check_in_rejection.dart';
 import 'data/attendance_repository.dart';
 import 'data/attendance_offline_sync.dart';
+import 'data/pending_session_code_claim_upload.dart';
+import 'data/pending_session_code_queue.dart';
 import 'pending_sessions_screen.dart';
 import 'student_check_in_progress_screen.dart';
 import 'offline_queue_location_screen.dart';
-import 'attendance_top_feedback.dart';
+import 'unknown_session_code_confirm.dart';
 import 'attendance_list_title.dart';
 import 'qa_program_session_ui.dart';
+import '../../core/navigation/app_section.dart';
+import '../../core/navigation/screen_refresh.dart';
 
 /// Year options for attendance: Year 1 to Year 5 (value "1".."5").
 const List<String> _attendanceYearValues = ['1', '2', '3', '4', '5'];
@@ -57,9 +68,11 @@ bool attendanceListAllowsMaintenance(AttendanceList list) {
 }
 
 /// Sign-in flows: cap Firestore wait so offline / flaky Wi‑Fi still reaches queue paths.
-Future<void> _loadAttendanceStoreForSignIn() async {
-  final online = AppConnectivity.instance.isOnline;
-  final d = online ? const Duration(seconds: 12) : const Duration(seconds: 10);
+Future<void> _loadAttendanceStoreForSignIn({bool? onlineHint}) async {
+  final online = onlineHint ??
+      AppConnectivity.instance.isOnline ||
+      AppConnectivity.instance.hasNetworkInterface;
+  final d = online ? const Duration(seconds: 8) : const Duration(seconds: 10);
   try {
     await AttendanceRepository.instance.loadAll().timeout(d);
   } catch (_) {}
@@ -120,7 +133,12 @@ Widget _timePickerFormField({
 }
 
 class AttendanceScreen extends StatefulWidget {
-  const AttendanceScreen({super.key});
+  const AttendanceScreen({
+    super.key,
+    this.shellSection = AppSection.attendance,
+  });
+
+  final AppSection shellSection;
 
   @override
   State<AttendanceScreen> createState() => _AttendanceScreenState();
@@ -133,14 +151,63 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
   @override
   void initState() {
     super.initState();
-    _loading = !AttendanceRepository.instance.hasCachedStore;
+    AuthRepository.instance.addListener(_onAuthOrStoreChanged);
+    AttendanceRepository.instance.addListener(_onAuthOrStoreChanged);
+    _syncLoadingFromStore();
+    unawaited(
+      AttendanceRepository.instance.warmFromLocalSnapshot().then((_) {
+        if (!mounted) return;
+        _syncLoadingFromStore();
+        setState(() {});
+      }),
+    );
     unawaited(_load());
   }
 
-  static const Duration _loadTimeout = Duration(seconds: 8);
+  @override
+  void dispose() {
+    AuthRepository.instance.removeListener(_onAuthOrStoreChanged);
+    AttendanceRepository.instance.removeListener(_onAuthOrStoreChanged);
+    super.dispose();
+  }
 
-  Future<void> _load({bool force = false}) async {
-    final blocking = !AttendanceRepository.instance.hasCachedStore;
+  void _onAuthOrStoreChanged() {
+    if (!mounted) return;
+    final wasLoading = _loading;
+    _syncLoadingFromStore();
+    if (wasLoading != _loading) {
+      setState(() {});
+    }
+    final auth = AuthRepository.instance;
+    final repo = AttendanceRepository.instance;
+    if (!auth.isLoggedIn) return;
+    if (!auth.roleCheckDone) return;
+    if (!repo.isLoaded && !repo.hasCachedStore) {
+      unawaited(_load());
+      return;
+    }
+    final student = auth.resolvedRole == UserRole.student;
+    if (student) return;
+    if (AttendanceStore.lists.isNotEmpty) return;
+    if (attendanceListsForCurrentStaff().isEmpty) {
+      unawaited(_load(force: true, listsOnly: true));
+    }
+  }
+
+  void _syncLoadingFromStore() {
+    if (AttendanceRepository.instance.isLoaded ||
+        AttendanceRepository.instance.hasCachedStore ||
+        AttendanceStore.lists.isNotEmpty) {
+      _loading = false;
+    }
+  }
+
+  static const Duration _loadTimeout = Duration(seconds: 12);
+  static const Duration _refreshTimeout = Duration(seconds: 25);
+
+  Future<void> _load({bool force = false, bool listsOnly = false}) async {
+    final repo = AttendanceRepository.instance;
+    final blocking = !repo.isLoaded && !repo.hasCachedStore;
     if (blocking) {
       setState(() {
         _loading = true;
@@ -148,28 +215,78 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       });
     }
     try {
+      if (!force) {
+        await repo.warmFromLocalSnapshot();
+        if (mounted) {
+          _syncLoadingFromStore();
+          if (!_loading) setState(() {});
+        }
+        if (!repo.isLoaded && AppConnectivity.instance.isOnline) {
+          try {
+            await repo
+                .loadAttendanceListsFirst()
+                .timeout(const Duration(seconds: 8));
+          } catch (_) {}
+          if (mounted) {
+            _syncLoadingFromStore();
+            if (!_loading) setState(() {});
+          }
+        }
+      }
+
       await _waitForAuthRoleHydration();
+      final auth = AuthRepository.instance;
+      final student =
+          auth.roleCheckDone && auth.resolvedRole == UserRole.student;
       final scope = AttendanceRepository.currentLecturerLoadScopeUid();
-      await AttendanceRepository.instance
-          .loadAll(
-            force: force,
-            scopeToLecturerUid: scope,
-          )
-          .timeout(
-        _loadTimeout,
+      final timeout = force ? _refreshTimeout : _loadTimeout;
+      if (student && !force) {
+        await repo
+            .loadStudentAttendanceForProfile(force: false)
+            .timeout(
+          timeout,
           onTimeout: () {
-        throw TimeoutException('Load timed out', _loadTimeout);
-      },
-      );
-      if (mounted) setState(() => _loading = false);
-    } catch (_) {
-      if (mounted)
+            throw TimeoutException('Load timed out', timeout);
+          },
+        );
+      } else {
+        // Lecturer/QA hub only needs list metadata on first open; full store
+        // enriches in the background for session cards and roll views.
+        final hubListsOnly = !student && (listsOnly || !force);
+        await repo
+            .loadAll(
+              force: force,
+              listsOnly: hubListsOnly,
+              scopeToLecturerUid: scope,
+            )
+            .timeout(
+          timeout,
+          onTimeout: () {
+            throw TimeoutException('Load timed out', timeout);
+          },
+        );
+      }
+      if (mounted) {
         setState(() {
           _loading = false;
           _loadError = null;
-          // Show UI with local/empty data so attendance works without Firebase.
         });
+      }
+    } catch (_) {
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _loadError = null;
+        });
+      }
     }
+  }
+
+  Future<void> _refreshAttendanceHub() async {
+    final auth = AuthRepository.instance;
+    final student =
+        auth.roleCheckDone && auth.resolvedRole == UserRole.student;
+    await _load(force: true, listsOnly: !student);
   }
 
   @override
@@ -178,74 +295,114 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     final auth = AuthRepository.instance;
 
     // Always show layout immediately; only content area shows loading or error.
-    return ListenableBuilder(
-      listenable: auth,
-      builder: (context, _) {
-        final canQa = auth.adminCheckDone && auth.isAdmin;
-        final canActAsStaff = canQa ||
-            (auth.lecturerCheckDone && auth.isLecturer);
-        // QA staff and lecturers use attendance management UI here.
-        final studentFlow = !canActAsStaff;
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _buildHeader(context, narrow, studentFlow),
-            Expanded(
-              child: studentFlow
-                  ? const SingleChildScrollView(
-                      child: _SignInContent(),
-                    )
-                  : _loading &&
-                          !AttendanceRepository.instance.hasCachedStore
-                      ? const Center(child: CircularProgressIndicator())
-                      : _loadError != null
-                          ? SingleChildScrollView(
-                              child: Padding(
-                                padding: const EdgeInsets.only(top: 16),
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      'Could not load attendance data',
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .titleMedium,
-                                    ),
-                                    const SizedBox(height: 8),
-                                    Text(
-                                      _loadError!,
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .bodySmall,
-                                    ),
-                                    const SizedBox(height: 16),
-                                    FilledButton(
-                                      onPressed: _load,
-                                      child: const Text('Retry'),
-                                    ),
-                                  ],
+    return ScreenRefreshRegistrar(
+      section: widget.shellSection,
+      onRefresh: _refreshAttendanceHub,
+      child: ListenableBuilder(
+        listenable: Listenable.merge([
+          auth,
+          AttendanceRepository.instance,
+        ]),
+        builder: (context, _) {
+          final canQa = auth.adminCheckDone && auth.isAdmin;
+          final canActAsStaff = canQa ||
+              (auth.lecturerCheckDone && auth.isLecturer) ||
+              (auth.adminCheckDone && auth.isKiuAdmin);
+          final studentFlow = !canActAsStaff;
+          final attendanceRepo = AttendanceRepository.instance;
+          final showStaffLists =
+              attendanceRepo.isLoaded ||
+              attendanceRepo.hasCachedStore ||
+              AttendanceStore.lists.isNotEmpty ||
+              !_loading;
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _buildHeader(
+                context,
+                narrow,
+                studentFlow,
+                onRefresh: _refreshAttendanceHub,
+              ),
+              Expanded(
+                child: studentFlow
+                    ? _SignInContent(onRefresh: _refreshAttendanceHub)
+                    : !showStaffLists
+                        ? PullToRefreshBody(
+                            onRefresh: _refreshAttendanceHub,
+                            child: const ContentSkeleton(rows: 5),
+                          )
+                        : _loadError != null
+                            ? PullToRefreshBody(
+                                onRefresh: _refreshAttendanceHub,
+                                child: Padding(
+                                  padding: const EdgeInsets.only(top: 16),
+                                  child: Column(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      Text(
+                                        'Could not load attendance data',
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .titleMedium,
+                                      ),
+                                      const SizedBox(height: 8),
+                                      Text(
+                                        _loadError!,
+                                        style: Theme.of(context)
+                                            .textTheme
+                                            .bodySmall,
+                                      ),
+                                      const SizedBox(height: 16),
+                                      FilledButton(
+                                        onPressed: _load,
+                                        child: const Text('Retry'),
+                                      ),
+                                    ],
+                                  ),
                                 ),
-                              ),
-                            )
-                          : const _AttendanceListsContent(),
-            ),
-          ],
-        );
-      },
+                              )
+                            : const _AttendanceListsContent(),
+              ),
+            ],
+          );
+        },
+      ),
     );
   }
 
-  Widget _buildHeader(BuildContext context, bool narrow, bool isStudent) {
+  Widget _buildHeader(
+    BuildContext context,
+    bool narrow,
+    bool isStudent, {
+    required Future<void> Function() onRefresh,
+  }) {
     final title = isStudent ? 'Sign in' : 'Attendance';
     final subtitle = isStudent
-        ? 'Enter your registration number and the class session code from your lecturer.'
+        ? 'Enter your registration number and the class join code ($kSessionJoinCodeFormatHint).'
         : 'Create lists · Start sessions · Students sign in with their account, then session code to check in';
+    final refreshButton = IconButton(
+      tooltip: 'Refresh',
+      onPressed: () => unawaited(onRefresh()),
+      icon: const Icon(Icons.refresh_rounded),
+    );
 
     if (narrow) {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(title, style: Theme.of(context).textTheme.headlineMedium),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  title,
+                  style: Theme.of(context).textTheme.headlineMedium,
+                ),
+              ),
+              refreshButton,
+            ],
+          ),
           const SizedBox(height: 4),
           Text(
             subtitle,
@@ -275,6 +432,7 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
             ],
           ),
         ),
+        refreshButton,
       ],
     );
   }
@@ -463,6 +621,7 @@ class _AttendanceListSummaryCard extends StatelessWidget {
     required this.onStartSession,
     required this.onEdit,
     required this.onDelete,
+    this.detailLoading = false,
   });
 
   final AttendanceList list;
@@ -477,6 +636,7 @@ class _AttendanceListSummaryCard extends StatelessWidget {
   final VoidCallback onStartSession;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
+  final bool detailLoading;
 
   String? get _joinCode {
     final s = session;
@@ -670,19 +830,21 @@ class _AttendanceListSummaryCard extends StatelessWidget {
                           children: [
                             _ListStatPill(
                               icon: Icons.event_note_rounded,
-                              value: '${listSessions.length}',
+                              value: detailLoading
+                                  ? '…'
+                                  : '${listSessions.length}',
                               label: listSessions.length == 1
                                   ? 'session'
                                   : 'sessions',
                             ),
                             _ListStatPill(
                               icon: Icons.fact_check_outlined,
-                              value: '$rollRows',
+                              value: detailLoading ? '…' : '$rollRows',
                               label: rollRows == 1 ? 'row' : 'rows',
                             ),
                             _ListStatPill(
                               icon: Icons.groups_outlined,
-                              value: '$rosterCount',
+                              value: detailLoading ? '…' : '$rosterCount',
                               label: 'on roster',
                             ),
                           ],
@@ -811,6 +973,48 @@ class AttendanceProgramListsScreen extends StatefulWidget {
 
 class _AttendanceProgramListsScreenState
     extends State<AttendanceProgramListsScreen> {
+  @override
+  void initState() {
+    super.initState();
+    AttendanceRepository.instance.addListener(_onRepo);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _prefetchListDetails());
+  }
+
+  @override
+  void dispose() {
+    AttendanceRepository.instance.removeListener(_onRepo);
+    super.dispose();
+  }
+
+  void _onRepo() {
+    if (mounted) setState(() {});
+  }
+
+  List<AttendanceList> _listsForScreen() {
+    return listsForWeekdayAndProgram(
+      attendanceListsForCurrentStaff(),
+      widget.weekday,
+      widget.program,
+    );
+  }
+
+  void _prefetchListDetails() {
+    AttendanceRepository.instance.prefetchListAttendanceData(
+      _listsForScreen().map((l) => l.id),
+    );
+  }
+
+  Future<void> _reloadVisibleLists() async {
+    final lists = _listsForScreen();
+    await Future.wait([
+      for (final list in lists)
+        AttendanceRepository.instance.loadListAttendanceData(
+          list.id,
+          force: true,
+        ),
+    ]);
+    if (mounted) setState(() {});
+  }
   Future<void> _openEditScreen(BuildContext context, String listId) async {
     await Navigator.of(context).push<bool>(
       MaterialPageRoute(
@@ -881,6 +1085,8 @@ class _AttendanceProgramListsScreenState
     AttendanceList list,
     bool narrow,
   ) {
+    final repo = AttendanceRepository.instance;
+    final detailLoading = !repo.listDetailReady(list.id);
     final listSessions = AttendanceStore.sessionsForListNewestFirst(list.id);
     final rosterCount =
         AttendanceStore.studentIdsSignedIntoList(list.id).length;
@@ -895,6 +1101,7 @@ class _AttendanceProgramListsScreenState
       rollRows: rollRows,
       session: session,
       narrow: narrow,
+      detailLoading: detailLoading,
       allowListMaintenance: attendanceListAllowsMaintenance(list),
       onOpenDetail: () {
         Navigator.of(context).push(
@@ -919,11 +1126,7 @@ class _AttendanceProgramListsScreenState
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final lists = listsForWeekdayAndProgram(
-      attendanceListsForCurrentStaff(),
-      widget.weekday,
-      widget.program,
-    );
+    final lists = _listsForScreen();
     final narrow = MediaQuery.of(context).size.width < 500;
     final count = lists.length;
     final dayLabel = weekdayFullLabel(widget.weekday);
@@ -952,13 +1155,7 @@ class _AttendanceProgramListsScreenState
       ),
       body: RefreshIndicator(
         color: AppTheme.primary,
-        onRefresh: () async {
-          await AttendanceRepository.instance.loadAll(
-            force: true,
-            scopeToLecturerUid: AttendanceRepository.currentLecturerLoadScopeUid(),
-          );
-          if (mounted) setState(() {});
-        },
+        onRefresh: _reloadVisibleLists,
         child: count == 0
             ? QaProgramListsEmptyState(program: widget.program)
             : ListView(
@@ -1039,10 +1236,18 @@ class _AttendanceListsContentState extends State<_AttendanceListsContent> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final attendanceLists = attendanceListsForCurrentStaff();
-
     final narrow = MediaQuery.of(context).size.width < 500;
-    return SingleChildScrollView(
+    Future<void> reloadLists() async {
+      await AttendanceRepository.instance.refreshAttendanceLists(force: true);
+    }
+
+    return ListenableBuilder(
+      listenable: AttendanceRepository.instance,
+      builder: (context, _) {
+        final attendanceLists = attendanceListsForCurrentStaff();
+
+        return PullToRefreshBody(
+      onRefresh: reloadLists,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -1163,6 +1368,8 @@ class _AttendanceListsContentState extends State<_AttendanceListsContent> {
         ],
       ),
     );
+      },
+    );
   }
 }
 
@@ -1179,16 +1386,35 @@ class AttendanceListSessionsScreen extends StatefulWidget {
 
 class _AttendanceListSessionsScreenState
     extends State<AttendanceListSessionsScreen> {
-  Future<void> _reload() async {
-    await AttendanceRepository.instance.loadAll(
-      force: true,
-      scopeToLecturerUid: AttendanceRepository.currentLecturerLoadScopeUid(),
+  @override
+  void initState() {
+    super.initState();
+    AttendanceRepository.instance.addListener(_onRepo);
+    unawaited(_reload());
+  }
+
+  @override
+  void dispose() {
+    AttendanceRepository.instance.removeListener(_onRepo);
+    super.dispose();
+  }
+
+  void _onRepo() {
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _reload({bool force = false}) async {
+    await AttendanceRepository.instance.loadListAttendanceData(
+      widget.list.id,
+      force: force,
     );
     if (mounted) setState(() {});
   }
 
   @override
   Widget build(BuildContext context) {
+    final repo = AttendanceRepository.instance;
+    final detailLoading = !repo.listDetailReady(widget.list.id);
     final sessions = AttendanceStore.sessionsForListNewestFirst(widget.list.id);
     return Scaffold(
       appBar: AppBar(
@@ -1205,20 +1431,34 @@ class _AttendanceListSessionsScreenState
           subtitleMaxLines: 1,
         ),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh_rounded),
-            onPressed: _reload,
-            tooltip: 'Refresh',
-          ),
+          RefreshIconButton(onRefresh: () => _reload(force: true)),
         ],
       ),
-      body: sessions.isEmpty
-          ? const Center(
-              child:
-                  Text('No sessions yet. Start one from the attendance list.'),
-            )
-          : ListView.builder(
-              padding: const EdgeInsets.all(16),
+      body: RefreshIndicator(
+        onRefresh: () => _reload(force: true),
+        child: detailLoading
+            ? ListView(
+                physics: kRefreshScrollPhysics,
+                children: const [
+                  SizedBox(height: 120),
+                  Center(child: ContentSkeleton(rows: 4)),
+                ],
+              )
+            : sessions.isEmpty
+            ? ListView(
+                physics: kRefreshScrollPhysics,
+                children: const [
+                  SizedBox(height: 120),
+                  Center(
+                    child: Text(
+                      'No sessions yet. Start one from the attendance list.',
+                    ),
+                  ),
+                ],
+              )
+            : ListView.builder(
+                physics: kRefreshScrollPhysics,
+                padding: const EdgeInsets.all(16),
               itemCount: sessions.length,
               itemBuilder: (context, i) {
                 final s = sessions[i];
@@ -1253,6 +1493,7 @@ class _AttendanceListSessionsScreenState
                 );
               },
             ),
+      ),
     );
   }
 }
@@ -1285,7 +1526,11 @@ class _StartSessionScreenState extends State<StartSessionScreen> {
   Position? _position;
   String? _locationError;
   bool _starting = false;
+  bool _resolvingLocation = false;
+  bool _locationServiceDisabled = false;
+  bool _locationPermissionBlocked = false;
   AttendanceSession? _startedSession;
+  Future<void>? _locationLoad;
 
   static const List<double> _radiusOptions = [25, 50, 100, 150, 1500];
   static const List<int> _durationOptions = [1, 2, 10, 15, 20];
@@ -1333,16 +1578,18 @@ class _StartSessionScreenState extends State<StartSessionScreen> {
     if (!_lecturerOnly) {
       return _createdByC.text.trim();
     }
-    if (_createdByC.text.trim().isEmpty) {
-      await _resolveLecturerCreatedBy();
-    }
     final fromField = _createdByC.text.trim();
     if (fromField.isNotEmpty) return fromField;
     final auth = AuthRepository.instance;
+    final name = auth.currentFullName?.trim();
+    if (name != null && name.isNotEmpty) return name;
     final staff = auth.currentStaffNumber?.trim();
     if (staff != null && staff.isNotEmpty) return staff;
     final email = auth.currentEmail?.trim();
     if (email != null && email.isNotEmpty) return email;
+    await _resolveLecturerCreatedBy();
+    final resolved = _createdByC.text.trim();
+    if (resolved.isNotEmpty) return resolved;
     return 'Lecturer';
   }
 
@@ -1357,7 +1604,9 @@ class _StartSessionScreenState extends State<StartSessionScreen> {
         _prefillCreatedByFromName(AuthRepository.instance.currentFullName);
       }
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        unawaited(_prefetchLocationQuietly());
+        if (!_remoteLearning) {
+          unawaited(_getLocation());
+        }
         if (_lecturerOnly) {
           unawaited(_resolveLecturerCreatedBy());
         }
@@ -1371,83 +1620,97 @@ class _StartSessionScreenState extends State<StartSessionScreen> {
     super.dispose();
   }
 
-  /// Warms last-known GPS without blocking the start button (fast offline starts).
-  Future<void> _prefetchLocationQuietly() async {
-    if (_position != null) return;
-    final quick = await quickPositionForSessionStart();
-    if (!mounted || quick == null) return;
-    setState(() {
-      _position = quick;
-      _locationError = null;
-    });
-    if (AppConnectivity.instance.isOnline) {
-      unawaited(_refineLocationInBackground());
-    }
-  }
-
-  Future<void> _refineLocationInBackground() async {
-    final r = await tryAcquireGpsPosition(
-      timeLimit: const Duration(seconds: 12),
-    );
-    if (!mounted || r.position == null) return;
-    setState(() {
-      _position = r.position;
-      _locationError = null;
+  Future<void> _getLocation() {
+    if (_locationLoad != null) return _locationLoad!;
+    final run = _resolveLocationForPanel();
+    _locationLoad = run;
+    return run.whenComplete(() {
+      if (identical(_locationLoad, run)) {
+        _locationLoad = null;
+      }
     });
   }
 
-  Future<void> _getLocation() async {
-    setState(() => _locationError = null);
-    final quick = await quickPositionForSessionStart();
-    if (quick != null) {
+  Future<void> _resolveLocationForPanel() async {
+    if (_remoteLearning) return;
+
+    if (!await isDeviceLocationServiceEnabled()) {
       if (!mounted) return;
       setState(() {
-        _position = quick;
+        _locationServiceDisabled = true;
         _locationError = null;
+        _resolvingLocation = false;
       });
-      if (AppConnectivity.instance.isOnline) {
-        unawaited(_refineLocationInBackground());
-      }
       return;
     }
-    final r = await tryAcquireGpsPosition(
+
+    setState(() {
+      _locationError = null;
+      _locationServiceDisabled = false;
+      _locationPermissionBlocked = false;
+      _resolvingLocation = true;
+    });
+
+    final r = await acquireCurrentGpsPosition(
       timeLimit: AppConnectivity.instance.isOnline
-          ? const Duration(seconds: 15)
+          ? const Duration(seconds: 5)
           : const Duration(seconds: 8),
+      forceFresh: false,
     );
     if (!mounted) return;
+
     setState(() {
+      _resolvingLocation = false;
+      if (r.locationServiceDisabled) {
+        _locationServiceDisabled = true;
+        _position = null;
+        return;
+      }
       if (r.position != null) {
         _position = r.position;
         _locationError = null;
       } else {
+        _position = null;
         _locationError = r.errorMessage ??
-            'Could not read your location. Tap "Use current location" to retry.';
+            'Could not read your current location. Turn on GPS and try again.';
+        _locationPermissionBlocked = r.permissionBlocked;
       }
     });
   }
 
   Future<Position?> _resolvePositionForSessionStart() async {
     if (_position != null) return _position;
-    final quick = await quickPositionForSessionStart();
-    if (quick != null) return quick;
-    final r = await tryAcquireGpsPosition(
-      timeLimit: AppConnectivity.instance.isOnline
-          ? const Duration(seconds: 12)
-          : const Duration(seconds: 5),
+    if (_resolvingLocation && _locationLoad != null) {
+      await _locationLoad;
+      if (_position != null) return _position;
+    }
+    final r = await acquireCurrentGpsPosition(
+      timeLimit: const Duration(seconds: 6),
+      forceFresh: false,
     );
+    if (!mounted) return r.position;
+    setState(() {
+      _resolvingLocation = false;
+      if (r.locationServiceDisabled) {
+        _locationServiceDisabled = true;
+        _position = null;
+        return;
+      }
+      if (r.position != null) {
+        _position = r.position;
+        _locationError = null;
+      } else {
+        _position = null;
+        _locationError = r.errorMessage ??
+            'Could not read your current location. Turn on GPS and try again.';
+        _locationPermissionBlocked = r.permissionBlocked;
+      }
+    });
     return r.position;
   }
 
   Future<void> _startSession() async {
     if (_starting) {
-      return;
-    }
-
-    final createdBy = await _sessionCreatedByForStart();
-    if (!_lecturerOnly && createdBy.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Enter your name (QA officer)')));
       return;
     }
 
@@ -1470,30 +1733,41 @@ class _StartSessionScreenState extends State<StartSessionScreen> {
       return;
     }
 
+    final startIntentAt = DateTime.now();
     setState(() => _starting = true);
     try {
+      final parallel = await Future.wait<Object?>([
+        _sessionCreatedByForStart(),
+        if (_remoteLearning)
+          Future<Position?>.value(_position)
+        else
+          _resolvePositionForSessionStart(),
+      ]);
+      if (!mounted) return;
+
+      final createdBy = parallel[0]! as String;
+      if (!_lecturerOnly && createdBy.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Enter your name (QA officer)')),
+        );
+        return;
+      }
+
       double latitude;
       double longitude;
       if (_remoteLearning) {
         latitude = _position?.latitude ?? 0;
         longitude = _position?.longitude ?? 0;
       } else {
-        final position = await _resolvePositionForSessionStart();
-        if (!mounted) {
-          return;
-        }
+        final position = parallel[1] as Position?;
         if (position == null) {
           final msg = _locationError ??
-              'Turn on GPS, allow location for U-Panel, then tap "Use current location".';
+              'Turn on GPS, allow location for U-Panel, then tap Refresh location.';
           ScaffoldMessenger.of(context).showSnackBar(
             SnackBar(content: Text(msg), duration: const Duration(seconds: 6)),
           );
           return;
         }
-        setState(() {
-          _position = position;
-          _locationError = null;
-        });
         latitude = position.latitude;
         longitude = position.longitude;
       }
@@ -1528,6 +1802,7 @@ class _StartSessionScreenState extends State<StartSessionScreen> {
         radiusMeters: _remoteLearning ? 0 : _radiusMeters,
         durationMinutes: Duration(minutes: _durationMinutes),
         remoteLearning: _remoteLearning,
+        startIntentAt: startIntentAt,
       );
       final session = created.session;
       final noticeErr =
@@ -1539,16 +1814,16 @@ class _StartSessionScreenState extends State<StartSessionScreen> {
         _starting = false;
         _startedSession = session;
       });
-      if (!created.syncedToServer) {
-        unawaited(_refineLocationInBackground());
-      }
-      if (!created.syncedToServer) {
+      if (created.publishingInBackground) {
+        // Join code is shown immediately; students connect as publish completes.
+      } else if (!created.syncedToServer) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text(
-              'Session saved on this device. It will publish to the server when you are back online.',
+              'Session saved on this device only — students cannot join until it publishes. '
+              'Check your connection; it will retry automatically when online.',
             ),
-            duration: Duration(seconds: 6),
+            duration: Duration(seconds: 8),
           ),
         );
       } else if (noticeErr != null) {
@@ -1684,9 +1959,18 @@ class _StartSessionScreenState extends State<StartSessionScreen> {
               const QaFormSectionTitle(
                 title: 'Check-in location',
                 subtitle:
-                    'Students must be within the radius of this GPS point when they enter the join code.',
+                    'Students must be within the radius of this GPS point. '
+                    'Location is prepared when you open this screen (reused for 5 minutes).',
               ),
               const SizedBox(height: 12),
+              LocationResolvingPanel(
+                resolving: _resolvingLocation,
+                position: _position,
+                errorMessage: _locationError,
+                locationServiceDisabled: _locationServiceDisabled,
+                permissionBlocked: _locationPermissionBlocked,
+                onRetry: _getLocation,
+              ),
             ] else ...[
               const SizedBox(height: 20),
               const QaInfoCallout(
@@ -1696,73 +1980,23 @@ class _StartSessionScreenState extends State<StartSessionScreen> {
               ),
               const SizedBox(height: 12),
             ],
-            if (!_remoteLearning)
-            OutlinedButton.icon(
-              style: OutlinedButton.styleFrom(
-                padding:
-                    const EdgeInsets.symmetric(vertical: 14, horizontal: 18),
-                alignment: Alignment.centerLeft,
-                side: BorderSide(
-                  color: AppTheme.primary.withValues(alpha: 0.35),
-                ),
-              ),
-              onPressed: _getLocation,
-              icon: Icon(
-                _position == null
-                    ? Icons.location_searching_rounded
-                    : Icons.location_on_rounded,
-                size: 22,
-                color: AppTheme.primary,
-              ),
-              label: Text(
-                _position == null
-                    ? 'Use current GPS location'
-                    : '${_position!.latitude.toStringAsFixed(5)}, ${_position!.longitude.toStringAsFixed(5)}',
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  fontWeight: FontWeight.w600,
-                  height: 1.35,
-                ),
-              ),
-            ),
-            if (!_remoteLearning && _locationError != null) ...[
-              const SizedBox(height: 10),
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: AppTheme.error.withValues(alpha: 0.08),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(
-                    color: AppTheme.error.withValues(alpha: 0.25),
-                  ),
-                ),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Icon(Icons.error_outline_rounded,
-                        color: AppTheme.error, size: 20),
-                    const SizedBox(width: 10),
-                    Expanded(
-                      child: Text(
-                        _locationError!,
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: AppTheme.error,
-                          height: 1.35,
-                        ),
-                      ),
-                    ),
-                  ],
+            if (!_remoteLearning && _position != null) ...[
+              const SizedBox(height: 8),
+              Text(
+                'Coordinates update when you tap Refresh location above.',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: AppTheme.textSecondary,
                 ),
               ),
             ],
             const SizedBox(height: 22),
             QaInfoCallout(
               text: _remoteLearning
-                  ? 'When you start, the app creates a unique 3-digit join code. '
+                  ? 'When you start, the app creates a unique join code ($kSessionJoinCodeFormatHint). '
                       'Share it with remote students yourself (no automatic push). '
-                      'Students: Sign in → Session code → enter those three digits, then Continue.'
-                  : 'When you start, the app creates a unique 3-digit join code. '
-                      'Students: Sign in → Session code → enter those three digits (not their personal 3-digit student code), then Continue. Time and location are checked automatically.',
+                      'Students: Sign in → Session code → enter that code, then tap the arrow to submit.'
+                  : 'When you start, the app creates a unique join code ($kSessionJoinCodeFormatHint). '
+                      'Students: Sign in → Session code → enter that code (not their personal student code), then tap the arrow to submit. Time and location are checked automatically.',
             ),
             const SizedBox(height: 26),
             SizedBox(
@@ -1787,9 +2021,7 @@ class _StartSessionScreenState extends State<StartSessionScreen> {
                       )
                     : const Icon(Icons.play_arrow_rounded, size: 26),
                 label: Text(
-                  _starting
-                      ? 'Creating session & code…'
-                      : 'Start session & show join code',
+                  _starting ? 'Starting…' : 'Start session & show join code',
                   style: const TextStyle(
                     fontSize: 16,
                     fontWeight: FontWeight.w700,
@@ -1821,6 +2053,7 @@ class _SessionCodeDisplayState extends State<_SessionCodeDisplay>
   Timer? _expiryTimer;
   bool _closing = false;
   bool _autoEndPending = false;
+  bool _publishingToServer = false;
 
   /// Prefer store copy so countdown stays correct after [loadAll] / sync.
   AttendanceSession get _session =>
@@ -1841,6 +2074,15 @@ class _SessionCodeDisplayState extends State<_SessionCodeDisplay>
     });
   }
 
+  Future<void> _refreshPublishState() async {
+    final publishing = await AttendanceRepository.instance
+        .isSessionAwaitingServerPublish(_session.id);
+    if (!mounted) return;
+    if (publishing != _publishingToServer) {
+      setState(() => _publishingToServer = publishing);
+    }
+  }
+
   @override
   void initState() {
     super.initState();
@@ -1848,10 +2090,12 @@ class _SessionCodeDisplayState extends State<_SessionCodeDisplay>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _maybeAutoEndExpired();
       _scheduleExpiryAutoClose();
+      unawaited(_refreshPublishState());
     });
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted) return;
       _maybeAutoEndExpired();
+      unawaited(_refreshPublishState());
       setState(() {});
     });
   }
@@ -1932,8 +2176,9 @@ class _SessionCodeDisplayState extends State<_SessionCodeDisplay>
       builder: (ctx) => AlertDialog(
         title: const Text('End session & save roll?'),
         content: const Text(
-          'The join code will stop working. Anyone on this list’s roster who did '
-          'not check in will be marked absent so attendance percentages stay accurate.',
+          'The join code will stop working. Roster students who did not check in '
+          'show as Pending for up to 7 days while offline check-ins sync and verify. '
+          'After 7 days, anyone still unverified is marked Absent.',
         ),
         actions: [
           TextButton(
@@ -1990,33 +2235,56 @@ class _SessionCodeDisplayState extends State<_SessionCodeDisplay>
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
               decoration: BoxDecoration(
-                color: (expired ? AppTheme.warning : AppTheme.success)
+                color: (expired
+                        ? AppTheme.warning
+                        : _publishingToServer
+                            ? AppTheme.primary
+                            : AppTheme.success)
                     .withValues(alpha: 0.14),
                 borderRadius: BorderRadius.circular(14),
                 border: Border.all(
-                  color: (expired ? AppTheme.warning : AppTheme.success)
+                  color: (expired
+                          ? AppTheme.warning
+                          : _publishingToServer
+                              ? AppTheme.primary
+                              : AppTheme.success)
                       .withValues(alpha: 0.35),
                 ),
               ),
               child: Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Icon(
-                    expired ? Icons.hourglass_bottom_rounded : Icons.sensors_rounded,
-                    size: 18,
-                    color: expired ? AppTheme.warning : AppTheme.success,
-                  ),
+                  if (_publishingToServer && !expired)
+                    const SizedBox(
+                      width: 16,
+                      height: 16,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  else
+                    Icon(
+                      expired
+                          ? Icons.hourglass_bottom_rounded
+                          : Icons.sensors_rounded,
+                      size: 18,
+                      color: expired ? AppTheme.warning : AppTheme.success,
+                    ),
                   const SizedBox(width: 8),
                   Flexible(
                     child: Text(
                       expired
                           ? 'Time elapsed — finalizing and closing…'
-                          : session.remoteLearning
-                              ? 'Live · long-distance (no location check)'
-                              : 'Live session · join code active',
+                          : _publishingToServer
+                              ? 'Connecting students — share the code below'
+                              : session.remoteLearning
+                                  ? 'Live · long-distance (no location check)'
+                                  : 'Live session · join code active',
                       textAlign: TextAlign.center,
                       style: TextStyle(
-                        color: expired ? AppTheme.warning : AppTheme.success,
+                        color: expired
+                            ? AppTheme.warning
+                            : _publishingToServer
+                                ? AppTheme.primary
+                                : AppTheme.success,
                         fontWeight: FontWeight.w700,
                         fontSize: 13,
                       ),
@@ -2093,7 +2361,7 @@ class _SessionCodeDisplayState extends State<_SessionCodeDisplay>
               session.remoteLearning
                   ? 'Long-distance session: share this code with students yourself. '
                       'They can check in from anywhere during the session window.'
-                  : 'Students: Sign in → Session code → enter this code, then location check.',
+                  : 'Students: Sign in → Session code → enter this code, then tap the arrow to submit.',
               textAlign: TextAlign.center,
               style: theme.textTheme.bodyMedium?.copyWith(
                 color: AppTheme.textSecondary,
@@ -2257,21 +2525,27 @@ class SessionCheckInsScreen extends StatefulWidget {
 
 class _SessionCheckInsScreenState extends State<SessionCheckInsScreen>
     with WidgetsBindingObserver {
-  Future<void> _refresh() async {
-    await AttendanceRepository.instance.loadAll(
-      force: true,
-      scopeToLecturerUid: AttendanceRepository.currentLecturerLoadScopeUid(),
+  RollPendingContext _rollPending = const RollPendingContext.empty();
+
+  Future<void> _reloadListDetail({bool force = false}) async {
+    _rollPending = await RollPendingContext.load();
+    await AttendanceRepository.instance.loadListAttendanceData(
+      widget.list.id,
+      force: force,
     );
     if (mounted) setState(() {});
   }
+
+  Future<void> _refresh() => _reloadListDetail(force: true);
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     AppConnectivity.instance.addListener(_onConnectivity);
+    AttendanceRepository.instance.addListener(_onRepo);
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      unawaited(_refresh());
+      unawaited(_reloadListDetail());
     });
   }
 
@@ -2279,13 +2553,18 @@ class _SessionCheckInsScreenState extends State<SessionCheckInsScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     AppConnectivity.instance.removeListener(_onConnectivity);
+    AttendanceRepository.instance.removeListener(_onRepo);
     super.dispose();
+  }
+
+  void _onRepo() {
+    if (mounted) setState(() {});
   }
 
   void _onConnectivity() {
     if (!AppConnectivity.instance.isOnline) return;
     unawaited(
-      AttendanceOfflineSync.drainAllInOrder().then((_) {
+      AttendanceOfflineSync.drainSessionValidationFirst().then((_) {
         if (mounted) setState(() {});
       }),
     );
@@ -2303,9 +2582,10 @@ class _SessionCheckInsScreenState extends State<SessionCheckInsScreen>
 
   @override
   Widget build(BuildContext context) {
-    final studentsById = <String, StudentRecord>{
-      for (final s in AttendanceStore.students) s.id: s,
-    };
+    final repo = AttendanceRepository.instance;
+    final detailLoading = !repo.listDetailReady(widget.list.id);
+    final studentsById =
+        AttendanceStore.rosterStudentMapForList(widget.list.id);
     final listSessions = AttendanceStore.sessions
         .where((s) => s.listId == widget.list.id)
         .toList()
@@ -2357,7 +2637,9 @@ class _SessionCheckInsScreenState extends State<SessionCheckInsScreen>
           ),
         ],
       ),
-      body: rollKeys.isEmpty
+      body: detailLoading
+          ? const Center(child: ContentSkeleton(rows: 6))
+          : rollKeys.isEmpty
           ? Center(
               child: Padding(
                 padding: const EdgeInsets.all(24),
@@ -2405,43 +2687,29 @@ class _SessionCheckInsScreenState extends State<SessionCheckInsScreen>
                       final reg = student?.registrationNumber ?? '—';
                       final rows =
                           rollRowsByKey[k] ?? const <AttendanceRecord>[];
-                      // Merge duplicate session rows (e.g. same reg, two student
-                      // ids): any present wins. Matches [rollStatsForRegistrationNormalized].
-                      final statusesBySessionId = <String, String>{};
-                      for (final r in rows) {
-                        final next = r.present ? 'Present' : 'Absent';
-                        final prev = statusesBySessionId[r.sessionId];
-                        statusesBySessionId[r.sessionId] =
-                            (prev == 'Present' || next == 'Present')
-                                ? 'Present'
-                                : 'Absent';
-                      }
-                      // Completed sessions with no row = absent (same as profile %).
-                      // In-progress sessions: no row yet → em dash, not absent.
+
                       String? cellLabelForSession(AttendanceSession s) {
-                        final fromRow = statusesBySessionId[s.id];
-                        if (fromRow != null) {
-                          return fromRow;
-                        }
-                        if (s.countsTowardRollStats) {
-                          return 'Absent';
-                        }
-                        return null;
+                        return rollCellLabelForStudentSession(
+                          session: s,
+                          studentId: sid,
+                          recordsForStudent: rows,
+                          pending: _rollPending,
+                        );
                       }
 
                       final rateSessions = listSessions
                           .where((s) => s.countsTowardRollStats)
                           .toList();
-                      var presentForRate = 0;
-                      for (final s in rateSessions) {
-                        if (cellLabelForSession(s) == 'Present') {
-                          presentForRate++;
-                        }
-                      }
-                      final totalRate = rateSessions.length;
-                      final percent = totalRate <= 0
+                      final rateCounts = rollRateCountsForStudentOnList(
+                        studentId: sid,
+                        listId: widget.list.id,
+                        completedSessions: rateSessions,
+                        recordsForStudent: rows,
+                        pending: _rollPending,
+                      );
+                      final percent = rateCounts.total <= 0
                           ? '0%'
-                          : '${((100 * presentForRate) / totalRate).round().clamp(0, 100)}%';
+                          : '${rateCounts.percentRounded}%';
 
                       final displayLabelBySessionId = <String, String?>{
                         for (final s in listSessions)
@@ -2490,8 +2758,10 @@ class _SessionCheckInsScreenState extends State<SessionCheckInsScreen>
                                   final Color color;
                                   if (label == null) {
                                     color = AppTheme.textSecondary;
-                                  } else if (label == 'Present') {
+                                  } else if (label == kRollLabelPresent) {
                                     color = AppTheme.primary;
+                                  } else if (label == kRollLabelPending) {
+                                    color = AppTheme.warning;
                                   } else {
                                     color = AppTheme.error;
                                   }
@@ -2674,6 +2944,7 @@ class _CreateAttendanceListScreenState
     final auth = AuthRepository.instance;
     final creatorUid = auth.currentFirebaseUid?.trim();
     String? lecturerUid;
+    String? pendingLecturerStaffNumber;
     if (auth.adminCheckDone && auth.isAdmin) {
       final resolved =
           await AttendanceRepository.instance.resolveAssignedLecturerForAdmin(
@@ -2687,8 +2958,9 @@ class _CreateAttendanceListScreenState
         return;
       }
       lecturerUid = resolved.uid;
-    } else if (auth.isLecturer && auth.lecturerCheckDone) {
-      lecturerUid = auth.currentFirebaseUid;
+      pendingLecturerStaffNumber = resolved.deferredStaffNumber;
+    } else if (!auth.isAdmin) {
+      lecturerUid = auth.currentFirebaseUid?.trim();
     }
     final list = AttendanceList(
       id: DateTime.now().millisecondsSinceEpoch.toString(),
@@ -2706,11 +2978,30 @@ class _CreateAttendanceListScreenState
     );
     setState(() => _saving = true);
     try {
-      await AttendanceRepository.instance.addList(list);
-      if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Attendance list "$courseUnit" created')),
+      final created = await AttendanceRepository.instance.addList(
+        list,
+        pendingLecturerStaffNumber: pendingLecturerStaffNumber,
       );
+      if (!context.mounted) return;
+      if (!created.syncedToServer) {
+        final deferred = pendingLecturerStaffNumber?.trim();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              deferred != null && deferred.isNotEmpty
+                  ? 'List "$courseUnit" saved on this device. '
+                      'Lecturer $deferred will be linked when you are back online.'
+                  : 'List "$courseUnit" saved on this device. '
+                      'It will publish when you are back online.',
+            ),
+            duration: const Duration(seconds: 6),
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Attendance list "$courseUnit" created')),
+        );
+      }
       Navigator.of(context).pop(true);
     } catch (e) {
       if (!context.mounted) return;
@@ -2731,254 +3022,303 @@ class _CreateAttendanceListScreenState
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Create attendance list'),
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(24),
-        child: Form(
-          key: _formKey,
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(20),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      _field(
-                        _courseUnitC,
-                        'Course unit name',
-                        'e.g. Data Structures & Algorithms',
-                        TextInputType.text,
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        'This name is used as the attendance list title everywhere '
-                        'in the app (dashboard, reports, notices).',
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color: AppTheme.textSecondary,
+    return ListenableBuilder(
+      listenable: AppConnectivity.instance,
+      builder: (context, _) {
+        final offline = !AppConnectivity.instance.isOnline;
+        return Scaffold(
+          appBar: AppBar(
+            title: const Text('Create attendance list'),
+          ),
+          body: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: Form(
+              key: _formKey,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if (offline) ...[
+                    Card(
+                      color: AppTheme.warning.withValues(alpha: 0.12),
+                      child: Padding(
+                        padding: const EdgeInsets.all(14),
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            const Icon(
+                              Icons.cloud_off_rounded,
+                              color: AppTheme.warning,
+                              size: 22,
                             ),
-                      ),
-                      const SizedBox(height: 16),
-                      _field(_whoTaughtC, 'Name of lecturer / Who taught',
-                          'e.g. Dr. Smith', TextInputType.name),
-                      const SizedBox(height: 16),
-                      if (AuthRepository.instance.isAdmin &&
-                          AuthRepository.instance.adminCheckDone) ...[
-                        AssignedLecturerField(
-                          manualStaffController: _manualStaffC,
-                        ),
-                        const SizedBox(height: 16),
-                      ] else if (AuthRepository.instance.isLecturer) ...[
-                        Text(
-                          'This list will be linked to your lecturer account and recorded as one you created.',
-                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                color: AppTheme.textSecondary,
+                            const SizedBox(width: 12),
+                            Expanded(
+                              child: Text(
+                                'You are offline. The list will be saved on this device '
+                                'and published when you reconnect.',
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .bodySmall
+                                    ?.copyWith(height: 1.35),
                               ),
-                        ),
-                        const SizedBox(height: 16),
-                      ],
-                      Text('Class day & program',
-                          style:
-                              Theme.of(context).textTheme.titleSmall?.copyWith(
-                                    fontWeight: FontWeight.w600,
-                                  )),
-                      const SizedBox(height: 8),
-                      _WeekdaySelectorChips(
-                        selectedWeekday: _listDate.weekday,
-                        onSelectWeekday: (w) {
-                          setState(
-                            () => _listDate = attendanceListDateForWeekday(w),
-                          );
-                        },
-                      ),
-                      const SizedBox(height: 4),
-                      Text(
-                        'Which day of the week this class runs.',
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color: AppTheme.textSecondary,
                             ),
+                          ],
+                        ),
                       ),
-                      const SizedBox(height: 12),
-                      Text('Program',
-                          style: Theme.of(context).textTheme.labelLarge),
-                      const SizedBox(height: 8),
-                      SegmentedButton<AttendanceProgram>(
-                        showSelectedIcon: false,
-                        segments: const [
-                          ButtonSegment(
-                            value: AttendanceProgram.day,
-                            label: Text('Day'),
-                            icon: Icon(Icons.wb_sunny_outlined, size: 18),
+                    ),
+                    const SizedBox(height: 16),
+                  ],
+                  Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(20),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          _field(
+                            _courseUnitC,
+                            'Course unit name',
+                            'e.g. Data Structures & Algorithms',
+                            TextInputType.text,
                           ),
-                          ButtonSegment(
-                            value: AttendanceProgram.evening,
-                            label: Text('Evening'),
-                            icon: Icon(Icons.nights_stay_outlined, size: 18),
+                          const SizedBox(height: 8),
+                          Text(
+                            'This name is used as the attendance list title everywhere '
+                            'in the app (dashboard, reports, notices).',
+                            style:
+                                Theme.of(context).textTheme.bodySmall?.copyWith(
+                                      color: AppTheme.textSecondary,
+                                    ),
                           ),
-                          ButtonSegment(
-                            value: AttendanceProgram.weekend,
-                            label: Text('Weekend'),
-                            icon:
-                                Icon(Icons.event_available_outlined, size: 18),
+                          const SizedBox(height: 16),
+                          _field(
+                            _whoTaughtC,
+                            'Name of lecturer / Who taught',
+                            'e.g. Dr. Smith',
+                            TextInputType.name,
                           ),
+                          const SizedBox(height: 16),
+                          if (AuthRepository.instance.isAdmin &&
+                              AuthRepository.instance.adminCheckDone) ...[
+                            AssignedLecturerField(
+                              manualStaffController: _manualStaffC,
+                            ),
+                            const SizedBox(height: 16),
+                          ] else if (AuthRepository.instance.isLecturer) ...[
+                            Text(
+                              'This list will be linked to your lecturer account and recorded as one you created.',
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodySmall
+                                  ?.copyWith(
+                                    color: AppTheme.textSecondary,
+                                  ),
+                            ),
+                            const SizedBox(height: 16),
+                          ],
+                          _buildCreateFormRest(context),
                         ],
-                        selected: {_program},
-                        onSelectionChanged: (Set<AttendanceProgram> next) {
-                          if (next.isNotEmpty) {
-                            setState(() => _program = next.first);
-                          }
-                        },
                       ),
-                      const SizedBox(height: 20),
-                      Text('Time, room, year & semester',
-                          style: Theme.of(context).textTheme.bodyMedium),
-                      const SizedBox(height: 12),
-                      LayoutBuilder(
-                        builder: (context, constraints) {
-                          if (constraints.maxWidth < 400) {
-                            return Column(
-                              children: [
-                                _timePickerFormField(
-                                  context: context,
-                                  controller: _timeC,
-                                  onPickTime: _pickClassTime,
-                                ),
-                                const SizedBox(height: 12),
-                                _field(_roomC, 'Room', 'e.g. A101',
-                                    TextInputType.text),
-                              ],
-                            );
-                          }
-                          return Row(
-                            children: [
-                              Expanded(
-                                child: _timePickerFormField(
-                                  context: context,
-                                  controller: _timeC,
-                                  onPickTime: _pickClassTime,
-                                ),
-                              ),
-                              const SizedBox(width: 12),
-                              Expanded(
-                                  child: _field(_roomC, 'Room', 'e.g. A101',
-                                      TextInputType.text)),
-                            ],
-                          );
-                        },
-                      ),
-                      const SizedBox(height: 12),
-                      LayoutBuilder(
-                        builder: (context, constraints) {
-                          final narrow = constraints.maxWidth < 400;
-                          final yearDropdown = DropdownButtonFormField<String>(
-                            value: _selectedYear,
-                            decoration:
-                                const InputDecoration(labelText: 'Year'),
-                            items: _attendanceYearValues
-                                .map((v) => DropdownMenuItem(
-                                      value: v,
-                                      child: Text(_attendanceYearLabel(v)),
-                                    ))
-                                .toList(),
-                            onChanged: (v) =>
-                                setState(() => _selectedYear = v ?? '1'),
-                          );
-                          final semDropdown = DropdownButtonFormField<String>(
-                            value: _selectedSem,
-                            decoration:
-                                const InputDecoration(labelText: 'Semester'),
-                            items: _attendanceSemValues
-                                .map((v) => DropdownMenuItem(
-                                      value: v,
-                                      child: Text(_attendanceSemLabel(v)),
-                                    ))
-                                .toList(),
-                            onChanged: (v) =>
-                                setState(() => _selectedSem = v ?? '1'),
-                          );
-                          if (narrow) {
-                            return Column(
-                              children: [
-                                yearDropdown,
-                                const SizedBox(height: 12),
-                                semDropdown,
-                              ],
-                            );
-                          }
-                          return Row(
-                            children: [
-                              Expanded(child: yearDropdown),
-                              const SizedBox(width: 12),
-                              Expanded(child: semDropdown),
-                            ],
-                          );
-                        },
-                      ),
-                      const SizedBox(height: 24),
-                      Text('Courses (add multiple)',
-                          style: Theme.of(context).textTheme.titleMedium),
-                      const SizedBox(height: 4),
-                      Text(
-                        'Course codes or names for student check-in. '
-                        'The course unit name above is only the list title.',
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color: AppTheme.textSecondary,
-                            ),
-                      ),
-                      const SizedBox(height: 12),
-                      ...List.generate(_courseEntries.length, (i) {
-                        final e = _courseEntries[i];
-                        return Padding(
-                          padding: const EdgeInsets.only(bottom: 12),
-                          child: Row(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Expanded(
-                                child: _field(e.courseC, 'Course',
-                                    'e.g. CS 101', TextInputType.text),
-                              ),
-                              if (_courseEntries.length > 1)
-                                IconButton(
-                                  icon: const Icon(
-                                      Icons.remove_circle_outline_rounded),
-                                  onPressed: () => _removeCourse(i),
-                                  tooltip: 'Remove course',
-                                ),
-                            ],
-                          ),
-                        );
-                      }),
-                      const SizedBox(height: 8),
-                      OutlinedButton.icon(
-                        onPressed: _addCourse,
-                        icon: const Icon(Icons.add_rounded, size: 18),
-                        label: const Text('Add another course'),
-                      ),
-                      const SizedBox(height: 24),
-                      FilledButton.icon(
-                        onPressed: _saving ? null : _save,
-                        icon: _saving
-                            ? const SizedBox(
-                                width: 18,
-                                height: 18,
-                                child:
-                                    CircularProgressIndicator(strokeWidth: 2),
-                              )
-                            : const Icon(Icons.check_rounded, size: 20),
-                        label: Text(_saving ? 'Saving...' : 'Add to list'),
-                      ),
-                    ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildCreateFormRest(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Class day & program',
+          style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                fontWeight: FontWeight.w600,
+              ),
+        ),
+        const SizedBox(height: 8),
+        _WeekdaySelectorChips(
+          selectedWeekday: _listDate.weekday,
+          onSelectWeekday: (w) {
+            setState(
+              () => _listDate = attendanceListDateForWeekday(w),
+            );
+          },
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'Which day of the week this class runs.',
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: AppTheme.textSecondary,
+              ),
+        ),
+        const SizedBox(height: 12),
+        Text('Program', style: Theme.of(context).textTheme.labelLarge),
+        const SizedBox(height: 8),
+        SegmentedButton<AttendanceProgram>(
+          showSelectedIcon: false,
+          segments: const [
+            ButtonSegment(
+              value: AttendanceProgram.day,
+              label: Text('Day'),
+              icon: Icon(Icons.wb_sunny_outlined, size: 18),
+            ),
+            ButtonSegment(
+              value: AttendanceProgram.evening,
+              label: Text('Evening'),
+              icon: Icon(Icons.nights_stay_outlined, size: 18),
+            ),
+            ButtonSegment(
+              value: AttendanceProgram.weekend,
+              label: Text('Weekend'),
+              icon: Icon(Icons.event_available_outlined, size: 18),
+            ),
+          ],
+          selected: {_program},
+          onSelectionChanged: (Set<AttendanceProgram> next) {
+            if (next.isNotEmpty) {
+              setState(() => _program = next.first);
+            }
+          },
+        ),
+        const SizedBox(height: 20),
+        Text('Time, room, year & semester',
+            style: Theme.of(context).textTheme.bodyMedium),
+        const SizedBox(height: 12),
+        LayoutBuilder(
+          builder: (context, constraints) {
+            if (constraints.maxWidth < 400) {
+              return Column(
+                children: [
+                  _timePickerFormField(
+                    context: context,
+                    controller: _timeC,
+                    onPickTime: _pickClassTime,
+                  ),
+                  const SizedBox(height: 12),
+                  _field(_roomC, 'Room', 'e.g. A101', TextInputType.text),
+                ],
+              );
+            }
+            return Row(
+              children: [
+                Expanded(
+                  child: _timePickerFormField(
+                    context: context,
+                    controller: _timeC,
+                    onPickTime: _pickClassTime,
                   ),
                 ),
-              ),
-            ],
-          ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _field(_roomC, 'Room', 'e.g. A101', TextInputType.text),
+                ),
+              ],
+            );
+          },
         ),
-      ),
+        const SizedBox(height: 12),
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final narrow = constraints.maxWidth < 400;
+            final yearDropdown = DropdownButtonFormField<String>(
+              value: _selectedYear,
+              decoration: const InputDecoration(labelText: 'Year'),
+              items: _attendanceYearValues
+                  .map((v) => DropdownMenuItem(
+                        value: v,
+                        child: Text(_attendanceYearLabel(v)),
+                      ))
+                  .toList(),
+              onChanged: (v) => setState(() => _selectedYear = v ?? '1'),
+            );
+            final semDropdown = DropdownButtonFormField<String>(
+              value: _selectedSem,
+              decoration: const InputDecoration(labelText: 'Semester'),
+              items: _attendanceSemValues
+                  .map((v) => DropdownMenuItem(
+                        value: v,
+                        child: Text(_attendanceSemLabel(v)),
+                      ))
+                  .toList(),
+              onChanged: (v) => setState(() => _selectedSem = v ?? '1'),
+            );
+            if (narrow) {
+              return Column(
+                children: [
+                  yearDropdown,
+                  const SizedBox(height: 12),
+                  semDropdown,
+                ],
+              );
+            }
+            return Row(
+              children: [
+                Expanded(child: yearDropdown),
+                const SizedBox(width: 12),
+                Expanded(child: semDropdown),
+              ],
+            );
+          },
+        ),
+        const SizedBox(height: 24),
+        Text('Courses (add multiple)',
+            style: Theme.of(context).textTheme.titleMedium),
+        const SizedBox(height: 4),
+        Text(
+          'Course codes or names for student check-in. '
+          'The course unit name above is only the list title.',
+          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                color: AppTheme.textSecondary,
+              ),
+        ),
+        const SizedBox(height: 12),
+        ...List.generate(_courseEntries.length, (i) {
+          final e = _courseEntries[i];
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: _field(
+                    e.courseC,
+                    'Course',
+                    'e.g. CS 101',
+                    TextInputType.text,
+                  ),
+                ),
+                if (_courseEntries.length > 1)
+                  IconButton(
+                    icon: const Icon(Icons.remove_circle_outline_rounded),
+                    onPressed: () => _removeCourse(i),
+                    tooltip: 'Remove course',
+                  ),
+              ],
+            ),
+          );
+        }),
+        const SizedBox(height: 8),
+        OutlinedButton.icon(
+          onPressed: _addCourse,
+          icon: const Icon(Icons.add_rounded, size: 18),
+          label: const Text('Add another course'),
+        ),
+        const SizedBox(height: 24),
+        FilledButton.icon(
+          onPressed: _saving ? null : _save,
+          icon: _saving
+              ? const SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                )
+              : const Icon(Icons.check_rounded, size: 20),
+          label: Text(_saving ? 'Saving...' : 'Add to list'),
+        ),
+      ],
     );
   }
 
@@ -3126,7 +3466,7 @@ class _EditAttendanceListScreenState extends State<EditAttendanceListScreen> {
         );
         return;
       }
-      lecturerUid = resolved.uid;
+      lecturerUid = resolved.uid ?? _list!.lecturerUid;
     }
     final updated = AttendanceList(
       id: _list!.id,
@@ -3394,100 +3734,11 @@ class _EditAttendanceListScreenState extends State<EditAttendanceListScreen> {
   }
 }
 
-/// When a registration is missing from the roster, collect name and add them.
-class _JoinRosterDialog extends StatefulWidget {
-  const _JoinRosterDialog({required this.registrationNumber});
-  final String registrationNumber;
-
-  @override
-  State<_JoinRosterDialog> createState() => _JoinRosterDialogState();
-}
-
-class _JoinRosterDialogState extends State<_JoinRosterDialog> {
-  final _nameC = TextEditingController();
-  bool _busy = false;
-
-  @override
-  void dispose() {
-    _nameC.dispose();
-    super.dispose();
-  }
-
-  Future<void> _submit() async {
-    final name = _nameC.text.trim();
-    if (name.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Enter your full name.')),
-      );
-      return;
-    }
-    final ini = initialsFromFullName(name);
-    setState(() => _busy = true);
-    try {
-      final student = await AttendanceRepository.instance.registerStudent(
-        name,
-        widget.registrationNumber,
-        ini,
-      );
-      if (!mounted) return;
-      Navigator.of(context).pop(student);
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text('New student profile'),
-      content: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Text(
-              'Registration ${widget.registrationNumber} is not on this device yet. '
-              'Add your name once to create your student profile. '
-              'On the next step you will pick your course for the class you are checking into.',
-              style: Theme.of(context).textTheme.bodyMedium,
-            ),
-            const SizedBox(height: 16),
-            TextField(
-              controller: _nameC,
-              textCapitalization: TextCapitalization.words,
-              decoration: const InputDecoration(
-                labelText: 'Full name',
-                hintText: 'As registered with the university',
-              ),
-              textInputAction: TextInputAction.done,
-              onSubmitted: (_) => _busy ? null : _submit(),
-            ),
-          ],
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: _busy ? null : () => Navigator.of(context).pop(),
-          child: const Text('Cancel'),
-        ),
-        FilledButton(
-          onPressed: _busy ? null : _submit,
-          child: _busy
-              ? const SizedBox(
-                  width: 22,
-                  height: 22,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : const Text('Add & continue'),
-        ),
-      ],
-    );
-  }
-}
-
 /// Student sign-in: registration number + session code.
 class _SignInContent extends StatefulWidget {
-  const _SignInContent();
+  const _SignInContent({required this.onRefresh});
+
+  final Future<void> Function() onRefresh;
 
   @override
   State<_SignInContent> createState() => _SignInContentState();
@@ -3496,10 +3747,11 @@ class _SignInContent extends StatefulWidget {
 class _SignInContentState extends State<_SignInContent> {
   final _regC = TextEditingController();
   final _sessionCodeC = TextEditingController();
+  final _sessionCodeFocus = FocusNode();
   bool _busy = false;
 
-  /// Upper-bound hint while Firestore / GPS work; ticks down once per second.
-  static const int _signInBusyCountdownSeconds = 35;
+  /// Upper-bound hint while session lookup runs; ticks down once per second.
+  static const int _signInBusyCountdownSeconds = 20;
   Timer? _busyCountdownTimer;
   int _busyCountdownRemaining = 0;
 
@@ -3509,38 +3761,44 @@ class _SignInContentState extends State<_SignInContent> {
   bool _regFromProfile = false;
 
   void _syncRegistrationFromProfile() {
-    final r = AuthRepository.instance.currentRegistrationNumber?.trim();
-    if (r != null && r.isNotEmpty) {
-      if (_regC.text != r) {
-        _regC.text = r;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final r = AuthRepository.instance.currentRegistrationNumber?.trim();
+      if (r != null && r.isNotEmpty) {
+        if (_regC.text != r) {
+          _regC.text = r;
+        }
+        if (!_regFromProfile) {
+          setState(() => _regFromProfile = true);
+        }
+      } else {
+        if (_regFromProfile) {
+          setState(() => _regFromProfile = false);
+        }
+        if (_currentStudent != null) {
+          setState(() => _currentStudent = null);
+        }
+        return;
       }
-      if (!_regFromProfile) {
-        setState(() => _regFromProfile = true);
+      final student = AttendanceStore.findStudentByReg(r);
+      if (_currentStudent?.id != student?.id) {
+        setState(() => _currentStudent = student);
       }
-    } else {
-      if (_regFromProfile) {
-        setState(() => _regFromProfile = false);
-      }
-      if (_currentStudent != null) {
-        setState(() => _currentStudent = null);
-      }
-      return;
-    }
-    final student = AttendanceStore.findStudentByReg(r);
-    if (_currentStudent?.id != student?.id) {
-      setState(() => _currentStudent = student);
-    }
+    });
   }
 
   @override
   void initState() {
     super.initState();
     AuthRepository.instance.addListener(_syncRegistrationFromProfile);
+    AttendanceRepository.instance.addListener(_syncRegistrationFromProfile);
     AppConnectivity.instance.addListener(_onConnectivityChanged);
     _syncRegistrationFromProfile();
+    unawaited(AttendanceRepository.instance.loadStudentAttendanceForProfile());
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      unawaited(AttendanceOfflineSync.drainAllInOrder().then((_) {
+      unawaited(StudentLocationPriming.instance.primeOnAppOpen());
+      unawaited(AttendanceOfflineSync.drainSessionValidationFirst().then((_) {
         if (mounted) setState(() {});
       }));
     });
@@ -3551,8 +3809,10 @@ class _SignInContentState extends State<_SignInContent> {
     _busyCountdownTimer?.cancel();
     AppConnectivity.instance.removeListener(_onConnectivityChanged);
     AuthRepository.instance.removeListener(_syncRegistrationFromProfile);
+    AttendanceRepository.instance.removeListener(_syncRegistrationFromProfile);
     _regC.dispose();
     _sessionCodeC.dispose();
+    _sessionCodeFocus.dispose();
     super.dispose();
   }
 
@@ -3589,19 +3849,16 @@ class _SignInContentState extends State<_SignInContent> {
   }
 
   String _studentBusyButtonLabel() {
-    final online = AppConnectivity.instance.isOnline;
     if (_busyCountdownRemaining > 0) {
-      return online
-          ? 'Checking… ${_busyCountdownRemaining}s'
-          : 'Resolving… ${_busyCountdownRemaining}s';
+      return 'Checking in… ${_busyCountdownRemaining}s';
     }
-    return online ? 'Checking…' : 'Resolving…';
+    return 'Checking in…';
   }
 
   void _onConnectivityChanged() {
     if (!mounted) return;
     if (AppConnectivity.instance.isOnline) {
-      unawaited(AttendanceOfflineSync.drainAllInOrder());
+      unawaited(AttendanceOfflineSync.drainSessionValidationFirst());
     }
     setState(() {});
   }
@@ -3614,19 +3871,32 @@ class _SignInContentState extends State<_SignInContent> {
 
   void _onStudentSessionCodeChanged(String _) {
     setState(() {});
-    final normalized = normalizeSessionCodeInput(_sessionCodeC.text);
-    if (_busy) return;
-    if (_regC.text.trim().isEmpty) return;
-    if (!isValidJoinCodeFormat(normalized)) return;
-    unawaited(_continueToCheckIn());
   }
 
-  Future<void> _showAuthVerificationAnimation() async {
-    if (!mounted) return;
-    await showDialog<void>(
-      context: context,
-      barrierDismissible: false,
-      builder: (ctx) => const _AuthVerificationDialog(),
+  bool get _canSubmitSessionCode =>
+      !_busy &&
+      _registrationFormatOk &&
+      isValidJoinCodeFormat(normalizeSessionCodeInput(_sessionCodeC.text));
+
+  Widget? _sessionCodeSubmitSuffix() {
+    if (_busy) {
+      return Padding(
+        padding: const EdgeInsets.all(12),
+        child: SizedBox(
+          width: 20,
+          height: 20,
+          child: CircularProgressIndicator(
+            strokeWidth: 2,
+            color: Theme.of(context).colorScheme.primary,
+          ),
+        ),
+      );
+    }
+    return IconButton(
+      icon: const Icon(Icons.arrow_forward_rounded),
+      tooltip: 'Submit code',
+      onPressed:
+          _canSubmitSessionCode ? () => unawaited(_continueToCheckIn()) : null,
     );
   }
 
@@ -3728,6 +3998,22 @@ class _SignInContentState extends State<_SignInContent> {
   bool get _registrationFormatOk =>
       StudentRegistrationNumber.validateFormat(_regC.text) == null;
 
+  void _returnToEnterNewSessionCode() {
+    _sessionCodeC.clear();
+    setState(() {});
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _sessionCodeFocus.requestFocus();
+    });
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'Enter the correct session code from your lecturer.',
+        ),
+        duration: Duration(seconds: 5),
+      ),
+    );
+  }
+
   Future<void> _continueToCheckIn() async {
     final regErr = StudentRegistrationNumber.validateFormat(_regC.text);
     if (regErr != null) {
@@ -3737,135 +4023,159 @@ class _SignInContentState extends State<_SignInContent> {
       return;
     }
     final reg = StudentRegistrationNumber.normalize(_regC.text);
+    final profileReg = StudentRegistrationNumber.normalize(
+      AuthRepository.instance.currentRegistrationNumber?.trim() ?? '',
+    );
+    final requiresProfileRegistration =
+        _regFromProfile || AttendanceRepository.isStudentScopedUser();
+    if (requiresProfileRegistration && profileReg.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Your account has no registration number. Update your profile in Settings or contact support.',
+          ),
+          duration: Duration(seconds: 6),
+        ),
+      );
+      return;
+    }
+    if (profileReg.isNotEmpty && reg != profileReg) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Use the registration number on your profile to continue check-in.',
+          ),
+          duration: Duration(seconds: 5),
+        ),
+      );
+      return;
+    }
+    final deviceRegBlock = await AttendanceRepository.instance
+        .deviceRegistrationBlockReason(reg);
+    if (!mounted) return;
+    if (deviceRegBlock != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'This device already registered another student. '
+            'Each phone may only be used for one student.',
+          ),
+          duration: Duration(seconds: 6),
+        ),
+      );
+      return;
+    }
     final rawCode = _sessionCodeC.text.trim();
     if (!isValidJoinCodeFormat(normalizeSessionCodeInput(rawCode))) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
             content:
-                Text(
-                    'Enter the session code from your class (3 digits on screen).')),
+                Text('Enter the session code from your class (e.g. $kSessionJoinCodeExample).')),
       );
       return;
     }
-    await _showAuthVerificationAnimation();
-    if (!mounted) return;
     _setBusy(true);
     try {
-      final isOnline = AppConnectivity.instance.isOnline;
+      final prefetchOnline = AppConnectivity.instance.isOnline ||
+          AppConnectivity.instance.hasNetworkInterface;
+      if (StudentLocationPriming.instance.lastPosition == null &&
+          !StudentLocationPriming.instance.resolving) {
+        unawaited(StudentLocationPriming.instance.acquireFreshForCheckIn());
+      }
+      unawaited(_loadAttendanceStoreForSignIn(onlineHint: prefetchOnline));
 
-      // Always refresh store when possible (Firestore cache works offline too).
-      // Skipping load while offline made existing students look "new" and caused
-      // duplicate profiles / wrong Join-roster prompts. Capped wait keeps UI fast.
-      await _loadAttendanceStoreForSignIn();
+      final localSession =
+          AttendanceRepository.instance.validateSessionCode(rawCode);
+      final reachFuture = AppConnectivity.instance.ensureReachable(
+        timeout: const Duration(seconds: 2),
+      );
+      final studentFuture =
+          AttendanceRepository.instance.resolveStudentForRegistration(reg);
+      final resolveFuture = localSession != null && localSession.isOpenForCheckIn
+          ? Future.value((
+              session: localSession,
+              list: AttendanceStore.listById(localSession.listId),
+            ))
+          : AttendanceRepository.instance
+              .resolveSessionAndListForStudentCode(rawCode);
+
+      final isOnline = await reachFuture;
       if (!mounted) return;
-      late final StudentRecord student;
-      final existing = AttendanceStore.findStudentByReg(reg);
-      if (existing != null) {
-        student = existing;
-      } else {
-        final added = await showDialog<StudentRecord>(
-          context: context,
-          barrierDismissible: false,
-          builder: (ctx) => _JoinRosterDialog(registrationNumber: reg.trim()),
-        );
+      final student = await studentFuture;
+      if (!mounted) return;
+      if (student == null) {
+        final blocked = await AttendanceRepository.instance
+            .deviceRegistrationBlockReason(reg);
         if (!mounted) return;
-        if (added == null) {
-          return;
-        }
-        student = added;
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text(
-                  'Profile saved. Next, pick your course for this class if asked.'),
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              blocked ??
+                  'Could not load your registered name. Sign in again and retry.',
             ),
-          );
-        }
-      }
-      var session = AttendanceRepository.instance.validateSessionCode(rawCode);
-      if (session == null && isOnline) {
-        try {
-          session = await AttendanceRepository.instance
-              .resolveSessionByCode(rawCode)
-              .timeout(const Duration(seconds: 8));
-        } catch (_) {
-          session = null;
-        }
-      }
-      if (!mounted) return;
-      if (session == null) {
-        if (isOnline) {
-          AttendanceSession? latestForCode;
-          try {
-            latestForCode = await AttendanceRepository.instance
-                .resolveLatestSessionByCode(rawCode)
-                .timeout(const Duration(seconds: 8));
-          } catch (_) {
-            latestForCode = null;
-          }
-          if (!mounted) return;
-          if (latestForCode != null) {
-            await _queueOfflineSessionAttempt(
-              registrationNumber: reg,
-              rawCode: rawCode,
-            );
-            if (!mounted) return;
-            ScaffoldMessenger.of(context).showSnackBar(
-              const SnackBar(
-                content: Text(
-                  'This code looks expired now, but your attempt is saved and will be auto-rechecked.',
-                ),
-              ),
-            );
-            return;
-          }
-          await _queueOfflineSessionAttempt(
-            registrationNumber: reg,
-            rawCode: rawCode,
-          );
-          if (!mounted) return;
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text(
-                'Code not found right now. Your attempt is saved and will auto-compare when sync succeeds.',
-              ),
-            ),
-          );
-          return;
-        }
-        // If we cannot resolve now (including flaky online->offline transitions),
-        // keep the attempt and auto-validate/submit when data is reachable again.
-        await _queueOfflineSessionAttempt(
-          registrationNumber: reg,
-          rawCode: rawCode,
+          ),
         );
         return;
       }
-      var list = AttendanceStore.listById(session.listId);
-      if (list == null) {
-        try {
-          list = await AttendanceRepository.instance
-              .resolveListById(session.listId)
-              .timeout(const Duration(seconds: 6));
-        } catch (_) {
-          list = null;
+      final resolved = await resolveFuture;
+      var session = resolved.session;
+      var list = resolved.list;
+      if (!mounted) return;
+      if (session == null) {
+        if (isOnline &&
+            await AttendanceRepository.instance
+                .serverHasOnlyInactiveSessionForCode(rawCode)) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'This join code matches a session that has already ended. '
+                'Ask your lecturer for the current code on screen.',
+              ),
+              duration: Duration(seconds: 7),
+            ),
+          );
+          return;
         }
+        final normalizedCode = normalizeSessionCodeInput(rawCode);
+        final choice = await showUnknownSessionCodeConfirmDialog(
+          context: context,
+          normalizedCode: normalizedCode,
+          isOnline: isOnline,
+        );
+        if (!mounted || choice == null) return;
+
+        if (choice == UnknownSessionCodeConfirmChoice.codeIsWrong) {
+          _returnToEnterNewSessionCode();
+          return;
+        }
+
+        final saved = await _queueOfflineSessionAttempt(
+          registrationNumber: reg,
+          rawCode: rawCode,
+        );
+        if (!mounted) return;
+        if (!saved) return;
+
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              isOnline
+                  ? 'Code $normalizedCode saved for up to 7 days — '
+                      'will auto-verify when your lecturer starts the session.'
+                  : 'Code $normalizedCode saved offline for up to 7 days — '
+                      'will verify when the session is available.',
+            ),
+            duration: const Duration(seconds: 6),
+          ),
+        );
+        return;
       }
       if (list == null) {
-        try {
-          await AttendanceRepository.instance
-              .loadAll(
-                force: true,
-                scopeToLecturerUid:
-                    AttendanceRepository.currentLecturerLoadScopeUid(),
-              )
-              .timeout(const Duration(seconds: 12));
-        } catch (_) {}
-        list = AttendanceStore.listById(session.listId);
+        final refetched = await AttendanceRepository.instance
+            .resolveSessionAndListForStudentCode(rawCode);
+        list = refetched.list;
       }
       if (list == null) {
-        // Wi‑Fi can report "online" while DNS/Firestore is unreachable — still
-        // queue so the attempt appears under Offline pending sessions.
         await _queueOfflineSessionAttempt(
           registrationNumber: reg,
           rawCode: rawCode,
@@ -3875,8 +4185,7 @@ class _SignInContentState extends State<_SignInContent> {
           SnackBar(
             content: Text(
               isOnline
-                  ? 'Could not load this class list (network may be unstable). '
-                      'Your attempt is saved and will retry when connection works.'
+                  ? 'Could not load this class list yet. Your code is saved and will verify when the session syncs.'
                   : 'Could not load this class list right now. Your attempt is saved and will auto-submit when synced.',
             ),
             duration: const Duration(seconds: 5),
@@ -3898,77 +4207,156 @@ class _SignInContentState extends State<_SignInContent> {
       var studentCourse = AttendanceStore.signedInCourseForStudentOnList(
           activeList.id, student.id);
       if (studentCourse == null || studentCourse.trim().isEmpty) {
-        final chosen = await _pickCourseForFirstListSignIn(
-          activeList,
-          studentId: student.id,
+        String? chosenCourse;
+        if (activeList.coursesSafe.length > 1) {
+          chosenCourse = await _pickCourseForFirstListSignIn(
+            activeList,
+            studentId: student.id,
+          );
+          if (!mounted) return;
+          if (chosenCourse == null || chosenCourse.trim().isEmpty) {
+            if (activeList.coursesSafe.isNotEmpty) {
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('Choose a course from the list to continue.'),
+                ),
+              );
+            }
+            return;
+          }
+          chosenCourse = chosenCourse.trim();
+        }
+        final enroll = await AttendanceRepository.instance
+            .ensureStudentEnrolledOnList(
+          list: activeList,
+          student: student,
+          course: chosenCourse,
         );
         if (!mounted) return;
-        if (chosen == null || chosen.trim().isEmpty) {
-          if (activeList.coursesSafe.isNotEmpty) {
+        switch (enroll) {
+          case StudentListEnrollOutcome.deviceBlocked:
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text(
+                  'This device already registered another student. '
+                  'Each phone may only be used for one student.',
+                ),
+                duration: Duration(seconds: 6),
+              ),
+            );
+            return;
+          case StudentListEnrollOutcome.noCourses:
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(
+                content: Text(
+                  'This class list has no courses. Ask staff to add courses, then retry.',
+                ),
+                duration: Duration(seconds: 6),
+              ),
+            );
+            return;
+          case StudentListEnrollOutcome.needsCourseChoice:
             ScaffoldMessenger.of(context).showSnackBar(
               const SnackBar(
                 content: Text('Choose a course from the list to continue.'),
               ),
             );
-          }
-          return;
+            return;
+          case StudentListEnrollOutcome.alreadyEnrolled:
+          case StudentListEnrollOutcome.enrolled:
+            studentCourse = AttendanceStore.signedInCourseForStudentOnList(
+                  activeList.id, student.id) ??
+                chosenCourse ??
+                (activeList.coursesSafe.length == 1
+                    ? activeList.coursesSafe.first
+                    : null);
+            if (studentCourse == null || studentCourse.trim().isEmpty) {
+              return;
+            }
+            studentCourse = studentCourse.trim();
         }
-        studentCourse = chosen.trim();
-        try {
-          await AttendanceRepository.instance
-              .ensureSignInAndBackfillPastAbsents(
-            listId: activeList.id,
-            studentId: student.id,
-            course: studentCourse,
-          );
-        } catch (e) {
-          if (!mounted) return;
-          await _queueOfflineSessionAttempt(
-            registrationNumber: reg,
-            rawCode: rawCode,
-          );
-          if (!mounted) return;
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(
-                'Could not save enrollment online ($e). '
-                'If location was captured, your attempt is under Offline pending sessions; '
-                'otherwise enable connection or GPS and try again.',
-              ),
-              duration: const Duration(seconds: 8),
-            ),
-          );
-          return;
-        }
+      } else {
       }
       if (!mounted) return;
+      var activeSession = session;
+      if (!activeSession.isOpenForCheckIn) {
+        final refreshed = await AttendanceRepository.instance
+            .resolveActiveSessionByCodeForSignIn(rawCode);
+        if (refreshed != null && refreshed.isOpenForCheckIn) {
+          activeSession = refreshed;
+        }
+      }
+      if (!activeSession.isOpenForCheckIn) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'This session is no longer active. Ask your lecturer for a new code.',
+            ),
+          ),
+        );
+        return;
+      }
+      final installDeviceId = await DeviceIdentity.resolve();
+      if (!mounted) return;
+      if (installDeviceId.trim().isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Could not identify this device. Attendance cannot be saved.',
+            ),
+          ),
+        );
+        return;
+      }
+      final alreadyPresent =
+          AttendanceStore.isPresentForSession(activeSession.id, student.id);
+      if (!alreadyPresent &&
+          await AttendanceRepository.instance.isDeviceBlockedForStudentSession(
+            sessionId: activeSession.id,
+            studentId: student.id,
+            deviceId: installDeviceId,
+            sessionCodeRaw: activeSession.sessionCode,
+          )) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              userMessageForCheckInOutcome(
+                StudentOfflineCheckInOutcome.deviceBlocked,
+              ),
+            ),
+            duration: const Duration(seconds: 6),
+          ),
+        );
+        return;
+      }
+      final prefetchedPosition = StudentLocationPriming.instance.lastPosition;
       final result =
           await Navigator.of(context).push<StudentCheckInProgressResult>(
         MaterialPageRoute(
           builder: (ctx) => StudentCheckInProgressScreen(
-            session: session!,
+            session: activeSession,
             student: student,
             list: activeList,
             selectedCourse: studentCourse,
+            prefetchedPosition: prefetchedPosition,
           ),
         ),
       );
       if (!mounted) return;
       if (result != null && result.success) {
+        unawaited(
+          AttendanceRepository.instance.notifyAttendanceAfterCheckIn(
+            sessionId: activeSession.id,
+            studentId: student.id,
+            listId: activeList.id,
+          ),
+        );
         if (result.wasQueued) {
-          showAttendanceTopSuccessBanner(
-            context,
-            'Attendance saved on this device. It will upload when you are online.',
-          );
           unawaited(_openOfflinePendingScreen());
-        } else {
-          showAttendanceTopSuccessBanner(
-            context,
-            'Check-in verified and saved for this session.',
-          );
         }
         final rec = AttendanceStore.attendanceRecordForSessionStudent(
-          session.id,
+          activeSession.id,
           student.id,
         );
         var course = rec?.course ?? '';
@@ -4011,7 +4399,7 @@ class _SignInContentState extends State<_SignInContent> {
     );
   }
 
-  Future<void> _queueOfflineSessionAttempt({
+  Future<bool> _queueOfflineSessionAttempt({
     required String registrationNumber,
     required String rawCode,
   }) async {
@@ -4022,14 +4410,39 @@ class _SignInContentState extends State<_SignInContent> {
         '${normalizeSessionCodeInput(rawCode)}_${registrationNumber.trim().toUpperCase()}';
 
     final deviceId = await DeviceIdentity.resolve();
-    if (!mounted) return;
+    if (!mounted) return false;
     if (deviceId.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
           content: Text('Could not identify this device for offline queueing.'),
         ),
       );
-      return;
+      return false;
+    }
+
+    final pendingEntry = PendingSessionCodeEntry(
+      id: id,
+      registrationNumber: registrationNumber.trim().toUpperCase(),
+      sessionCodeRaw: rawCode.trim(),
+      capturedAt: captureIntentAt,
+      latitude: 0,
+      longitude: 0,
+      deviceId: deviceId.trim(),
+      status: PendingSessionCodeStatus.queued,
+      note: '',
+    );
+    final deviceBlock = await PendingSessionCodeClaimUpload.localDeviceBlockReason(
+      pendingEntry,
+    );
+    if (!mounted) return false;
+    if (deviceBlock != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(deviceBlock),
+          duration: const Duration(seconds: 6),
+        ),
+      );
+      return false;
     }
 
     final ok = await Navigator.of(context).push<bool>(
@@ -4044,406 +4457,138 @@ class _SignInContentState extends State<_SignInContent> {
         ),
       ),
     );
-    if (!mounted) return;
+    if (!mounted) return false;
     if (ok == true) {
       _clearSessionCodeAfterUse();
-      showAttendanceTopSuccessBanner(
-        context,
-        'Session saved for later verification. It will auto-validate when you are online.',
-      );
+      return true;
     }
+    return false;
+  }
+
+  Future<void> _pullToRefresh() async {
+    await widget.onRefresh();
+    if (!mounted) return;
+    _syncRegistrationFromProfile();
+    setState(() {});
   }
 
   @override
   Widget build(BuildContext context) {
-    return RefreshIndicator(
-      onRefresh: () async {
-        await AttendanceRepository.instance.loadAll(
-          scopeToLecturerUid: AttendanceRepository.currentLecturerLoadScopeUid(),
-        );
-        if (mounted) {
-          _syncRegistrationFromProfile();
-          setState(() {});
-        }
-      },
-      child: SingleChildScrollView(
-        physics: const AlwaysScrollableScrollPhysics(),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Card(
-              elevation: 2,
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(18, 16, 18, 16),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    Text(
-                      'Enter your registration number and the live session code from your lecturer.',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: AppTheme.textSecondary,
-                            height: 1.35,
-                          ),
-                    ),
-                    const SizedBox(height: 20),
-                    TextFormField(
-                      controller: _regC,
-                      readOnly: _regFromProfile,
-                      enableInteractiveSelection: !_regFromProfile,
-                      decoration: InputDecoration(
-                        labelText: 'Registration number',
-                        hintText: _regFromProfile
-                            ? null
-                            : StudentRegistrationNumber.example,
-                        suffixIcon: _regFromProfile
-                            ? Icon(Icons.lock_outline_rounded,
-                                color: AppTheme.textSecondary, size: 20)
-                            : null,
-                      ),
-                      textCapitalization: TextCapitalization.characters,
-                      onChanged: (_) => setState(() {}),
-                    ),
-                    const SizedBox(height: 16),
-                    TextFormField(
-                      controller: _sessionCodeC,
-                      decoration: const InputDecoration(
-                        labelText: 'Session code',
-                        hintText: '3 digits from class',
-                        counterText: '',
-                      ),
-                      textCapitalization: TextCapitalization.characters,
-                      maxLength: 4,
-                      keyboardType: TextInputType.number,
-                      inputFormatters: [
-                        FilteringTextInputFormatter.allow(RegExp(r'[0-9]')),
-                      ],
-                      onChanged: _onStudentSessionCodeChanged,
-                    ),
-                    const SizedBox(height: 24),
-                    FilledButton(
-                      onPressed: _busy
-                          ? null
-                          : (!isValidJoinCodeFormat(normalizeSessionCodeInput(
-                                      _sessionCodeC.text)) ||
-                                  !_registrationFormatOk)
-                              ? null
-                              : _continueToCheckIn,
-                      child: _busy
-                          ? Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                const SizedBox(
-                                  height: 18,
-                                  width: 18,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                  ),
-                                ),
-                                const SizedBox(width: 10),
-                                Text(_studentBusyButtonLabel()),
-                              ],
-                            )
-                          : const Text('Continue'),
-                    ),
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: TextButton.icon(
-                        onPressed: () async {
-                          await Navigator.of(context).push(
-                            MaterialPageRoute<void>(
-                              builder: (_) => const PendingSessionsScreen(),
+    return PullToRefreshBody(
+      onRefresh: _pullToRefresh,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Card(
+            elevation: 2,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(18, 16, 18, 16),
+              child: ListenableBuilder(
+                listenable: StudentLocationPriming.instance,
+                builder: (context, _) {
+                  final priming = StudentLocationPriming.instance;
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text(
+                        'Enter the join code from class ($kSessionJoinCodeFormatHint), then tap the arrow to submit. Location is prepared in the background.',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: AppTheme.textSecondary,
+                              height: 1.35,
                             ),
-                          );
-                          if (mounted) setState(() {});
-                        },
-                        icon: const Icon(Icons.pending_actions_rounded),
-                        label: const Text('Offline pending sessions'),
                       ),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _AuthVerificationDialog extends StatefulWidget {
-  const _AuthVerificationDialog();
-
-  @override
-  State<_AuthVerificationDialog> createState() =>
-      _AuthVerificationDialogState();
-}
-
-class _AuthVerificationDialogState extends State<_AuthVerificationDialog>
-    with SingleTickerProviderStateMixin {
-  static const _stagesOnline = <String>[
-    'Securing your session…',
-    'Checking account access…',
-    'All set — opening check-in…',
-  ];
-
-  static const _stagesOffline = <String>[
-    'Working on this device…',
-    'Preparing offline-safe check-in…',
-    'All set — opening check-in…',
-  ];
-
-  late final bool _startedOnline;
-  late final AnimationController _pulse;
-  int _stageIndex = 0;
-
-  List<String> get _stages =>
-      _startedOnline ? _stagesOnline : _stagesOffline;
-
-  @override
-  void initState() {
-    super.initState();
-    _startedOnline = AppConnectivity.instance.isOnline;
-    _pulse = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 1400),
-    )..repeat(reverse: true);
-    _runSequence();
-  }
-
-  @override
-  void dispose() {
-    _pulse.dispose();
-    super.dispose();
-  }
-
-  Future<void> _runSequence() async {
-    // Hold each step long enough to read; total ~2.4s before closing.
-    await Future<void>.delayed(const Duration(milliseconds: 700));
-    if (!mounted) return;
-    setState(() => _stageIndex = 1);
-    await Future<void>.delayed(const Duration(milliseconds: 900));
-    if (!mounted) return;
-    setState(() => _stageIndex = 2);
-    await Future<void>.delayed(const Duration(milliseconds: 800));
-    if (!mounted) return;
-    Navigator.of(context).pop();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final modeLabel = _startedOnline ? 'Online' : 'Offline';
-    final modeColor =
-        _startedOnline ? AppTheme.primaryLight : AppTheme.warning;
-    final modeBg = _startedOnline
-        ? AppTheme.primary.withValues(alpha: 0.12)
-        : AppTheme.warning.withValues(alpha: 0.14);
-
-    return PopScope(
-      canPop: false,
-      child: Dialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
-        insetPadding: const EdgeInsets.symmetric(horizontal: 22, vertical: 24),
-        clipBehavior: Clip.antiAlias,
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(22),
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [
-                AppTheme.surface,
-                AppTheme.accentLight.withValues(alpha: 0.35),
-              ],
-            ),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.fromLTRB(22, 22, 22, 20),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    SizedBox(
-                      width: 58,
-                      height: 58,
-                      child: Stack(
-                        alignment: Alignment.center,
-                        children: [
-                          Padding(
-                            padding: const EdgeInsets.all(2),
-                            child: SizedBox(
-                              width: 54,
-                              height: 54,
-                              child: CircularProgressIndicator(
-                                strokeWidth: 3,
-                                color: AppTheme.primary,
-                                backgroundColor:
-                                    AppTheme.accentLight.withValues(alpha: 0.5),
-                              ),
-                            ),
-                          ),
-                          FadeTransition(
-                            opacity: Tween<double>(begin: 0.55, end: 1.0).animate(
-                              CurvedAnimation(
-                                parent: _pulse,
-                                curve: Curves.easeInOut,
-                              ),
-                            ),
-                            child: Icon(
-                              _startedOnline
-                                  ? Icons.verified_user_rounded
-                                  : Icons.shield_moon_rounded,
-                              size: 30,
-                              color: AppTheme.primary,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(width: 14),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Verification',
-                            style: theme.textTheme.titleLarge?.copyWith(
-                              fontWeight: FontWeight.w700,
-                              color: AppTheme.textPrimary,
-                            ),
-                          ),
-                          const SizedBox(height: 6),
-                          Wrap(
-                            spacing: 8,
-                            runSpacing: 6,
-                            crossAxisAlignment: WrapCrossAlignment.center,
-                            children: [
-                              Material(
-                                color: modeBg,
-                                borderRadius: BorderRadius.circular(999),
-                                child: Padding(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 10,
-                                    vertical: 4,
-                                  ),
-                                  child: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Icon(
-                                        _startedOnline
-                                            ? Icons.wifi_rounded
-                                            : Icons.wifi_off_rounded,
-                                        size: 15,
-                                        color: modeColor,
-                                      ),
-                                      const SizedBox(width: 5),
-                                      Text(
-                                        modeLabel,
-                                        style: theme.textTheme.labelMedium
-                                            ?.copyWith(
-                                          color: modeColor,
-                                          fontWeight: FontWeight.w700,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              ),
-                              Text(
-                                _startedOnline
-                                    ? 'Syncing when the network is ready.'
-                                    : 'Saved steps stay on this device until you reconnect.',
-                                style: theme.textTheme.bodySmall?.copyWith(
-                                  color: AppTheme.textSecondary,
-                                  height: 1.25,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 18),
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(6),
-                  child: TweenAnimationBuilder<double>(
-                    tween: Tween(begin: 0, end: 1),
-                    duration: const Duration(milliseconds: 1750),
-                    curve: Curves.easeOutCubic,
-                    builder: (context, t, _) {
-                      return LinearProgressIndicator(
-                        minHeight: 6,
-                        value: t,
-                        backgroundColor:
-                            AppTheme.softGrey.withValues(alpha: 0.85),
-                        color: AppTheme.primary,
-                      );
-                    },
-                  ),
-                ),
-                const SizedBox(height: 18),
-                Row(
-                  children: List.generate(3, (i) {
-                    final done = _stageIndex > i;
-                    final active = _stageIndex == i;
-                    return Expanded(
-                      child: Padding(
-                        padding: EdgeInsets.only(right: i < 2 ? 8 : 0),
-                        child: AnimatedContainer(
-                          duration: const Duration(milliseconds: 260),
-                          curve: Curves.easeOutCubic,
-                          height: 5,
-                          decoration: BoxDecoration(
-                            borderRadius: BorderRadius.circular(999),
-                            color: done
-                                ? AppTheme.success
-                                : active
-                                    ? AppTheme.primary
-                                    : AppTheme.softGrey,
-                          ),
+                      const SizedBox(height: 14),
+                      LocationResolvingPanel(
+                        compact: true,
+                        resolving: priming.resolving,
+                        position: priming.lastPosition,
+                        errorMessage: priming.errorMessage,
+                        locationServiceDisabled: priming.locationServiceDisabled,
+                        permissionBlocked: priming.permissionBlocked,
+                        onRetry: () => unawaited(
+                          StudentLocationPriming.instance
+                              .acquireFreshForCheckIn(),
                         ),
                       ),
-                    );
-                  }),
-                ),
-                const SizedBox(height: 16),
-                AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 260),
-                  transitionBuilder: (child, anim) {
-                    return FadeTransition(
-                      opacity: anim,
-                      child: SlideTransition(
-                        position: Tween<Offset>(
-                          begin: const Offset(0, 0.06),
-                          end: Offset.zero,
-                        ).animate(anim),
-                        child: child,
+                      const SizedBox(height: 20),
+                      TextFormField(
+                        controller: _regC,
+                        readOnly: _regFromProfile,
+                        enableInteractiveSelection: !_regFromProfile,
+                        decoration: InputDecoration(
+                          labelText: 'Registration number',
+                          hintText: _regFromProfile
+                              ? null
+                              : StudentRegistrationNumber.example,
+                          suffixIcon: _regFromProfile
+                              ? Icon(Icons.lock_outline_rounded,
+                                  color: AppTheme.textSecondary, size: 20)
+                              : null,
+                        ),
+                        textCapitalization: TextCapitalization.characters,
+                        onChanged: (_) => setState(() {}),
                       ),
-                    );
-                  },
-                  child: Align(
-                    alignment: Alignment.centerLeft,
-                    key: ValueKey<int>(_stageIndex),
-                    child: Text(
-                      _stages[_stageIndex],
-                      style: theme.textTheme.bodyLarge?.copyWith(
-                        fontWeight: FontWeight.w600,
-                        height: 1.35,
-                        color: AppTheme.textPrimary,
+                      const SizedBox(height: 16),
+                      TextFormField(
+                        controller: _sessionCodeC,
+                        focusNode: _sessionCodeFocus,
+                        decoration: InputDecoration(
+                          labelText: 'Session code',
+                          hintText: kSessionJoinCodeExample,
+                          helperText: kSessionJoinCodeFormatHint,
+                          counterText: '',
+                          suffixIcon: _sessionCodeSubmitSuffix(),
+                        ),
+                        textCapitalization: TextCapitalization.characters,
+                        maxLength: 4,
+                        keyboardType: TextInputType.text,
+                        textInputAction: TextInputAction.done,
+                        inputFormatters: [
+                          FilteringTextInputFormatter.allow(
+                            RegExp(r'[A-Za-z0-9]'),
+                          ),
+                          LengthLimitingTextInputFormatter(4),
+                        ],
+                        onChanged: _onStudentSessionCodeChanged,
+                        onFieldSubmitted: (_) {
+                          if (_canSubmitSessionCode) {
+                            unawaited(_continueToCheckIn());
+                          }
+                        },
                       ),
-                    ),
-                  ),
-                ),
-              ],
+                      if (_busy) ...[
+                        const SizedBox(height: 12),
+                        Text(
+                          _studentBusyButtonLabel(),
+                          style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                color: AppTheme.textSecondary,
+                              ),
+                          textAlign: TextAlign.center,
+                        ),
+                      ],
+                      const SizedBox(height: 16),
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: TextButton.icon(
+                          onPressed: () async {
+                            await Navigator.of(context).push(
+                              MaterialPageRoute<void>(
+                                builder: (_) => const PendingSessionsScreen(),
+                              ),
+                            );
+                            if (mounted) setState(() {});
+                          },
+                          icon: const Icon(Icons.pending_actions_rounded),
+                          label: const Text('Offline pending sessions'),
+                        ),
+                      ),
+                    ],
+                  );
+                },
+              ),
             ),
           ),
-        ),
+        ],
       ),
     );
   }

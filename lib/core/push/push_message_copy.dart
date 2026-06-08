@@ -17,11 +17,28 @@ import 'package:firebase_messaging/firebase_messaging.dart';
   if (title.isEmpty) title = 'Notice';
 
   final kind = (message.data['kind'] as String? ?? '').toLowerCase();
+  var body = (n?.body ?? message.data['body'] as String? ?? '').trim();
   if (kind == 'sessioncode') {
     return (title, 'Your class is ready. Open the app.');
   }
+  if (kind == 'lecturertakeattendance') {
+    body = body.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (body.isEmpty) {
+      body =
+          'Your class is ready — open U-Panel and start the attendance session.';
+    }
+    return (title, body);
+  }
+  if (kind == 'qastartattendance') {
+    body = body.replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (body.isEmpty) {
+      body =
+          'A lecturer has not opened attendance 1 hour 30 minutes after lesson time. '
+          'Open U-Panel to start the session.';
+    }
+    return (title, body);
+  }
 
-  var body = (n?.body ?? message.data['body'] as String? ?? '').trim();
   if (kind == 'missedsession') {
     body = body.replaceAll(RegExp(r'\s+'), ' ').trim();
     if (body.length > 220) {

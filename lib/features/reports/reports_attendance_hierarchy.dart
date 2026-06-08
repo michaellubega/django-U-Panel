@@ -459,96 +459,111 @@ class ReportsClassListCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final roll = buildAttendanceListRoll(list);
-    final theme = Theme.of(context);
+    return FutureBuilder<AttendanceListRollData>(
+      future: buildAttendanceListRoll(list),
+      builder: (context, snapshot) {
+        final roll = snapshot.data;
+        final theme = Theme.of(context);
 
-    return Material(
-      color: Colors.transparent,
-      child: InkWell(
-        onTap: () {
-          Navigator.of(context).push(
-            MaterialPageRoute<void>(
-              builder: (ctx) => AttendanceListRollReportScreen(list: list),
-            ),
-          );
-        },
-        borderRadius: BorderRadius.circular(16),
-        child: Ink(
-          decoration: BoxDecoration(
-            color: AppTheme.background,
+        return Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: () {
+              Navigator.of(context).push(
+                MaterialPageRoute<void>(
+                  builder: (ctx) => AttendanceListRollReportScreen(list: list),
+                ),
+              );
+            },
             borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: AppTheme.softGrey.withValues(alpha: 0.9)),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
+            child: Ink(
+              decoration: BoxDecoration(
+                color: AppTheme.background,
+                borderRadius: BorderRadius.circular(16),
+                border:
+                    Border.all(color: AppTheme.softGrey.withValues(alpha: 0.9)),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          AttendanceListTitleColumn(
-                            list: list,
-                            titleStyle: theme.textTheme.titleSmall?.copyWith(
-                              fontWeight: FontWeight.w800,
-                            ),
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              AttendanceListTitleColumn(
+                                list: list,
+                                titleStyle: theme.textTheme.titleSmall?.copyWith(
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                              const SizedBox(height: 4),
+                              Text(
+                                '${list.courseSummaryLine} · ${list.time}',
+                                style: theme.textTheme.bodySmall?.copyWith(
+                                  color: AppTheme.textSecondary,
+                                ),
+                              ),
+                            ],
                           ),
-                          const SizedBox(height: 4),
-                          Text(
-                            '${list.courseSummaryLine} · ${list.time}',
-                            style: theme.textTheme.bodySmall?.copyWith(
-                              color: AppTheme.textSecondary,
-                            ),
-                          ),
-                        ],
-                      ),
+                        ),
+                        IconButton(
+                          icon: const Icon(Icons.print_outlined),
+                          tooltip: 'Print this list',
+                          onPressed: roll == null
+                              ? null
+                              : () async {
+                                  final plain =
+                                      buildAttendanceListRollPlainText(roll);
+                                  await printAttendanceRollText(
+                                    title: attendanceListRollPrintTitle(roll),
+                                    plainText: plain,
+                                  );
+                                  if (context.mounted) {
+                                    ScaffoldMessenger.of(context).showSnackBar(
+                                      const SnackBar(
+                                        content: Text(
+                                            'Print started or roll copied.'),
+                                      ),
+                                    );
+                                  }
+                                },
+                        ),
+                      ],
                     ),
-                    IconButton(
-                      icon: const Icon(Icons.print_outlined),
-                      tooltip: 'Print this list',
-                      onPressed: () async {
-                        final plain = buildAttendanceListRollPlainText(roll);
-                        await printAttendanceRollText(
-                          title: attendanceListRollPrintTitle(roll),
-                          plainText: plain,
-                        );
-                        if (context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('Print started or roll copied.'),
-                            ),
-                          );
-                        }
-                      },
+                    const SizedBox(height: 12),
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        _MiniStat(label: '${roll?.rosterCount ?? '…'} roster'),
+                        _MiniStat(
+                          label: '${roll?.presentRollRows ?? '…'} present',
+                          color: AppTheme.primary,
+                        ),
+                        _MiniStat(
+                          label: '${roll?.pendingRollRows ?? '…'} pending',
+                          color: AppTheme.warning,
+                        ),
+                        _MiniStat(
+                          label: '${roll?.absentRollRows ?? '…'} absent',
+                          color: AppTheme.error,
+                        ),
+                        _MiniStat(
+                            label: '${roll?.sessions.length ?? '…'} sessions'),
+                      ],
                     ),
                   ],
                 ),
-                const SizedBox(height: 12),
-                Wrap(
-                  spacing: 8,
-                  runSpacing: 8,
-                  children: [
-                    _MiniStat(label: '${roll.rosterCount} roster'),
-                    _MiniStat(
-                      label: '${roll.presentRollRows} present',
-                      color: AppTheme.primary,
-                    ),
-                    _MiniStat(
-                      label: '${roll.absentRollRows} absent',
-                      color: AppTheme.error,
-                    ),
-                    _MiniStat(label: '${roll.sessions.length} sessions'),
-                  ],
-                ),
-              ],
+              ),
             ),
           ),
-        ),
-      ),
+        );
+      },
     );
   }
 }

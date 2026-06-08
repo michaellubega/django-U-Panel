@@ -1,16 +1,24 @@
 /// KIU student mailbox format for self-registration and sign-in.
 abstract final class StudentAuthEmail {
+  static const studentEmailDomains = [
+    'studmc.kiu.ac.ug',
+    'studwc.kiu.ac.ug',
+  ];
+
+  /// Primary campus domain (examples / legacy references).
   static const studentEmailDomain = 'studmc.kiu.ac.ug';
 
   static const exampleEmail = 'sabiti.lubega@studmc.kiu.ac.ug';
 
-  /// Sole non-@studmc.kiu.ac.ug address allowed at sign-in (not for registration).
-  static const allowedNonKiuLoginEmail = 'michaeldieve@gmail.com';
+  static const exampleEmailWest = 'sabiti.lubega@studwc.kiu.ac.ug';
 
-  /// `firstname.lastname@studmc.kiu.ac.ug` (lowercase).
+  /// `firstname.lastname@studmc.kiu.ac.ug` or `@studwc.kiu.ac.ug` (lowercase).
   static final RegExp _studentEmailPattern = RegExp(
-    r'^[a-z][a-z0-9]*\.[a-z][a-z0-9]*@studmc\.kiu\.ac\.ug$',
+    r'^[a-z][a-z0-9]*\.[a-z][a-z0-9]*@(studmc|studwc)\.kiu\.ac\.ug$',
   );
+
+  static String studentDomainsLabel() =>
+      studentEmailDomains.map((d) => '@$d').join(' or ');
 
   static String normalizeStudentEmail(String raw) {
     var s = raw.trim();
@@ -22,18 +30,17 @@ abstract final class StudentAuthEmail {
   static bool isStudentMailbox(String email) {
     final e = normalizeStudentEmail(email);
     if (!e.contains('@')) return false;
-    return e.endsWith('@$studentEmailDomain');
+    final domain = e.split('@').last;
+    return studentEmailDomains.contains(domain);
   }
 
-  static bool isAllowedNonKiuLoginEmail(String raw) {
-    return normalizeStudentEmail(raw) == allowedNonKiuLoginEmail;
+  static String? _studentDomain(String email) {
+    final domain = normalizeStudentEmail(email).split('@').last;
+    return studentEmailDomains.contains(domain) ? domain : null;
   }
 
-  /// Sign-in / password reset: KIU student format or [allowedNonKiuLoginEmail].
-  static String? validateLoginFormat(String raw) {
-    if (isAllowedNonKiuLoginEmail(raw)) return null;
-    return validateFormat(raw);
-  }
+  /// Sign-in / password reset: KIU student format only.
+  static String? validateLoginFormat(String raw) => validateFormat(raw);
 
   /// Null when valid; otherwise a user-facing error.
   static String? validateFormat(String raw) {
@@ -44,13 +51,14 @@ abstract final class StudentAuthEmail {
     if (!e.contains('@')) {
       return 'Enter your KIU school email (e.g. $exampleEmail).';
     }
-    if (!e.endsWith('@$studentEmailDomain')) {
-      return 'You must use your official KIU school email (@$studentEmailDomain). '
+    final domain = _studentDomain(e);
+    if (domain == null) {
+      return 'You must use your official KIU school email (${studentDomainsLabel()}). '
           'Personal addresses (Gmail, Yahoo, etc.) and other domains are not accepted.';
     }
     if (!_studentEmailPattern.hasMatch(e)) {
-      return 'Use your school email as firstname.lastname@$studentEmailDomain '
-          '(e.g. $exampleEmail).';
+      return 'Use your school email as firstname.lastname@$domain '
+          '(e.g. ${domain == studentEmailDomains.last ? exampleEmailWest : exampleEmail}).';
     }
     return null;
   }

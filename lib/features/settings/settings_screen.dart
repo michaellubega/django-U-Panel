@@ -2,18 +2,25 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import '../../core/auth/auth_repository.dart';
+import '../../core/connectivity/app_connectivity.dart';
 import '../../core/auth/staff_auth_email.dart';
 import '../../core/auth/user_role.dart';
 import 'change_password_screen.dart';
+import 'update_profile_screen.dart';
 import '../../core/theme/app_theme.dart';
+import 'student_class_attendance_detail_screen.dart';
 import 'settings_shared.dart';
 import '../attendance/data/attendance_repository.dart';
 import '../attendance/attendance_list_title.dart';
 import '../attendance/models/attendance_models.dart';
 import 'lecturer_settings_screen.dart';
+import '../../core/navigation/app_section.dart';
+import '../../core/navigation/screen_refresh.dart';
 
 class SettingsScreen extends StatefulWidget {
-  const SettingsScreen({super.key});
+  const SettingsScreen({super.key, this.shellSection = AppSection.settings});
+
+  final AppSection shellSection;
 
   @override
   State<SettingsScreen> createState() => _SettingsScreenState();
@@ -33,8 +40,11 @@ class _SettingsScreenState extends State<SettingsScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     AuthRepository.instance.addListener(_onAuth);
+    AttendanceRepository.instance.addListener(_onAttendanceStore);
+    AppConnectivity.instance.addListener(_onConnectivityChanged);
+    _applyCachedAttendanceStats();
     _loadProfile();
-    _loadAttendanceStats();
+    unawaited(_loadAttendanceStats());
     _autoRefreshTimer =
         Timer.periodic(_autoRefreshInterval, (_) => _refreshProfileAndStats());
   }
@@ -44,41 +54,27 @@ class _SettingsScreenState extends State<SettingsScreen>
     WidgetsBinding.instance.removeObserver(this);
     _autoRefreshTimer?.cancel();
     AuthRepository.instance.removeListener(_onAuth);
+    AttendanceRepository.instance.removeListener(_onAttendanceStore);
+    AppConnectivity.instance.removeListener(_onConnectivityChanged);
     super.dispose();
   }
 
-  void _onAuth() {
-    if (!AuthRepository.instance.isLoggedIn) {
-      if (mounted) setState(() => _profile = null);
-      return;
+  void _onAttendanceStore() {
+    _applyCachedAttendanceStats();
+  }
+
+  void _onConnectivityChanged() {
+    if (!AppConnectivity.instance.isOnline) {
+      unawaited(
+        AttendanceRepository.instance.loadStudentAttendanceForProfile(
+          force: false,
+        ),
+      );
     }
-    _refreshProfileAndStats();
+    _applyCachedAttendanceStats();
   }
 
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
-      _refreshProfileAndStats();
-    }
-  }
-
-  Future<void> _refreshProfileAndStats() async {
-    try {
-      await Future.wait([
-        _loadProfile(),
-        _loadAttendanceStats(),
-      ]);
-    } catch (_) {
-      // Keep profile usable if background refresh fails.
-    }
-  }
-
-  Future<void> _loadProfile() async {
-    final p = await AuthRepository.instance.profileForCurrentUser();
-    if (mounted) setState(() => _profile = p);
-  }
-
-  Future<void> _loadAttendanceStats() async {
+  void _applyCachedAttendanceStats() {
     final auth = AuthRepository.instance;
     if (auth.adminCheckDone && auth.isAdmin) {
       if (mounted) {
@@ -98,7 +94,8 @@ class _SettingsScreenState extends State<SettingsScreen>
       }
       return;
     }
-    final reg = AuthRepository.instance.currentRegistrationNumber?.trim();
+
+    final reg = auth.currentRegistrationNumber?.trim();
     if (reg == null || reg.isEmpty) {
       if (mounted) {
         setState(() {
@@ -109,29 +106,74 @@ class _SettingsScreenState extends State<SettingsScreen>
       return;
     }
 
-    void applyRollStats() {
-      if (!mounted) return;
-      setState(() {
-        _attendanceStatsLoaded = true;
-        _attendanceByList =
-            AttendanceStore.rollStatsPerListForRegistrationNormalized(reg);
-      });
+    final repo = AttendanceRepository.instance;
+    final hasStudentData = repo.hasCachedStore ||
+        AttendanceStore.signIns.isNotEmpty ||
+        AttendanceStore.attendanceRecords.isNotEmpty ||
+        AttendanceStore.lists.isNotEmpty ||
+        AttendanceStore.hasStudentSessionHistoryForRegistrationNormalized(reg);
+    if (!hasStudentData) {
+      return;
     }
 
-    // If attendance was already loaded elsewhere (e.g. Attendance tab, app
-    // shell), show the percentage immediately instead of waiting on Firestore.
-    if (AttendanceRepository.instance.isLoaded) {
-      applyRollStats();
+    final stats =
+        AttendanceStore.rollStatsPerListForRegistrationNormalized(reg);
+    if (stats.isEmpty && _attendanceByList.isNotEmpty) {
+      return;
     }
 
-    // Avoid force: true here — that always re-downloads five large collections
-    // and was the main reason the profile % felt slow. Non-forced load skips
-    // the network when data is already in memory (see [loadAll]).
-    await AttendanceRepository.instance.loadAll(
-      force: false,
-      scopeToLecturerUid: AttendanceRepository.currentLecturerLoadScopeUid(),
+    if (!mounted) return;
+    setState(() {
+      _attendanceStatsLoaded = true;
+      _attendanceByList = stats;
+    });
+  }
+
+  void _onAuth() {
+    if (!AuthRepository.instance.isLoggedIn) {
+      if (mounted) setState(() => _profile = null);
+      return;
+    }
+    _refreshProfileAndStats();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _refreshProfileAndStats();
+    }
+  }
+
+  Future<void> _refreshProfileAndStats({bool forceAttendance = false}) async {
+    try {
+      await Future.wait([
+        _loadProfile(),
+        _loadAttendanceStats(force: forceAttendance),
+      ]);
+    } catch (_) {
+      // Keep profile usable if background refresh fails.
+    }
+  }
+
+  Future<void> _loadProfile() async {
+    final p = await AuthRepository.instance.profileForCurrentUser();
+    if (mounted) setState(() => _profile = p);
+  }
+
+  Future<void> _loadAttendanceStats({bool force = false}) async {
+    final auth = AuthRepository.instance;
+    if (auth.adminCheckDone && auth.isAdmin) return;
+    if (auth.lecturerCheckDone && auth.isLecturer && !auth.isAdmin) return;
+    final reg = auth.currentRegistrationNumber?.trim();
+    if (reg == null || reg.isEmpty) return;
+
+    await AttendanceRepository.instance.warmFromLocalSnapshot();
+    _applyCachedAttendanceStats();
+
+    await AttendanceRepository.instance.loadStudentAttendanceForProfile(
+      force: force,
     );
-    applyRollStats();
+    _applyCachedAttendanceStats();
   }
 
   /// High attendance → green; low → red (HSV sweep red 0° … green 120°).
@@ -179,7 +221,22 @@ class _SettingsScreenState extends State<SettingsScreen>
     final pct = stats.percentRounded;
     final color = _attendanceQualityColor(hasSessions ? pct : 72);
 
-    return DecoratedBox(
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: () {
+          Navigator.of(context).push<void>(
+            MaterialPageRoute<void>(
+              builder: (_) => StudentClassAttendanceDetailScreen(
+                listId: row.listId,
+                listTitle: row.listTitle,
+                listSubtitle: row.listSubtitle,
+              ),
+            ),
+          );
+        },
+        borderRadius: BorderRadius.circular(12),
+        child: DecoratedBox(
       decoration: BoxDecoration(
         color: AppTheme.softGrey.withValues(alpha: 0.35),
         borderRadius: BorderRadius.circular(12),
@@ -239,9 +296,24 @@ class _SettingsScreenState extends State<SettingsScreen>
                       ],
                     ),
                   ),
+                  Icon(
+                    Icons.chevron_right_rounded,
+                    color: AppTheme.textSecondary.withValues(alpha: 0.7),
+                  ),
                 ],
               ),
+            if (hasSessions) ...[
+              const SizedBox(height: 8),
+              Text(
+                'Tap for session records and comments',
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: AppTheme.textSecondary,
+                ),
+              ),
+            ],
           ],
+        ),
+      ),
         ),
       ),
     );
@@ -255,6 +327,17 @@ class _SettingsScreenState extends State<SettingsScreen>
     );
   }
 
+  Future<void> _openUpdateProfile(BuildContext context) async {
+    final updated = await Navigator.of(context).push<bool>(
+      MaterialPageRoute<bool>(
+        builder: (_) => const UpdateProfileScreen(),
+      ),
+    );
+    if (updated == true && mounted) {
+      await _refreshProfileAndStats();
+    }
+  }
+
   Widget _buildProfileCard(
     BuildContext context,
     AuthRepository auth, {
@@ -264,7 +347,7 @@ class _SettingsScreenState extends State<SettingsScreen>
     if (!auth.adminCheckDone || !auth.lecturerCheckDone) {
       return _buildLoadingProfileCard(context, email: email);
     }
-    if (auth.isAdmin) {
+    if (auth.isAdmin || auth.isKiuAdmin) {
       return _buildAdminProfileCard(
         context,
         auth,
@@ -596,6 +679,29 @@ class _SettingsScreenState extends State<SettingsScreen>
                   ),
                   const SizedBox(height: 14),
                 ],
+                if (auth.isKiuAdmin &&
+                    (_profile?[AuthRepository.kiuAdminJobTitleField] ??
+                            auth.currentKiuAdminJobTitle)
+                        ?.trim()
+                        .isNotEmpty ==
+                    true) ...[
+                  Text(
+                    'Admin role',
+                    style: theme.textTheme.labelMedium?.copyWith(
+                      color: AppTheme.textSecondary,
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    _profile?[AuthRepository.kiuAdminJobTitleField] ??
+                        auth.currentKiuAdminJobTitle ??
+                        '',
+                    style: theme.textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  const SizedBox(height: 14),
+                ],
                 Text(
                   'Registration number',
                   style: theme.textTheme.labelMedium?.copyWith(
@@ -628,8 +734,10 @@ class _SettingsScreenState extends State<SettingsScreen>
       listenable: AuthRepository.instance,
       builder: (context, _) {
         final auth = AuthRepository.instance;
-        if (auth.roleCheckDone && auth.resolvedRole == UserRole.lecturer) {
-          return const LecturerSettingsScreen();
+        if (auth.roleCheckDone &&
+            auth.resolvedRole == UserRole.lecturer &&
+            !auth.isKiuAdmin) {
+          return LecturerSettingsScreen(shellSection: widget.shellSection);
         }
         final reg = auth.currentRegistrationNumber;
         final email = _profile?['email'] ?? auth.currentEmail;
@@ -640,8 +748,15 @@ class _SettingsScreenState extends State<SettingsScreen>
             ? '—'
             : email;
 
-        return SingleChildScrollView(
-          child: Column(
+        Future<void> refreshSettings() =>
+            _refreshProfileAndStats(forceAttendance: true);
+
+        return ScreenRefreshRegistrar(
+          section: widget.shellSection,
+          onRefresh: refreshSettings,
+          child: PullToRefreshBody(
+            onRefresh: refreshSettings,
+            child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
@@ -650,11 +765,13 @@ class _SettingsScreenState extends State<SettingsScreen>
               ),
             const SizedBox(height: 6),
             Text(
-              auth.adminCheckDone && auth.isAdmin
-                  ? (auth.isQaStaff
-                      ? 'Your QA staff account'
-                      : 'Your administrator account')
-                  : 'Your account and attendance',
+              auth.isKiuAdmin
+                  ? 'KIU ADMIN'
+                  : auth.adminCheckDone && auth.isAdmin
+                      ? (auth.isQaStaff
+                          ? 'Your QA staff account'
+                          : 'Your administrator account')
+                      : 'Your account and attendance',
               style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                     color: AppTheme.textSecondary,
                   ),
@@ -665,6 +782,24 @@ class _SettingsScreenState extends State<SettingsScreen>
               auth,
               email: visibleEmail,
               reg: reg,
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'Profile',
+              style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                    fontWeight: FontWeight.w600,
+                    color: AppTheme.textSecondary,
+                  ),
+            ),
+            const SizedBox(height: 8),
+            Card(
+              child: ListTile(
+                leading: Icon(Icons.person_outline_rounded, color: AppTheme.primary),
+                title: const Text('Update profile'),
+                subtitle: const Text('Change your name and registration number'),
+                trailing: const Icon(Icons.chevron_right_rounded),
+                onTap: () => _openUpdateProfile(context),
+              ),
             ),
             const SizedBox(height: 16),
             Text(
@@ -692,6 +827,7 @@ class _SettingsScreenState extends State<SettingsScreen>
             settingsAboutCard(context),
             ],
           ),
+        ),
         );
       },
     );

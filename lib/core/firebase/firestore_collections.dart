@@ -10,22 +10,23 @@
 /// | `users` | `app_users` + Firebase Auth | `app_users/{authUid}` (see `AuthRepository`) |
 /// | `classes` | `attendance_lists` | One doc per class list |
 /// | `sessions` | `attendance_sessions` | `listId` links session → list |
-/// | `attendance` | `attendance_records` | Doc id `{sessionId}_{studentId}` (see `attendanceRecordIdForSessionStudent`). Writes use merge + optional `serverReceivedAt`. |
+/// | `attendance` | `attendance_records` | Doc id `{sessionId}_{studentId}`. **Server-only writes** (Cloud Functions after reconciling [checkInAttempts]). |
 /// | Enrolments / course | `sign_ins` | `listId` + `studentId` + chosen `course` |
 /// | People directory | `students` | Global student rows (registration #, etc.) |
 /// | Broadcasts | `notices` | Optional `kind`, `sessionCode`, class targeting |
 ///
-/// ## Offline “attempts”
+/// ## Check-in attempts (device → server)
 ///
-/// Raw GPS / session-code captures while offline live in **device queues**
-/// (`PendingCheckInQueue`, `PendingSessionCodeQueue`), not a Firestore
-/// `attempts` collection. After validation they merge into `attendance_records`.
-/// A future optional `attempts` collection for audit would not require changing
-/// attendance document ids.
+/// Devices upload GPS/code evidence to [checkInAttempts]. Claims with
+/// `awaitingSession: true` wait up to 7 days for a matching lecturer session.
+/// Cloud Functions validate and write official rows to [attendanceRecords].
 abstract final class FirestoreCollections {
   static const attendanceLists = 'attendance_lists';
   static const attendanceSessions = 'attendance_sessions';
   static const attendanceRecords = 'attendance_records';
+
+  /// Student check-in evidence; doc id `{sessionId}_{studentId}`.
+  static const checkInAttempts = 'check_in_attempts';
   static const students = 'students';
   static const signIns = 'sign_ins';
   static const notices = 'notices';
@@ -43,4 +44,13 @@ abstract final class FirestoreCollections {
 
   /// Doc id under [meta] for atomic staff id sequence (see AuthRepository).
   static const lecturerStaffCounterDocId = 'lecturer_staff_counter';
+
+  /// Public ping doc for Firestore reachability checks before sign-in.
+  static const connectivityPingDocId = 'connectivity';
+
+  /// Center + radius for admin campus arrival / departure check-in.
+  static const campusGeofenceDocId = 'campus_geofence';
+
+  /// Admin / QA staff campus arrival and departure events.
+  static const adminCampusPresence = 'admin_campus_presence';
 }

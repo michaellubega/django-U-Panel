@@ -1,0 +1,157 @@
+import 'dart:async';
+
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart';
+
+import '../../../core/auth/auth_repository.dart';
+import '../../../core/firebase/firestore_collections.dart';
+import '../../../core/firebase/u_panel_firestore.dart';
+import '../models/attendance_models.dart';
+import 'attendance_repository.dart';
+
+/// Live Firestore listeners that purge local list data when authoritative
+/// remote membership changes (e.g. lecturer deletes a list on another device).
+class AttendanceRemoteListWatch {
+  AttendanceRemoteListWatch._();
+
+  static final AttendanceRemoteListWatch instance =
+      AttendanceRemoteListWatch._();
+
+  final List<StreamSubscription<QuerySnapshot<Map<String, dynamic>>>> _subs =
+      [];
+  final Map<String, Set<String>> _idsBySource = {};
+  bool _running = false;
+
+  bool get isRunning => _running;
+
+  Future<void> start() async {
+    if (_running) return;
+    if (!AuthRepository.instance.isLoggedIn) return;
+    final db = tryUPanelFirestore();
+    if (db == null) return;
+
+    await stop();
+    _running = true;
+
+    await AttendanceRepository.instance.awaitRoleChecksForWatch();
+    if (!AuthRepository.instance.isLoggedIn) {
+      _running = false;
+      return;
+    }
+
+    final auth = AuthRepository.instance;
+    if (AttendanceRepository.isStudentScopedUser()) {
+      _attachStudentSignInWatch(db);
+    } else if (auth.adminCheckDone && auth.isAdmin) {
+      _attachCollectionWatch(
+        db,
+        source: 'staffLists',
+        query: db.collection(FirestoreCollections.attendanceLists),
+      );
+    } else {
+      final uid = auth.currentFirebaseUid?.trim();
+      if (uid != null && uid.isNotEmpty) {
+        _attachCollectionWatch(
+          db,
+          source: 'lecturerAssigned',
+          query: db
+              .collection(FirestoreCollections.attendanceLists)
+              .where('lecturerUid', isEqualTo: uid),
+        );
+        _attachCollectionWatch(
+          db,
+          source: 'lecturerCreated',
+          query: db
+              .collection(FirestoreCollections.attendanceLists)
+              .where('createdBy', isEqualTo: uid),
+        );
+      }
+    }
+
+    if (_subs.isEmpty) {
+      _running = false;
+    }
+  }
+
+  Future<void> stop() async {
+    for (final sub in _subs) {
+      await sub.cancel();
+    }
+    _subs.clear();
+    _idsBySource.clear();
+    _running = false;
+  }
+
+  void _attachStudentSignInWatch(FirebaseFirestore db) {
+    final studentIds = AttendanceRepository.instance
+        .studentIdsForCurrentUserInStore()
+        .toList();
+    if (studentIds.isEmpty) return;
+    for (final chunk in _chunk(studentIds, 10)) {
+      final source = 'signIns:${chunk.join(',')}';
+      final sub = db
+          .collection(FirestoreCollections.signIns)
+          .where('studentId', whereIn: chunk)
+          .snapshots()
+          .listen(
+            (snap) {
+              final listIds = <String>{};
+              for (final doc in snap.docs) {
+                final id =
+                    (doc.data()['listId'] as String?)?.trim() ?? '';
+                if (id.isNotEmpty) listIds.add(id);
+              }
+              _updateFromSource(source, listIds);
+            },
+            onError: (Object e, StackTrace st) {
+              if (kDebugMode) {
+                debugPrint('AttendanceRemoteListWatch signIns: $e');
+              }
+            },
+          );
+      _subs.add(sub);
+    }
+  }
+
+  void _attachCollectionWatch(
+    FirebaseFirestore db, {
+    required String source,
+    required Query<Map<String, dynamic>> query,
+  }) {
+    final sub = query.snapshots().listen(
+      (snap) {
+        _updateFromSource(
+          source,
+          snap.docs.map((d) => d.id).toSet(),
+        );
+      },
+      onError: (Object e, StackTrace st) {
+        if (kDebugMode) {
+          debugPrint('AttendanceRemoteListWatch $source: $e');
+        }
+      },
+    );
+    _subs.add(sub);
+  }
+
+  void _updateFromSource(String source, Set<String> ids) {
+    _idsBySource[source] = ids;
+    final remoteIds = <String>{
+      ..._idsBySource.values.expand((s) => s).map((id) => id.trim()),
+      for (final s in AttendanceStore.signIns)
+        if (s.listId.trim().isNotEmpty) s.listId.trim(),
+    }..removeWhere((id) => id.isEmpty);
+    unawaited(
+      AttendanceRepository.instance.reconcileLocalListsAgainstRemoteIds(
+        remoteIds,
+      ),
+    );
+  }
+
+  static Iterable<List<T>> _chunk<T>(List<T> items, int size) sync* {
+    for (var i = 0; i < items.length; i += size) {
+      final end = i + size;
+      yield items.sublist(i, end > items.length ? items.length : end);
+    }
+  }
+}

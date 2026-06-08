@@ -7,11 +7,16 @@ import '../attendance/data/attendance_repository.dart';
 import '../attendance/models/attendance_models.dart';
 import 'attendance_list_roll.dart';
 import 'report_print.dart';
+import '../campus_presence/campus_presence_log_screen.dart';
 import 'reports_attendance_hierarchy.dart';
+import '../../core/navigation/app_section.dart';
+import '../../core/navigation/screen_refresh.dart';
 
 /// Admin and lecturer reports: browse rolls and print per class list.
 class ReportsScreen extends StatefulWidget {
-  const ReportsScreen({super.key});
+  const ReportsScreen({super.key, this.shellSection = AppSection.reports});
+
+  final AppSection shellSection;
 
   @override
   State<ReportsScreen> createState() => _ReportsScreenState();
@@ -39,14 +44,16 @@ class _ReportsScreenState extends State<ReportsScreen> {
 
   bool get _canAccessReports => _isAdmin || _isLecturer;
 
+  Future<void>? _busyFuture;
+
   Future<void> _withBusy(Future<void> Function() body) async {
-    if (_busy) return;
+    if (_busyFuture != null) return _busyFuture;
     setState(() => _busy = true);
-    try {
-      await body();
-    } finally {
+    _busyFuture = body().whenComplete(() {
       if (mounted) setState(() => _busy = false);
-    }
+      _busyFuture = null;
+    });
+    return _busyFuture;
   }
 
   Future<void> _refreshAttendance() async {
@@ -81,7 +88,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
     if (lists.isEmpty) return;
     await _withBusy(() async {
       for (final list in lists) {
-        final roll = buildAttendanceListRoll(list);
+        final roll = await buildAttendanceListRoll(list);
         if (roll.students.isEmpty) continue;
         await printAttendanceRollText(
           title: attendanceListRollPrintTitle(roll),
@@ -139,7 +146,10 @@ class _ReportsScreenState extends State<ReportsScreen> {
 
     final scopedLists = attendanceListsForCurrentStaff();
 
-    return Column(
+    return ScreenRefreshRegistrar(
+      section: widget.shellSection,
+      onRefresh: _refreshAttendance,
+      child: Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Row(
@@ -173,7 +183,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
               ),
             ),
             FilledButton.tonalIcon(
-              onPressed: _busy ? null : _refreshAttendance,
+              onPressed: _refreshAttendance,
               icon: _busy
                   ? const SizedBox(
                       width: 18,
@@ -187,10 +197,27 @@ class _ReportsScreenState extends State<ReportsScreen> {
         ),
         const SizedBox(height: 20),
         Expanded(
-          child: SingleChildScrollView(
-            child: Column(
+          child: PullToRefreshScrollable(
+            onRefresh: _refreshAttendance,
+            child: SingleChildScrollView(
+              physics: const AlwaysScrollableScrollPhysics(),
+              child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
+                if (_isAdmin) ...[
+                  OutlinedButton.icon(
+                    onPressed: () {
+                      Navigator.of(context).push<void>(
+                        MaterialPageRoute<void>(
+                          builder: (_) => const CampusPresenceLogScreen(),
+                        ),
+                      );
+                    },
+                    icon: const Icon(Icons.place_rounded, size: 18),
+                    label: const Text('Campus presence log'),
+                  ),
+                  const SizedBox(height: 16),
+                ],
                 if (scopedLists.isNotEmpty)
                   Align(
                     alignment: Alignment.centerLeft,
@@ -226,7 +253,9 @@ class _ReportsScreenState extends State<ReportsScreen> {
             ),
           ),
         ),
+        ),
       ],
+    ),
     );
   }
 }

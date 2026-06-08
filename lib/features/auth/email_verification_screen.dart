@@ -3,10 +3,11 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../core/auth/auth_repository.dart';
+import '../../core/auth/kiu_staff_auth_email.dart';
 import '../../core/navigation/app_navigator.dart';
 import '../../core/theme/app_theme.dart';
 
-/// Blocks app access until a KIU student mailbox is verified in Firebase Auth.
+/// Blocks app access until a KIU student or staff mailbox is verified in Firebase Auth.
 class EmailVerificationScreen extends StatefulWidget {
   const EmailVerificationScreen({super.key});
 
@@ -28,11 +29,16 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
   }
 
   String get _email =>
-      AuthRepository.instance.currentUserEmail ?? 'your student email';
+      AuthRepository.instance.currentUserEmail ?? 'your email';
 
   /// Picks up verification done outside the app (email link in browser).
   Future<void> _tryAlreadyVerified({bool silent = false}) async {
     if (_busy) return;
+    final auth = AuthRepository.instance;
+    final mailboxEmail = auth.currentEmail ?? _email;
+    if (KiuStaffAuthEmail.skipsVerification(mailboxEmail)) {
+      return;
+    }
     if (!silent) {
       setState(() {
         _busy = true;
@@ -60,7 +66,7 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
       _busy = true;
       _status = null;
     });
-    final err = await AuthRepository.instance.sendStudentEmailVerification();
+    final err = await AuthRepository.instance.sendEmailVerificationForCurrentUser();
     if (!mounted) return;
     setState(() {
       _busy = false;

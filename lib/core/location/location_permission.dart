@@ -4,8 +4,6 @@ import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform, kIsWeb;
 import 'package:geolocator/geolocator.dart';
 
-import '../connectivity/app_connectivity.dart';
-
 String _webLocationDeniedForeverMessage() {
   if (defaultTargetPlatform == TargetPlatform.iOS) {
     return 'Safari has location blocked for this site. Use the https address '
@@ -25,6 +23,21 @@ String _webLocationDeniedMessage() {
   }
   return 'Location was denied. Tap the lock or site icon in the address bar, '
       'allow location for this site, and try again (https required).';
+}
+
+/// Whether device-level location services (GPS) are enabled.
+Future<bool> isDeviceLocationServiceEnabled() async {
+  if (kIsWeb) return true;
+  return Geolocator.isLocationServiceEnabled();
+}
+
+Future<void> openDeviceLocationSettings() async {
+  if (kIsWeb) return;
+  await Geolocator.openLocationSettings();
+}
+
+Future<void> openAppPermissionSettings() async {
+  await Geolocator.openAppSettings();
 }
 
 /// Ensures location services are on and the app has location permission.
@@ -60,35 +73,94 @@ Future<String?> ensureLocationReady() async {
   return null;
 }
 
-/// Last-known fix accepted when starting a session without waiting for GPS.
-const Duration kSessionStartLastKnownMaxAgeOnline = Duration(hours: 4);
-const Duration kSessionStartLastKnownMaxAgeOffline = Duration(days: 1);
+/// Result of a GPS read attempt.
+class GpsAcquireResult {
+  const GpsAcquireResult({
+    this.position,
+    this.errorMessage,
+    this.locationServiceDisabled = false,
+    this.permissionBlocked = false,
+  });
 
-/// Fast path for [StartSessionScreen]: last-known fix only (no [getCurrentPosition]).
-Future<Position?> quickPositionForSessionStart() async {
-  final ready = await ensureLocationReady();
-  if (ready != null) return null;
+  final Position? position;
+  final String? errorMessage;
+  final bool locationServiceDisabled;
+  final bool permissionBlocked;
+}
+
+/// Reuse a cached or OS last-known fix when it is newer than this (sign-in).
+const Duration recentLocationMaxAge = Duration(minutes: 5);
+
+Position? _memoryCachedPosition;
+DateTime? _memoryCachedAt;
+
+bool positionCapturedWithin(Position position, Duration maxAge) {
+  final captured = position.timestamp;
+  return DateTime.now().difference(captured) <= maxAge;
+}
+
+void rememberGpsPosition(Position position) {
+  _memoryCachedPosition = position;
+  _memoryCachedAt = DateTime.now();
+}
+
+/// In-memory cache from this app session, then OS last-known, when ≤ [recentLocationMaxAge].
+Future<Position?> readRecentKnownPosition({
+  Duration maxAge = recentLocationMaxAge,
+}) async {
+  final cached = _memoryCachedPosition;
+  final cachedAt = _memoryCachedAt;
+  if (cached != null &&
+      cachedAt != null &&
+      DateTime.now().difference(cachedAt) <= maxAge) {
+    return cached;
+  }
   try {
     final last = await Geolocator.getLastKnownPosition();
-    if (last == null) return null;
-    final maxAge = AppConnectivity.instance.isOnline
-        ? kSessionStartLastKnownMaxAgeOnline
-        : kSessionStartLastKnownMaxAgeOffline;
-    if (DateTime.now().difference(last.timestamp) <= maxAge) {
+    if (last != null && positionCapturedWithin(last, maxAge)) {
+      rememberGpsPosition(last);
       return last;
     }
   } catch (_) {}
   return null;
 }
 
-/// Tries a fresh GPS fix.
-Future<({Position? position, String? errorMessage})> tryAcquireGpsPosition({
+/// Reads GPS for check-in: reuses last-known fix when ≤ [reuseMaxAge] old unless
+/// [forceFresh] is true.
+Future<GpsAcquireResult> acquireCurrentGpsPosition({
   Duration timeLimit = const Duration(seconds: 30),
+  Duration reuseMaxAge = recentLocationMaxAge,
+  bool forceFresh = false,
 }) async {
+  if (!kIsWeb) {
+    final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      return const GpsAcquireResult(
+        locationServiceDisabled: true,
+        errorMessage:
+            'Location is turned off. Turn on GPS, then tap Get current location.',
+      );
+    }
+  }
+
   final ready = await ensureLocationReady();
   if (ready != null) {
-    return (position: null, errorMessage: ready);
+    final blocked = ready.contains('blocked') ||
+        ready.contains('denied') ||
+        ready.contains('Don’t Allow');
+    return GpsAcquireResult(
+      errorMessage: ready,
+      permissionBlocked: blocked,
+    );
   }
+
+  if (!forceFresh) {
+    final recent = await readRecentKnownPosition(maxAge: reuseMaxAge);
+    if (recent != null) {
+      return GpsAcquireResult(position: recent);
+    }
+  }
+
   try {
     final p = await Geolocator.getCurrentPosition(
       locationSettings: LocationSettings(
@@ -96,24 +168,15 @@ Future<({Position? position, String? errorMessage})> tryAcquireGpsPosition({
         timeLimit: timeLimit,
       ),
     );
-    return (position: p, errorMessage: null);
+    rememberGpsPosition(p);
+    return GpsAcquireResult(position: p);
   } on TimeoutException catch (_) {
-    final lastKnown = await Geolocator.getLastKnownPosition();
-    if (lastKnown != null) {
-      return (position: lastKnown, errorMessage: null);
-    }
-    return (
-      position: null,
+    return const GpsAcquireResult(
       errorMessage:
-          'GPS timed out. Move to an open area or wait for a fix, then tap again.',
+          'GPS timed out. Move to an open area, keep location on, then try again.',
     );
   } catch (_) {
-    final lastKnown = await Geolocator.getLastKnownPosition();
-    if (lastKnown != null) {
-      return (position: lastKnown, errorMessage: null);
-    }
-    return (
-      position: null,
+    return GpsAcquireResult(
       errorMessage: kIsWeb
           ? (defaultTargetPlatform == TargetPlatform.iOS
               ? 'Could not read your location. In Safari use the aA menu → '
@@ -123,4 +186,12 @@ Future<({Position? position, String? errorMessage})> tryAcquireGpsPosition({
           : 'Could not read GPS. Check that location permission is allowed and GPS is on.',
     );
   }
+}
+
+/// Legacy wrapper — prefer [acquireCurrentGpsPosition].
+Future<({Position? position, String? errorMessage})> tryAcquireGpsPosition({
+  Duration timeLimit = const Duration(seconds: 30),
+}) async {
+  final r = await acquireCurrentGpsPosition(timeLimit: timeLimit);
+  return (position: r.position, errorMessage: r.errorMessage);
 }

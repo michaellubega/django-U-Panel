@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
+import '../../core/navigation/app_section.dart';
 import '../../core/navigation/app_shell.dart';
+import '../../core/navigation/screen_refresh.dart';
 import '../../core/theme/app_theme.dart';
 
 /// Lets dashboard tiles switch main shell tabs.
@@ -97,16 +99,9 @@ class DashboardLiveHeader extends StatelessWidget {
           ),
         ),
         if (onRefresh != null)
-          IconButton.filledTonal(
-            onPressed: refreshing ? null : onRefresh,
-            icon: refreshing
-                ? const SizedBox(
-                    width: 22,
-                    height: 22,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.refresh_rounded),
-            tooltip: 'Refresh dashboard',
+          RefreshIconButton(
+            onRefresh: () async => onRefresh!(),
+            iconColor: theme.colorScheme.primary,
           ),
       ],
     );

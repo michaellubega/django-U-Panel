@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import '../../firebase_options.dart';
 import 'local_push_display.dart';
 import 'push_message_copy.dart';
+import '../../features/attendance/data/session_code_push_utils.dart';
 
 @pragma('vm:entry-point')
 Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
@@ -16,6 +17,14 @@ Future<void> firebaseMessagingBackgroundHandler(RemoteMessage message) async {
   }
   try {
     await localPushEnsureInitialized();
+    final kind = (message.data['kind'] as String? ?? '').toLowerCase();
+    if (kind == 'sessioncode') {
+      final code = SessionCodePushUtils.codeFromPushData(message.data);
+      if (code != null &&
+          await SessionCodePushUtils.isRemoteLearningSessionCode(code)) {
+        return;
+      }
+    }
     final (title, body) = pushDisplayCopyForMessage(message);
     await localPushShow(
       id: message.hashCode,

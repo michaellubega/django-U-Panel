@@ -4,19 +4,27 @@ import 'package:flutter/material.dart';
 
 import '../../core/auth/auth_repository.dart';
 import '../../core/connectivity/app_connectivity.dart';
-import '../../core/navigation/app_shell.dart';
+import '../../core/navigation/app_section.dart';
+import '../../core/navigation/screen_refresh.dart';
 import '../../core/theme/app_theme.dart';
 import '../attendance/attendance_list_hierarchy.dart';
+import '../attendance/attendance_schedule_utils.dart';
 import '../attendance/attendance_screen.dart';
 import '../attendance/data/attendance_repository.dart';
 import '../attendance/models/attendance_models.dart';
 import '../attendance/pending_sessions_screen.dart';
 import '../notices/data/notices_repository.dart';
+import '../lesson_insights/lesson_insights_dashboard_section.dart';
 import 'dashboard_shared_widgets.dart';
 
 /// Lecturer home: live metrics, tappable actions, and recent notices.
 class LecturerDashboardScreen extends StatefulWidget {
-  const LecturerDashboardScreen({super.key});
+  const LecturerDashboardScreen({
+    super.key,
+    this.shellSection = AppSection.dashboard,
+  });
+
+  final AppSection shellSection;
 
   @override
   State<LecturerDashboardScreen> createState() =>
@@ -25,6 +33,7 @@ class LecturerDashboardScreen extends StatefulWidget {
 
 class _LecturerDashboardScreenState extends State<LecturerDashboardScreen> {
   bool _loading = true;
+  bool _refreshing = false;
   String? _loadError;
   List<NoticeRecord> _notices = [];
   DateTime? _lastUpdated;
@@ -43,14 +52,18 @@ class _LecturerDashboardScreenState extends State<LecturerDashboardScreen> {
   Future<void> _refresh({bool forceNetwork = false}) async {
     final blocking = !AttendanceRepository.instance.hasCachedStore;
     setState(() {
-      _loading = blocking || forceNetwork;
+      _loading = blocking;
+      _refreshing = forceNetwork && !blocking;
       _loadError = null;
     });
     try {
-      await AttendanceRepository.instance.loadAll(
-        force: forceNetwork,
-        scopeToLecturerUid: AttendanceRepository.currentLecturerLoadScopeUid(),
-      );
+      if (forceNetwork || blocking) {
+        await AttendanceRepository.instance.bootstrapLoadIfNeeded(
+          force: forceNetwork,
+        );
+      } else {
+        unawaited(AttendanceRepository.instance.bootstrapLoadIfNeeded());
+      }
       final raw = await NoticesRepository.instance.fetchRecent(limit: 30);
       final listIds =
           attendanceListsForCurrentStaff().map((l) => l.id).toSet();
@@ -61,6 +74,7 @@ class _LecturerDashboardScreenState extends State<LecturerDashboardScreen> {
             admin: false,
             lecturer: true,
             lecturerListIds: listIds,
+            lecturerFirebaseUid: AuthRepository.instance.currentFirebaseUid,
             studentId: null,
             signedListIds: const {},
           ))
@@ -73,15 +87,24 @@ class _LecturerDashboardScreenState extends State<LecturerDashboardScreen> {
       _notices = [];
     }
     if (mounted) {
-      setState(() => _loading = false);
+      setState(() {
+        _loading = false;
+        _refreshing = false;
+      });
     }
   }
 
   _LecturerDashMetrics _metrics() {
     final now = DateTime.now();
+    final listIds = attendanceListsForCurrentStaff().map((l) => l.id).toSet();
+    final sessionIds = AttendanceStore.sessions
+        .where((s) => listIds.contains(s.listId))
+        .map((s) => s.id)
+        .toSet();
     var presentToday = 0;
     var absentToday = 0;
     for (final r in AttendanceStore.attendanceRecords) {
+      if (!sessionIds.contains(r.sessionId)) continue;
       if (!_isSameLocalDay(r.timestamp, now)) continue;
       if (r.present) {
         presentToday++;
@@ -129,6 +152,16 @@ class _LecturerDashboardScreenState extends State<LecturerDashboardScreen> {
     );
   }
 
+  void _openStartSessionForList(BuildContext context, AttendanceList list) {
+    Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => StartSessionScreen(list: list),
+      ),
+    ).then((_) {
+      if (mounted) unawaited(_refresh());
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final auth = AuthRepository.instance;
@@ -139,13 +172,23 @@ class _LecturerDashboardScreenState extends State<LecturerDashboardScreen> {
         : 'Hello, lecturer';
 
     return ListenableBuilder(
-      listenable: Listenable.merge([auth, AppConnectivity.instance]),
+      listenable: Listenable.merge([
+        auth,
+        AppConnectivity.instance,
+        AttendanceRepository.instance,
+      ]),
       builder: (context, _) {
         final offline = !AppConnectivity.instance.isOnline;
         final m = _metrics();
         final liveCount = m.liveSessions.length;
+        final dueLists = AttendanceScheduleUtils.dueListsForLecturer(
+          attendanceListsForCurrentStaff(),
+        );
 
-        return RefreshIndicator(
+        return ScreenRefreshRegistrar(
+          section: widget.shellSection,
+          onRefresh: () => _refresh(forceNetwork: true),
+          child: RefreshIndicator(
           onRefresh: () => _refresh(forceNetwork: true),
           child: SingleChildScrollView(
             physics: const AlwaysScrollableScrollPhysics(),
@@ -158,7 +201,7 @@ class _LecturerDashboardScreenState extends State<LecturerDashboardScreen> {
                   subtitle: 'Staff ID $staffId · Tap any tile to jump in',
                   liveCount: liveCount,
                   lastUpdated: _lastUpdated,
-                  refreshing: _loading,
+                  refreshing: _loading || _refreshing,
                   onRefresh: () => unawaited(_refresh(forceNetwork: true)),
                 ),
                 if (offline) ...[
@@ -198,6 +241,32 @@ class _LecturerDashboardScreenState extends State<LecturerDashboardScreen> {
                       AppSection.attendance,
                     ),
                   ),
+                  if (dueLists.isNotEmpty) ...[
+                    const SizedBox(height: 20),
+                    Text(
+                      'Start attendance now',
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'These classes are scheduled for today — open a session when class begins.',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: AppTheme.textSecondary,
+                          ),
+                    ),
+                    const SizedBox(height: 10),
+                    for (final list in dueLists)
+                      DashboardTapTile(
+                        icon: Icons.play_circle_outline_rounded,
+                        iconColor: AppTheme.warning,
+                        title: list.displayTitle,
+                        subtitle:
+                            '${list.time} · ${list.listLabelLine} · Tap to start session',
+                        onTap: () => _openStartSessionForList(context, list),
+                      ),
+                  ],
                   const SizedBox(height: 20),
                   Text(
                     'Quick actions',
@@ -238,6 +307,8 @@ class _LecturerDashboardScreenState extends State<LecturerDashboardScreen> {
                       );
                     },
                   ),
+                  const SizedBox(height: 8),
+                  const LecturerLessonsDashboardTile(),
                   const SizedBox(height: 8),
                   DashboardQuickAction(
                     icon: Icons.campaign_rounded,
@@ -318,6 +389,7 @@ class _LecturerDashboardScreenState extends State<LecturerDashboardScreen> {
               ],
             ),
           ),
+        ),
         );
       },
     );

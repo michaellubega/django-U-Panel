@@ -5,7 +5,7 @@ import '../../core/auth/staff_auth_email.dart';
 import '../../core/theme/app_theme.dart';
 
 /// Shown after a staff or administrator account is created — share login details.
-class StaffCredentialsScreen extends StatelessWidget {
+class StaffCredentialsScreen extends StatefulWidget {
   const StaffCredentialsScreen({
     super.key,
     required this.fullName,
@@ -18,6 +18,13 @@ class StaffCredentialsScreen extends StatelessWidget {
   final String roleLabel;
   final String staffId;
   final String password;
+
+  @override
+  State<StaffCredentialsScreen> createState() => _StaffCredentialsScreenState();
+}
+
+class _StaffCredentialsScreenState extends State<StaffCredentialsScreen> {
+  bool _passwordVisible = false;
 
   void _copy(BuildContext context, String label, String value) {
     Clipboard.setData(ClipboardData(text: value));
@@ -41,7 +48,7 @@ class StaffCredentialsScreen extends StatelessWidget {
           Icon(Icons.check_circle_outline, size: 56, color: AppTheme.success),
           const SizedBox(height: 16),
           Text(
-            '$fullName is ready',
+            '${widget.fullName} is ready',
             textAlign: TextAlign.center,
             style: Theme.of(context).textTheme.titleLarge?.copyWith(
                   fontWeight: FontWeight.w700,
@@ -49,7 +56,7 @@ class StaffCredentialsScreen extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           Text(
-            'Registered as $roleLabel. Share these sign-in details securely — '
+            'Registered as ${widget.roleLabel}. Share these sign-in details securely — '
             'they should change the password under Settings after first login.',
             textAlign: TextAlign.center,
             style: Theme.of(context).textTheme.bodyMedium?.copyWith(
@@ -60,20 +67,24 @@ class StaffCredentialsScreen extends StatelessWidget {
           const SizedBox(height: 28),
           _CredentialCard(
             label: 'Staff ID (sign-in username)',
-            value: staffId,
-            onCopy: () => _copy(context, 'Staff ID', staffId),
+            value: widget.staffId,
+            onCopy: () => _copy(context, 'Staff ID', widget.staffId),
           ),
           const SizedBox(height: 16),
           _CredentialCard(
             label: 'Password',
-            value: password,
-            onCopy: () => _copy(context, 'Password', password),
+            value: widget.password,
+            obscure: !_passwordVisible,
+            onToggleVisibility: () =>
+                setState(() => _passwordVisible = !_passwordVisible),
+            visibilityVisible: _passwordVisible,
+            onCopy: () => _copy(context, 'Password', widget.password),
           ),
           const SizedBox(height: 16),
           OutlinedButton.icon(
             onPressed: () {
               final bundle =
-                  'Staff ID: $staffId\nPassword: $password\nRole: $roleLabel';
+                  'Staff ID: ${widget.staffId}\nPassword: ${widget.password}\nRole: ${widget.roleLabel}';
               _copy(context, 'Login details', bundle);
             },
             icon: const Icon(Icons.copy_all_outlined),
@@ -95,14 +106,22 @@ class _CredentialCard extends StatelessWidget {
     required this.label,
     required this.value,
     required this.onCopy,
+    this.obscure = false,
+    this.onToggleVisibility,
+    this.visibilityVisible = false,
   });
 
   final String label;
   final String value;
   final VoidCallback onCopy;
+  final bool obscure;
+  final VoidCallback? onToggleVisibility;
+  final bool visibilityVisible;
 
   @override
   Widget build(BuildContext context) {
+    final displayValue = obscure ? '•' * value.length : value;
+
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(16),
@@ -127,13 +146,23 @@ class _CredentialCard extends StatelessWidget {
             children: [
               Expanded(
                 child: SelectableText(
-                  value,
+                  displayValue,
                   style: Theme.of(context).textTheme.titleMedium?.copyWith(
                         fontWeight: FontWeight.w700,
-                        letterSpacing: 0.5,
+                        letterSpacing: obscure ? 2 : 0.5,
                       ),
                 ),
               ),
+              if (onToggleVisibility != null)
+                IconButton(
+                  tooltip: visibilityVisible ? 'Hide password' : 'Show password',
+                  onPressed: onToggleVisibility,
+                  icon: Icon(
+                    visibilityVisible
+                        ? Icons.visibility_off_outlined
+                        : Icons.visibility_outlined,
+                  ),
+                ),
               IconButton(
                 tooltip: 'Copy',
                 onPressed: onCopy,

@@ -1,7 +1,15 @@
+import 'dart:async';
 import 'dart:convert';
 
+import '../../../core/connectivity/app_connectivity.dart';
+import '../../../core/device/device_student_registration_lock.dart';
+import '../../../core/notifications/pending_work_notification_hooks.dart';
 import '../../../core/storage/attendance_local_queues.dart';
+import '../../../core/storage/local_json_decode.dart';
+import 'attendance_repository.dart';
 import 'pending_retention.dart';
+import 'pending_session_code_claim_upload.dart';
+import 'pending_session_code_sync.dart';
 
 const _maxEntries = 200;
 
@@ -219,19 +227,22 @@ class PendingSessionCodeQueue {
       AttendanceLocalQueues.sessionCodesJsonKey,
     );
     if (raw == null || raw.isEmpty) return [];
-    try {
-      final list = jsonDecode(raw) as List<dynamic>;
-      final out = <PendingSessionCodeEntry>[];
-      for (final e in list) {
-        if (e is! Map) continue;
-        final m = Map<String, dynamic>.from(e);
-        final ent = PendingSessionCodeEntry.fromJson(m);
-        if (ent != null) out.add(ent);
-      }
-      return out;
-    } catch (_) {
-      return [];
+    final list = await decodeStoredJson<List<dynamic>>(
+      raw: raw,
+      storageKey: AttendanceLocalQueues.sessionCodesJsonKey,
+      removeKey: AttendanceLocalQueues.removeKey,
+      parse: (decoded) => decoded is List ? decoded : const <dynamic>[],
+      debugLabel: 'PendingSessionCodeQueue',
+    );
+    if (list == null || list.isEmpty) return [];
+    final out = <PendingSessionCodeEntry>[];
+    for (final e in list) {
+      if (e is! Map) continue;
+      final m = Map<String, dynamic>.from(e);
+      final ent = PendingSessionCodeEntry.fromJson(m);
+      if (ent != null) out.add(ent);
     }
+    return out;
   }
 
   static Future<void> saveAll(List<PendingSessionCodeEntry> items) async {
@@ -245,6 +256,62 @@ class PendingSessionCodeQueue {
   }
 
   static Future<void> enqueue(PendingSessionCodeEntry entry) async {
+    var toSave = entry;
+    if (AttendanceRepository.shouldEnforceDeviceStudentRegistrationLock()) {
+      final regBlock =
+          await DeviceStudentRegistrationLock.blockReasonFor(
+        entry.registrationNumber,
+      );
+      if (regBlock != null) {
+        toSave = entry.copyWith(
+          status: PendingSessionCodeStatus.deviceBlocked,
+          note: regBlock,
+        );
+        await _persistEntry(toSave);
+        return;
+      }
+    }
+    final localBlock =
+        await PendingSessionCodeClaimUpload.localDeviceBlockReason(entry);
+    if (localBlock != null) {
+      toSave = entry.copyWith(
+        status: PendingSessionCodeStatus.deviceBlocked,
+        note: localBlock,
+      );
+      await _persistEntry(toSave);
+      return;
+    }
+
+    if (AppConnectivity.instance.hasNetworkInterface) {
+      final processed = await PendingSessionCodeSync.processOnCreate(entry);
+      if (processed.discardLocal) {
+        notifyPendingWorkQueuesChanged();
+        AttendanceRepository.instance.notifyAttendanceStoreUpdated();
+        return;
+      }
+      if (processed.keepLocal != null) {
+        toSave = processed.keepLocal!;
+      }
+    }
+
+    await _persistEntry(toSave);
+    if (toSave.status != PendingSessionCodeStatus.deviceBlocked &&
+        AttendanceRepository.shouldEnforceDeviceStudentRegistrationLock()) {
+      await DeviceStudentRegistrationLock.bindRegistration(
+        toSave.registrationNumber,
+      );
+    }
+    notifyPendingWorkEnqueued();
+    if (AppConnectivity.instance.hasNetworkInterface &&
+        toSave.status != PendingSessionCodeStatus.deviceBlocked) {
+      PendingSessionCodeSync.ensureWatchingSessionPublishForCodes(
+        [toSave.sessionCodeRaw],
+      );
+      unawaited(PendingSessionCodeSync.drainUrgent());
+    }
+  }
+
+  static Future<void> _persistEntry(PendingSessionCodeEntry entry) async {
     final all = await loadAll();
     all.removeWhere((e) => e.id == entry.id);
     all.add(entry);
@@ -255,6 +322,7 @@ class PendingSessionCodeQueue {
     final all = await loadAll();
     all.removeWhere((e) => e.id == id);
     await saveAll(all);
+    notifyPendingWorkQueuesChanged();
   }
 
   static Future<void> saveLastSyncResult(PendingSessionSyncResult result) async {
@@ -269,15 +337,16 @@ class PendingSessionCodeQueue {
       AttendanceLocalQueues.sessionSyncSummaryJsonKey,
     );
     if (raw == null || raw.isEmpty) return null;
-    try {
-      final decoded = jsonDecode(raw);
-      if (decoded is! Map) return null;
-      return PendingSessionSyncResult.fromJson(
-        Map<String, dynamic>.from(decoded),
-      );
-    } catch (_) {
-      return null;
-    }
+    final decoded = await decodeStoredJson<Map<String, dynamic>>(
+      raw: raw,
+      storageKey: AttendanceLocalQueues.sessionSyncSummaryJsonKey,
+      removeKey: AttendanceLocalQueues.removeKey,
+      parse: (value) =>
+          value is Map ? Map<String, dynamic>.from(value) : <String, dynamic>{},
+      debugLabel: 'PendingSessionCodeQueue.syncSummary',
+    );
+    if (decoded == null || decoded.isEmpty) return null;
+    return PendingSessionSyncResult.fromJson(decoded);
   }
 }
 

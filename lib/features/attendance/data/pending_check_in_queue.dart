@@ -2,7 +2,9 @@ import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 
+import '../../../core/notifications/pending_work_notification_hooks.dart';
 import '../../../core/storage/attendance_local_queues.dart';
+import '../../../core/storage/local_json_decode.dart';
 import '../models/attendance_models.dart';
 import 'pending_retention.dart';
 
@@ -47,8 +49,7 @@ class PendingCheckInEntry {
         timestamp: capturedAt,
         latitude: latitude,
         longitude: longitude,
-        selfieStoragePath: null,
-        verified: true,
+        verified: false,
         present: true,
         deviceId: deviceId,
       );
@@ -114,23 +115,33 @@ class PendingCheckInEntry {
 class PendingCheckInQueue {
   PendingCheckInQueue._();
 
+  static Future<bool> containsRecordId(String recordId) async {
+    final id = recordId.trim();
+    if (id.isEmpty) return false;
+    final all = await loadAll();
+    return all.any((e) => e.id == id);
+  }
+
   static Future<List<PendingCheckInEntry>> loadAll() async {
     final raw =
         await AttendanceLocalQueues.readString(AttendanceLocalQueues.checkInsJsonKey);
     if (raw == null || raw.isEmpty) return [];
-    try {
-      final list = jsonDecode(raw) as List<dynamic>;
-      final out = <PendingCheckInEntry>[];
-      for (final e in list) {
-        if (e is! Map) continue;
-        final m = Map<String, dynamic>.from(e);
-        final ent = PendingCheckInEntry.fromJson(m);
-        if (ent != null) out.add(ent);
-      }
-      return out;
-    } catch (_) {
-      return [];
+    final list = await decodeStoredJson<List<dynamic>>(
+      raw: raw,
+      storageKey: AttendanceLocalQueues.checkInsJsonKey,
+      removeKey: AttendanceLocalQueues.removeKey,
+      parse: (decoded) => decoded is List ? decoded : const <dynamic>[],
+      debugLabel: 'PendingCheckInQueue',
+    );
+    if (list == null || list.isEmpty) return [];
+    final out = <PendingCheckInEntry>[];
+    for (final e in list) {
+      if (e is! Map) continue;
+      final m = Map<String, dynamic>.from(e);
+      final ent = PendingCheckInEntry.fromJson(m);
+      if (ent != null) out.add(ent);
     }
+    return out;
   }
 
   static Future<void> saveAll(List<PendingCheckInEntry> items) async {
@@ -154,12 +165,14 @@ class PendingCheckInQueue {
     all.removeWhere((e) => e.id == entry.id);
     all.add(entry);
     await saveAll(all);
+    notifyPendingWorkEnqueued();
   }
 
   static Future<void> removeById(String id) async {
     final all = await loadAll();
     all.removeWhere((e) => e.id == id);
     await saveAll(all);
+    notifyPendingWorkQueuesChanged();
   }
 
   static Future<void> clear() async {

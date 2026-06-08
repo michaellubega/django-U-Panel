@@ -1,6 +1,15 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_core/firebase_core.dart';
 
+/// True when [Firebase.initializeApp] has completed (safe before [Firebase.app]).
+bool get isFirebaseInitialized {
+  try {
+    return Firebase.apps.isNotEmpty;
+  } catch (_) {
+    return false;
+  }
+}
+
 /// Firestore **database ID** (not project ID).
 ///
 /// This project uses the named database **`upanel`** in GCP/Firestore by default.
@@ -20,14 +29,28 @@ String get uPanelFirestoreDatabaseId {
   return v;
 }
 
+/// Firestore instance when Firebase is ready; null during web fast boot.
+FirebaseFirestore? tryUPanelFirestore() {
+  if (!isFirebaseInitialized) return null;
+  try {
+    final id = uPanelFirestoreDatabaseId;
+    if (id == '(default)') {
+      return FirebaseFirestore.instance;
+    }
+    return FirebaseFirestore.instanceFor(
+      app: Firebase.app(),
+      databaseId: id,
+    );
+  } catch (_) {
+    return null;
+  }
+}
+
 /// Firestore instance for U-Panel (attendance, etc.).
 FirebaseFirestore uPanelFirestore() {
-  final id = uPanelFirestoreDatabaseId;
-  if (id == '(default)') {
-    return FirebaseFirestore.instance;
+  final db = tryUPanelFirestore();
+  if (db == null) {
+    throw StateError('Firebase is not initialized');
   }
-  return FirebaseFirestore.instanceFor(
-    app: Firebase.app(),
-    databaseId: id,
-  );
+  return db;
 }

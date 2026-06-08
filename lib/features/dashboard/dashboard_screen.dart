@@ -12,12 +12,24 @@ import '../attendance/models/attendance_models.dart';
 import '../notices/create_notice_screen.dart';
 import '../notices/data/notices_repository.dart';
 import '../attendance/attendance_screen.dart';
+import '../attendance/qa_overdue_attendance_screen.dart';
+import '../lesson_insights/lesson_insights_dashboard_section.dart';
+import '../lesson_insights/qa_lesson_activity_screen.dart';
 import '../settings/staff_admin_hub_screen.dart';
-import '../../core/navigation/app_shell.dart';
+import '../../core/navigation/app_section.dart';
+import '../../core/navigation/screen_refresh.dart';
+import '../campus_presence/admin_campus_absent_list_screen.dart';
+import '../campus_presence/admin_campus_presence_card.dart';
+import '../campus_presence/update_campus_location_screen.dart';
+import '../campus_presence/campus_presence_log_screen.dart';
+import '../campus_presence/data/campus_presence_repository.dart';
+import '../campus_presence/models/campus_presence_models.dart';
 import 'dashboard_shared_widgets.dart';
 
 class DashboardScreen extends StatefulWidget {
-  const DashboardScreen({super.key});
+  const DashboardScreen({super.key, this.shellSection = AppSection.dashboard});
+
+  final AppSection shellSection;
 
   @override
   State<DashboardScreen> createState() => _DashboardScreenState();
@@ -25,9 +37,16 @@ class DashboardScreen extends StatefulWidget {
 
 class _DashboardScreenState extends State<DashboardScreen> {
   bool _loading = true;
+  bool _refreshing = false;
   String? _loadError;
   List<NoticeRecord> _notices = [];
   DateTime? _lastUpdated;
+  AdminCampusPresenceDashboardSummary _adminCampusPresence =
+      const AdminCampusPresenceDashboardSummary(
+    totalAdmins: 0,
+    presentToday: 0,
+    absentToday: 0,
+  );
 
   @override
   void initState() {
@@ -39,16 +58,23 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Future<void> _refresh({bool forceNetwork = false}) async {
     final blocking = !AttendanceRepository.instance.hasCachedStore;
     setState(() {
-      _loading = blocking || forceNetwork;
+      _loading = blocking;
+      _refreshing = forceNetwork && !blocking;
       _loadError = null;
     });
     try {
-      await AttendanceRepository.instance.loadAll(
-        force: forceNetwork,
-        scopeToLecturerUid: AttendanceRepository.currentLecturerLoadScopeUid(),
-      );
-      final raw = await NoticesRepository.instance.fetchRecent(limit: 40);
       final auth = AuthRepository.instance;
+      final online = AppConnectivity.instance.isOnline;
+      final studentUser =
+          auth.roleCheckDone && auth.resolvedRole == UserRole.student;
+      if (forceNetwork || blocking) {
+        await AttendanceRepository.instance.bootstrapLoadIfNeeded(
+          force: forceNetwork || (online && studentUser),
+        );
+      } else {
+        unawaited(AttendanceRepository.instance.bootstrapLoadIfNeeded());
+      }
+      final raw = await NoticesRepository.instance.fetchRecent(limit: 40);
       final admin = auth.adminCheckDone && auth.isAdmin;
       final lecturer = auth.lecturerCheckDone && auth.isLecturer && !admin;
       final lecturerListIds = lecturer
@@ -71,11 +97,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
             admin: admin,
             lecturer: lecturer,
             lecturerListIds: lecturerListIds,
+            lecturerFirebaseUid: auth.currentFirebaseUid,
             studentId: student?.id,
             signedListIds: signedListIds,
           ))
             n,
       ].take(20).toList();
+      if (admin) {
+        _adminCampusPresence = await CampusPresenceRepository.instance
+            .fetchTodayAdminPresenceDashboardSummary();
+      }
       _lastUpdated = DateTime.now();
       _loadError = null;
     } catch (e) {
@@ -83,7 +114,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
       _notices = [];
     }
     if (mounted) {
-      setState(() => _loading = false);
+      setState(() {
+        _loading = false;
+        _refreshing = false;
+      });
     }
   }
 
@@ -112,9 +146,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   _DashboardMetrics _metrics() {
     final now = DateTime.now();
+    final sessionIds = AttendanceStore.sessions.map((s) => s.id).toSet();
     var presentToday = 0;
     var absentToday = 0;
     for (final r in AttendanceStore.attendanceRecords) {
+      if (!sessionIds.contains(r.sessionId)) continue;
       if (!_isSameLocalDay(r.timestamp, now)) continue;
       if (r.present) {
         presentToday++;
@@ -186,12 +222,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
       for (final si in AttendanceStore.signIns)
         if (si.studentId == sid) si.listId,
     };
+    final sessionIds = AttendanceStore.sessions
+        .where((s) => signedListIds.contains(s.listId))
+        .map((s) => s.id)
+        .toSet();
 
     final now = DateTime.now();
     var presentToday = 0;
     var absentToday = 0;
     for (final r in AttendanceStore.attendanceRecords) {
       if (r.studentId != sid) continue;
+      if (!sessionIds.contains(r.sessionId)) continue;
       if (!_isSameLocalDay(r.timestamp, now)) continue;
       if (r.present) {
         presentToday++;
@@ -231,11 +272,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
-      listenable: AuthRepository.instance,
+      listenable: Listenable.merge([
+        AuthRepository.instance,
+        AppConnectivity.instance,
+        AttendanceRepository.instance,
+      ]),
       builder: (context, _) {
-        return ListenableBuilder(
-          listenable: AppConnectivity.instance,
-          builder: (context, _) {
             final admin = _isAdmin();
             if (!admin) {
               return _NonAdminDashboardPlaceholder(
@@ -247,7 +289,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
             final liveCount = m.liveSessions.length;
 
-            return RefreshIndicator(
+            return ScreenRefreshRegistrar(
+              section: widget.shellSection,
+              onRefresh: () => _refresh(forceNetwork: true),
+              child: RefreshIndicator(
               onRefresh: () => _refresh(forceNetwork: true),
               child: SingleChildScrollView(
                 physics: const AlwaysScrollableScrollPhysics(),
@@ -261,7 +306,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           'Operational overview — tap tiles and buttons to act',
                       liveCount: liveCount,
                       lastUpdated: _lastUpdated,
-                      refreshing: _loading,
+                      refreshing: _loading || _refreshing,
                       onRefresh: () => unawaited(_refresh(forceNetwork: true)),
                     ),
                     if (offline) ...[
@@ -285,6 +330,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         child: Center(child: CircularProgressIndicator()),
                       )
                     else ...[
+                      if (AuthRepository.instance.isKiuAdmin) ...[
+                        const AdminCampusPresenceCard(),
+                        const SizedBox(height: 16),
+                      ],
                       _AdminStatsRow(
                         metrics: m,
                         onLive: () => DashboardShellNav.go(
@@ -304,6 +353,25 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           AppSection.attendance,
                         ),
                       ),
+                      const SizedBox(height: 10),
+                      _AdminCampusPresenceStatsRow(
+                        summary: _adminCampusPresence,
+                        onPresentTap: () {
+                          Navigator.of(context).push<void>(
+                            MaterialPageRoute<void>(
+                              builder: (_) => const CampusPresenceLogScreen(),
+                            ),
+                          );
+                        },
+                        onAbsentTap: () {
+                          Navigator.of(context).push<void>(
+                            MaterialPageRoute<void>(
+                              builder: (_) =>
+                                  const AdminCampusAbsentListScreen(),
+                            ),
+                          );
+                        },
+                      ),
                       const SizedBox(height: 20),
                       Text(
                         'Quick actions',
@@ -312,6 +380,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             ),
                       ),
                       const SizedBox(height: 10),
+                      if (AuthRepository.instance.isQaStaff) ...[
+                        DashboardQuickAction(
+                          filled: true,
+                          icon: Icons.my_location_rounded,
+                          label: 'Campus check-in area',
+                          subtitle:
+                              'Set campus centre (1.5 km radius) for administrator check-in',
+                          onTap: () {
+                            Navigator.of(context).push<void>(
+                              MaterialPageRoute<void>(
+                                builder: (_) =>
+                                    const UpdateCampusLocationScreen(),
+                              ),
+                            );
+                          },
+                        ),
+                        const SizedBox(height: 8),
+                      ],
                       DashboardQuickAction(
                         filled: true,
                         icon: Icons.people_alt_rounded,
@@ -354,8 +440,49 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           AppSection.reports,
                         ),
                       ),
-                      const SizedBox(height: 16),
+                      const SizedBox(height: 8),
+                      DashboardQuickAction(
+                        icon: Icons.history_edu_rounded,
+                        label: 'Lecturer lessons',
+                        subtitle: 'Sessions taught by all lecturers',
+                        onTap: () {
+                          Navigator.of(context).push<void>(
+                            MaterialPageRoute<void>(
+                              builder: (_) => const QaLessonActivityScreen(),
+                            ),
+                          );
+                        },
+                      ),
+                      const SizedBox(height: 8),
+                      DashboardQuickAction(
+                        icon: Icons.timer_off_rounded,
+                        label: 'Overdue attendance',
+                        subtitle: 'Start sessions when lecturers are 1:30 late',
+                        onTap: () {
+                          Navigator.of(context).push<void>(
+                            MaterialPageRoute<void>(
+                              builder: (_) => const QaOverdueAttendanceScreen(),
+                            ),
+                          );
+                        },
+                      ),
+                      const SizedBox(height: 8),
+                      DashboardQuickAction(
+                        icon: Icons.place_rounded,
+                        label: 'KIU administrator presence',
+                        subtitle: 'Check-in log for KIU administrators only',
+                        onTap: () {
+                          Navigator.of(context).push<void>(
+                            MaterialPageRoute<void>(
+                              builder: (_) => const CampusPresenceLogScreen(),
+                            ),
+                          );
+                        },
+                      ),
+                      const SizedBox(height: 12),
                       const _StaffAdminEntryCard(),
+                      const SizedBox(height: 16),
+                      const QaLessonInsightsDashboardCard(),
                       const SizedBox(height: 24),
                       _AdminDetailSection(
                         metrics: m,
@@ -375,9 +502,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   ],
                 ),
               ),
+            ),
             );
-          },
-        );
       },
     );
   }
@@ -390,9 +516,11 @@ class _NonAdminDashboardPlaceholder extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final message = role == UserRole.lecturer
-        ? 'Use the Home tab for your lecturer overview.'
-        : 'Use Attendance to sign in to class sessions.';
+    final message = switch (role) {
+      UserRole.lecturer || UserRole.kiuAdmin =>
+        'Use the Home tab for your overview.',
+      _ => 'Use Attendance to sign in to class sessions.',
+    };
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 32),
       child: Center(
@@ -404,6 +532,71 @@ class _NonAdminDashboardPlaceholder extends StatelessWidget {
               ),
         ),
       ),
+    );
+  }
+}
+
+class _AdminCampusPresenceStatsRow extends StatelessWidget {
+  const _AdminCampusPresenceStatsRow({
+    required this.summary,
+    required this.onPresentTap,
+    required this.onAbsentTap,
+  });
+
+  final AdminCampusPresenceDashboardSummary summary;
+  final VoidCallback onPresentTap;
+  final VoidCallback onAbsentTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final tiles = [
+      DashboardStatTile(
+        label: 'KIU admins present',
+        value: '${summary.presentToday}',
+        icon: Icons.badge_rounded,
+        color: AppTheme.success,
+        highlight: summary.presentToday > 0,
+        onTap: onPresentTap,
+      ),
+      DashboardStatTile(
+        label: 'KIU admins absent',
+        value: '${summary.absentToday}',
+        icon: Icons.badge_outlined,
+        color: AppTheme.warning,
+        highlight: summary.absentToday > 0,
+        onTap: onAbsentTap,
+      ),
+    ];
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isNarrow = constraints.maxWidth < 700;
+        if (isNarrow) {
+          return GridView.count(
+            crossAxisCount: 2,
+            shrinkWrap: true,
+            physics: const NeverScrollableScrollPhysics(),
+            mainAxisSpacing: 10,
+            crossAxisSpacing: 10,
+            childAspectRatio: constraints.maxWidth > 360 ? 1.08 : 0.92,
+            children: tiles,
+          );
+        }
+        return SizedBox(
+          height: 132,
+          child: Row(
+            children: tiles
+                .map(
+                  (t) => Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.only(right: 10),
+                      child: t,
+                    ),
+                  ),
+                )
+                .toList(),
+          ),
+        );
+      },
     );
   }
 }

@@ -1,7 +1,9 @@
 import 'dart:convert';
 
+import '../../core/auth/student_registration_number.dart';
 import '../../features/attendance/models/attendance_models.dart';
 import 'attendance_local_queues.dart';
+import 'local_json_decode.dart';
 
 /// Persists a copy of [AttendanceStore] after each successful Firestore [loadAll].
 ///
@@ -15,11 +17,18 @@ class AttendanceLocalSnapshot {
   static String _hiveKey(String userId, String scopeTag) =>
       'attendance_snapshot_v${_version}_${userId}_$scopeTag';
 
-  /// `all` for admins/QA/students; `lec:<uid>` for lecturer-scoped loads.
-  static String scopeTagFor({String? lecturerScopeUid}) {
+  /// `staff` for admin/QA; `lec:<uid>` for lecturers; `stu:<reg>` for students.
+  static String scopeTagFor({
+    String? lecturerScopeUid,
+    String? studentRegistration,
+  }) {
+    final reg = studentRegistration?.trim();
+    if (reg != null && reg.isNotEmpty) {
+      return 'stu:${StudentRegistrationNumber.normalize(reg)}';
+    }
     final u = lecturerScopeUid?.trim();
     if (u != null && u.isNotEmpty) return 'lec:$u';
-    return 'all';
+    return 'staff';
   }
 
   static Future<void> save({
@@ -53,10 +62,19 @@ class AttendanceLocalSnapshot {
   }) async {
     final uid = userId.trim();
     if (uid.isEmpty) return null;
-    final raw = await AttendanceLocalQueues.readString(_hiveKey(uid, scopeTag));
+    final key = _hiveKey(uid, scopeTag);
+    final raw = await AttendanceLocalQueues.readString(key);
     if (raw == null || raw.isEmpty) return null;
     try {
-      final m = jsonDecode(raw) as Map<String, dynamic>;
+      final m = await decodeStoredJson<Map<String, dynamic>>(
+        raw: raw,
+        storageKey: key,
+        removeKey: AttendanceLocalQueues.removeKey,
+        parse: (decoded) =>
+            decoded is Map ? Map<String, dynamic>.from(decoded) : <String, dynamic>{},
+        debugLabel: 'AttendanceLocalSnapshot',
+      );
+      if (m == null || m.isEmpty) return null;
       if ((m['v'] as num?)?.toInt() != _version) return null;
       final lists = (m['lists'] as List<dynamic>?)
               ?.map((e) => _listFromJson(Map<String, dynamic>.from(e as Map)))
@@ -233,6 +251,11 @@ class AttendanceLocalSnapshot {
         'studentId': s.studentId,
         'course': s.course,
         'signedInAtMs': s.signedInAt.millisecondsSinceEpoch,
+        if (s.studentName != null && s.studentName!.trim().isNotEmpty)
+          'studentName': s.studentName!.trim(),
+        if (s.registrationNumber != null &&
+            s.registrationNumber!.trim().isNotEmpty)
+          'registrationNumber': s.registrationNumber!.trim().toUpperCase(),
       };
 
   static SignInRecord _signInFromJson(Map<String, dynamic> m) => SignInRecord(
@@ -245,6 +268,8 @@ class AttendanceLocalSnapshot {
                 (m['signedInAtMs'] as num).toInt(),
               )
             : DateTime.now(),
+        studentName: (m['studentName'] as String?)?.trim(),
+        registrationNumber: (m['registrationNumber'] as String?)?.trim(),
       );
 
   static Map<String, dynamic> _recordToJson(AttendanceRecord r) => {
@@ -255,7 +280,6 @@ class AttendanceLocalSnapshot {
         'timestampMs': r.timestamp.millisecondsSinceEpoch,
         'latitude': r.latitude,
         'longitude': r.longitude,
-        'selfieStoragePath': r.selfieStoragePath,
         'verified': r.verified,
         'present': r.present,
         'deviceId': r.deviceId,
@@ -274,7 +298,6 @@ class AttendanceLocalSnapshot {
             : DateTime.now(),
         latitude: (m['latitude'] as num?)?.toDouble() ?? 0,
         longitude: (m['longitude'] as num?)?.toDouble() ?? 0,
-        selfieStoragePath: m['selfieStoragePath'] as String?,
         verified: m['verified'] as bool? ?? false,
         present: m['present'] as bool? ?? true,
         deviceId: m['deviceId'] as String?,

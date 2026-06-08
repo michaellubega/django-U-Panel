@@ -2,6 +2,14 @@
   "projects": {
     "default": "u-panel-2026"
   },
-  "targets": {},
+  "targets": {
+    "u-panel-2026": {
+      "hosting": {
+        "live": [
+          "u-panel-2026"
+        ]
+      }
+    }
+  },
   "etags": {}
 }

@@ -7,9 +7,11 @@ import 'package:flutter/foundation.dart';
 
 import '../auth/auth_repository.dart';
 import '../../features/attendance/data/attendance_repository.dart';
+import '../../features/attendance/data/session_code_push_utils.dart';
 import '../../features/attendance/models/attendance_models.dart';
 import 'desktop_notice_watch.dart';
 import 'fcm_web_config.dart';
+import 'fcm_web_script_loader.dart';
 import 'local_push_display.dart';
 import 'push_foreground_display.dart';
 import 'push_message_copy.dart';
@@ -20,11 +22,28 @@ class PushController {
   PushController._();
   static final PushController instance = PushController._();
 
-  final FirebaseMessaging _fm = FirebaseMessaging.instance;
+  FirebaseMessaging? _fm;
+
+  FirebaseMessaging? get _messaging {
+    if (Firebase.apps.isEmpty) return null;
+    try {
+      return _fm ??= FirebaseMessaging.instance;
+    } catch (e, st) {
+      if (kDebugMode) {
+        debugPrint('FirebaseMessaging unavailable: $e');
+        debugPrint('$st');
+      }
+      return null;
+    }
+  }
 
   bool _initialized = false;
   final Set<String> _subscribedListTopics = {};
   String? _subscribedStudentTopic;
+  String? _subscribedLecturerTopic;
+  Future<void> _topicSyncSerialized = Future<void>.value();
+  int _lastLoggedListTopicCount = -1;
+  bool _subscribedAllNotices = false;
 
   /// FCM token + topic subscribe (not available on desktop or web).
   bool get _fcmNativeSupported =>
@@ -64,7 +83,9 @@ class PushController {
   }
 
   Future<void> _initFcmNative() async {
-    final settings = await _fm.requestPermission(
+    final fm = _messaging;
+    if (fm == null) return;
+    final settings = await fm.requestPermission(
       alert: true,
       badge: true,
       sound: true,
@@ -73,7 +94,7 @@ class PushController {
       debugPrint('FCM permission status: ${settings.authorizationStatus}');
     }
 
-    await _fm.setForegroundNotificationPresentationOptions(
+    await fm.setForegroundNotificationPresentationOptions(
       alert: true,
       badge: true,
       sound: true,
@@ -84,7 +105,7 @@ class PushController {
     FirebaseMessaging.onMessage.listen(_onForegroundMessage);
 
     try {
-      final t = await _fm.getToken();
+      final t = await fm.getToken();
       if (kDebugMode && t != null) {
         debugPrint('FCM token acquired (${t.length} chars)');
       } else if (kDebugMode && t == null) {
@@ -97,7 +118,7 @@ class PushController {
       }
     }
 
-    _fm.onTokenRefresh.listen((_) {
+    fm.onTokenRefresh.listen((_) {
       if (kDebugMode) debugPrint('FCM token refreshed');
       unawaited(syncTopicsForCurrentUser());
     });
@@ -105,7 +126,14 @@ class PushController {
   }
 
   Future<void> _initFcmWebForeground() async {
-    await _fm.requestPermission(alert: true, badge: true, sound: true);
+    final fm = _messaging;
+    if (fm == null) return;
+    try {
+      await ensureFcmWebScriptLoaded();
+    } catch (e) {
+      if (kDebugMode) debugPrint('FCM web script load failed: $e');
+    }
+    await fm.requestPermission(alert: true, badge: true, sound: true);
     FirebaseMessaging.onMessage.listen(_onForegroundMessage);
     try {
       final vk = kFcmWebVapidPublicKey.trim();
@@ -117,7 +145,7 @@ class PushController {
           );
         }
       } else {
-        final t = await _fm.getToken(vapidKey: vk);
+        final t = await fm.getToken(vapidKey: vk);
         if (kDebugMode && t != null) {
           debugPrint('FCM web token acquired (${t.length} chars)');
         }
@@ -132,9 +160,18 @@ class PushController {
     final kind = (message.data['kind'] as String? ?? '').toLowerCase();
     if (auth.adminCheckDone && auth.isAdmin) {
       if (kind == 'sessioncode' || kind == 'missedsession') return;
+      if (!_adminShouldDisplayPushData(message.data)) return;
     }
     if (auth.lecturerCheckDone && auth.isLecturer && !auth.isAdmin) {
       if (kind == 'missedsession' || kind == 'sessioncode') return;
+    }
+
+    if (kind == 'sessioncode') {
+      final code = SessionCodePushUtils.codeFromPushData(message.data);
+      if (code != null &&
+          await SessionCodePushUtils.isRemoteLearningSessionCode(code)) {
+        return;
+      }
     }
 
     final (title, body) = pushDisplayCopyForMessage(message);
@@ -156,25 +193,40 @@ class PushController {
     if (Firebase.apps.isEmpty || !_topicMessagingSupported) {
       return;
     }
+    final run = _topicSyncSerialized.then((_) => _syncListTopicsFromStoreBody());
+    _topicSyncSerialized = run.catchError((Object? _, StackTrace? __) {});
+    return run;
+  }
+
+  Future<void> _syncListTopicsFromStoreBody() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
-    final isAdmin =
-        AuthRepository.instance.adminCheckDone && AuthRepository.instance.isAdmin;
-
+    final auth = AuthRepository.instance;
     final Set<String> desired;
-    if (isAdmin) {
+    if (auth.adminCheckDone && auth.isAdmin) {
       desired = {};
-    } else {
+    } else if (AttendanceRepository.isStudentScopedUser()) {
       await _ensureAttendanceLoadedForTopicSync();
       desired = _desiredListTopicsForSignedInStudent();
+    } else {
+      desired = {};
     }
+
     final toAdd = desired.difference(_subscribedListTopics);
     final toRemove = _subscribedListTopics.difference(desired);
+    if (toAdd.isEmpty && toRemove.isEmpty) {
+      await _syncStudentNoticeTopic();
+      await _syncLecturerNoticeTopic();
+      return;
+    }
+
+    final fm = _messaging;
+    if (fm == null) return;
 
     for (final topic in toRemove) {
       try {
-        await _fm.unsubscribeFromTopic(topic);
+        await fm.unsubscribeFromTopic(topic);
         _subscribedListTopics.remove(topic);
       } catch (e) {
         if (kDebugMode) debugPrint('FCM unsubscribe $topic: $e');
@@ -182,19 +234,22 @@ class PushController {
     }
     for (final topic in toAdd) {
       try {
-        await _fm.subscribeToTopic(topic);
+        await fm.subscribeToTopic(topic);
         _subscribedListTopics.add(topic);
         if (kDebugMode) debugPrint('FCM subscribed: $topic');
       } catch (e) {
         if (kDebugMode) debugPrint('FCM subscribe $topic: $e');
       }
     }
-    if (kDebugMode) {
+    if (kDebugMode &&
+        _lastLoggedListTopicCount != _subscribedListTopics.length) {
+      _lastLoggedListTopicCount = _subscribedListTopics.length;
       debugPrint(
         'FCM list topics desired=${desired.length} current=${_subscribedListTopics.length}',
       );
     }
     await _syncStudentNoticeTopic();
+    await _syncLecturerNoticeTopic();
   }
 
   Set<String> _desiredListTopicsForSignedInStudent() {
@@ -214,6 +269,12 @@ class PushController {
 
   Future<void> syncTopicsForCurrentUser() async {
     if (Firebase.apps.isEmpty || !_anyPushSupported) return;
+    final run = _topicSyncSerialized.then((_) => _syncTopicsForCurrentUserBody());
+    _topicSyncSerialized = run.catchError((Object? _, StackTrace? __) {});
+    return run;
+  }
+
+  Future<void> _syncTopicsForCurrentUserBody() async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
       if (_topicMessagingSupported) {
@@ -232,13 +293,18 @@ class PushController {
     }
 
     if (_topicMessagingSupported) {
-      try {
-        await _fm.subscribeToTopic(kFcmAllNoticesTopic);
-        if (kDebugMode) debugPrint('FCM subscribed: $kFcmAllNoticesTopic');
-      } catch (e) {
-        if (kDebugMode) debugPrint('FCM subscribe all_notices: $e');
+      final fm = _messaging;
+      if (fm == null) return;
+      if (!_subscribedAllNotices) {
+        try {
+          await fm.subscribeToTopic(kFcmAllNoticesTopic);
+          _subscribedAllNotices = true;
+          if (kDebugMode) debugPrint('FCM subscribed: $kFcmAllNoticesTopic');
+        } catch (e) {
+          if (kDebugMode) debugPrint('FCM subscribe all_notices: $e');
+        }
       }
-      await syncListTopicsFromStore();
+      await _syncListTopicsFromStoreBody();
     }
 
     if (DesktopNoticeWatch.instance.supported) {
@@ -254,23 +320,92 @@ class PushController {
   }
 
   Future<void> _ensureAttendanceLoadedForTopicSync() async {
+    await _waitForRoleReady();
+    if (!AuthRepository.instance.roleCheckDone) return;
+    final repo = AttendanceRepository.instance;
+    if (repo.isLoaded || repo.hasCachedStore) return;
     try {
-      await AttendanceRepository.instance.loadAll(
-        force: false,
-        scopeToLecturerUid: AttendanceRepository.currentLecturerLoadScopeUid(),
-      );
+      await repo.bootstrapLoadIfNeeded();
     } catch (_) {}
   }
 
   Future<void> _unsubscribeAllKnownTopics() async {
     final copy = Set<String>.from(_subscribedListTopics);
     _subscribedListTopics.clear();
+    _subscribedAllNotices = false;
+    _lastLoggedListTopicCount = -1;
+    final fm = _messaging;
+    if (fm == null) return;
     await Future.wait<void>([
-      _fm.unsubscribeFromTopic(kFcmAllNoticesTopic).catchError((_) {}),
+      fm.unsubscribeFromTopic(kFcmAllNoticesTopic).catchError((_) {}),
       for (final topic in copy)
-        _fm.unsubscribeFromTopic(topic).catchError((_) {}),
+        fm.unsubscribeFromTopic(topic).catchError((_) {}),
       _unsubscribeStudentTopicOnly(),
+      _unsubscribeLecturerTopicOnly(),
     ]);
+  }
+
+  Future<void> _syncLecturerNoticeTopic() async {
+    if (!_topicMessagingSupported) return;
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      await _unsubscribeLecturerTopicOnly();
+      return;
+    }
+    final desired = _desiredLecturerTopic();
+    if (desired == _subscribedLecturerTopic) return;
+    await _unsubscribeLecturerTopicOnly();
+    if (desired == null || desired.isEmpty) return;
+    final fm = _messaging;
+    if (fm == null) return;
+    try {
+      await fm.subscribeToTopic(desired);
+      _subscribedLecturerTopic = desired;
+      if (kDebugMode) debugPrint('FCM subscribed: $desired');
+    } catch (e) {
+      if (kDebugMode) debugPrint('FCM subscribe lecturer topic: $e');
+    }
+  }
+
+  String? _desiredLecturerTopic() {
+    final auth = AuthRepository.instance;
+    if (auth.adminCheckDone && auth.isAdmin) return null;
+    if (!auth.lecturerCheckDone || !auth.isLecturer) return null;
+    final uid = auth.currentFirebaseUid?.trim();
+    if (uid == null || uid.isEmpty) return null;
+    return fcmLecturerNoticeTopic(uid);
+  }
+
+  /// Admins only receive FCM for broadcast (`allAppUsers`) notices.
+  bool _adminShouldDisplayPushData(Map<String, dynamic> data) {
+    final aud = (data['audience'] as String? ?? 'allAppUsers')
+        .trim()
+        .toLowerCase();
+    if (aud == 'classlist' ||
+        aud == 'class_list' ||
+        aud == 'student' ||
+        aud == 'targetstudent' ||
+        aud == 'lecturer') {
+      return false;
+    }
+    final kind = (data['kind'] as String? ?? '').toLowerCase();
+    if (kind == 'sessioncode' ||
+        kind == 'missedsession' ||
+        kind == 'lecturertakeattendance') {
+      return false;
+    }
+    return true;
+  }
+
+  Future<void> _unsubscribeLecturerTopicOnly() async {
+    final t = _subscribedLecturerTopic;
+    if (t == null || t.isEmpty) return;
+    final fm = _messaging;
+    if (fm == null) return;
+    try {
+      await fm.unsubscribeFromTopic(t);
+    } catch (_) {}
+    _subscribedLecturerTopic = null;
   }
 
   Future<void> _syncStudentNoticeTopic() async {
@@ -284,8 +419,10 @@ class PushController {
     if (desired == _subscribedStudentTopic) return;
     await _unsubscribeStudentTopicOnly();
     if (desired == null || desired.isEmpty) return;
+    final fm = _messaging;
+    if (fm == null) return;
     try {
-      await _fm.subscribeToTopic(desired);
+      await fm.subscribeToTopic(desired);
       _subscribedStudentTopic = desired;
       if (kDebugMode) debugPrint('FCM subscribed: $desired');
     } catch (e) {
@@ -314,8 +451,10 @@ class PushController {
   Future<void> _unsubscribeStudentTopicOnly() async {
     final t = _subscribedStudentTopic;
     if (t == null || t.isEmpty) return;
+    final fm = _messaging;
+    if (fm == null) return;
     try {
-      await _fm.unsubscribeFromTopic(t);
+      await fm.unsubscribeFromTopic(t);
     } catch (_) {}
     _subscribedStudentTopic = null;
   }
@@ -325,6 +464,7 @@ class PushController {
     if (Firebase.apps.isEmpty || !_topicMessagingSupported) {
       _subscribedListTopics.clear();
       _subscribedStudentTopic = null;
+      _subscribedLecturerTopic = null;
       return;
     }
     await _unsubscribeAllKnownTopics();

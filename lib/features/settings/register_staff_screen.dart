@@ -18,16 +18,27 @@ class RegisterStaffScreen extends StatefulWidget {
 }
 
 class _RegisterStaffScreenState extends State<RegisterStaffScreen> {
-  _StaffKind _kind = _StaffKind.qaStaff;
+  _StaffKind? _kind;
   _StaffIdMode _staffIdMode = _StaffIdMode.auto;
   final _fullNameC = TextEditingController();
   final _manualStaffIdC = TextEditingController();
+  late final TextEditingController _defaultPasswordC;
   bool _busy = false;
+  bool _defaultPasswordVisible = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _defaultPasswordC = TextEditingController(
+      text: StaffAuthEmail.defaultLecturerPassword,
+    );
+  }
 
   @override
   void dispose() {
     _fullNameC.dispose();
     _manualStaffIdC.dispose();
+    _defaultPasswordC.dispose();
     super.dispose();
   }
 
@@ -43,6 +54,15 @@ class _RegisterStaffScreenState extends State<RegisterStaffScreen> {
       return;
     }
 
+    final kind = _kind;
+    if (kind == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+            content: Text('Select user type: QA staff or lecturer.')),
+      );
+      return;
+    }
+
     if (_staffIdMode == _StaffIdMode.manual &&
         _manualStaffIdC.text.trim().isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -51,12 +71,13 @@ class _RegisterStaffScreenState extends State<RegisterStaffScreen> {
       return;
     }
 
-    final manualArg =
-        _staffIdMode == _StaffIdMode.manual ? _manualStaffIdC.text.trim() : null;
+    final manualArg = _staffIdMode == _StaffIdMode.manual
+        ? _manualStaffIdC.text.trim()
+        : null;
 
     setState(() => _busy = true);
     final StaffRegistrationResult result;
-    if (_kind == _StaffKind.qaStaff) {
+    if (kind == _StaffKind.qaStaff) {
       result = await AuthRepository.instance.registerQaStaffAccount(
         fullName: fullName,
         manualStaffNumber: manualArg,
@@ -80,7 +101,7 @@ class _RegisterStaffScreenState extends State<RegisterStaffScreen> {
     final staffId = result.staffNumber;
     if (staffId == null) return;
 
-    final roleLabel = _kind == _StaffKind.qaStaff ? 'QA staff' : 'Lecturer';
+    final roleLabel = kind == _StaffKind.qaStaff ? 'QA staff' : 'Lecturer';
     if (!mounted) return;
     await Navigator.of(context).pushReplacement(
       MaterialPageRoute<void>(
@@ -127,6 +148,7 @@ class _RegisterStaffScreenState extends State<RegisterStaffScreen> {
             );
           }
 
+          final kind = _kind;
           return ListView(
             padding: const EdgeInsets.all(24),
             children: [
@@ -138,18 +160,24 @@ class _RegisterStaffScreenState extends State<RegisterStaffScreen> {
               ),
               const SizedBox(height: 8),
               SegmentedButton<_StaffKind>(
+                emptySelectionAllowed: true,
                 segments: const [
-                  ButtonSegment(value: _StaffKind.qaStaff, label: Text('QA staff')),
-                  ButtonSegment(value: _StaffKind.lecturer, label: Text('Lecturer')),
+                  ButtonSegment(
+                      value: _StaffKind.qaStaff, label: Text('QA staff')),
+                  ButtonSegment(
+                      value: _StaffKind.lecturer, label: Text('Lecturer')),
                 ],
-                selected: {_kind},
-                onSelectionChanged: (s) => setState(() => _kind = s.first),
+                selected: kind == null ? const <_StaffKind>{} : {kind},
+                onSelectionChanged:
+                    _busy ? null : (s) => setState(() => _kind = s.first),
               ),
               const SizedBox(height: 8),
               Text(
-                _kind == _StaffKind.qaStaff
-                    ? 'QA staff: same operational tools as administrators, shown as QA staff in the app.'
-                    : 'Attendance and class lists scoped to this lecturer.',
+                kind == null
+                    ? 'Select QA staff or lecturer for this account.'
+                    : kind == _StaffKind.qaStaff
+                        ? 'QA staff: same operational tools as administrators, shown as QA staff in the app.'
+                        : 'Attendance and class lists scoped to this lecturer.',
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
                       color: AppTheme.textSecondary,
                       height: 1.35,
@@ -183,10 +211,12 @@ class _RegisterStaffScreenState extends State<RegisterStaffScreen> {
               SegmentedButton<_StaffIdMode>(
                 segments: const [
                   ButtonSegment(value: _StaffIdMode.auto, label: Text('Auto')),
-                  ButtonSegment(value: _StaffIdMode.manual, label: Text('Manual')),
+                  ButtonSegment(
+                      value: _StaffIdMode.manual, label: Text('Manual')),
                 ],
                 selected: {_staffIdMode},
-                onSelectionChanged: (s) => setState(() => _staffIdMode = s.first),
+                onSelectionChanged: (s) =>
+                    setState(() => _staffIdMode = s.first),
               ),
               const SizedBox(height: 8),
               Text(
@@ -210,16 +240,30 @@ class _RegisterStaffScreenState extends State<RegisterStaffScreen> {
                 ),
               ],
               const SizedBox(height: 12),
-              Text(
-                'Default password for new accounts: '
-                '${StaffAuthEmail.defaultLecturerPassword}',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: AppTheme.textSecondary,
+              TextFormField(
+                readOnly: true,
+                controller: _defaultPasswordC,
+                obscureText: !_defaultPasswordVisible,
+                decoration: InputDecoration(
+                  labelText: 'Default password for new accounts',
+                  suffixIcon: IconButton(
+                    tooltip: _defaultPasswordVisible
+                        ? 'Hide password'
+                        : 'Show password',
+                    onPressed: () => setState(
+                      () => _defaultPasswordVisible = !_defaultPasswordVisible,
                     ),
+                    icon: Icon(
+                      _defaultPasswordVisible
+                          ? Icons.visibility_off_outlined
+                          : Icons.visibility_outlined,
+                    ),
+                  ),
+                ),
               ),
               const SizedBox(height: 28),
               FilledButton(
-                onPressed: _busy ? null : _submit,
+                onPressed: (_busy || kind == null) ? null : _submit,
                 child: _busy
                     ? const SizedBox(
                         height: 22,

@@ -3,9 +3,11 @@ import 'package:flutter/material.dart';
 import '../../core/auth/auth_repository.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/widgets/admin_gate.dart';
+import 'administrators_list_screen.dart';
 import 'lecturers_list_screen.dart';
 import 'qa_staff_list_screen.dart';
 import 'register_administrator_screen.dart';
+import 'register_kiu_administrator_screen.dart';
 import 'register_staff_screen.dart';
 
 /// Admin hub for lecturer/QA staff accounts (Dashboard, drawer, or sidebar).
@@ -89,6 +91,7 @@ class _DesktopSplitLayout extends StatelessWidget {
           child: _BrowsePanelCard(
             textTheme: textTheme,
             onLecturers: () => _pushLecturers(context),
+            onAdministrators: () => _pushAdministrators(context),
             onQaStaff: () => _pushQaStaff(context),
           ),
         ),
@@ -108,6 +111,14 @@ class _DesktopSplitLayout extends StatelessWidget {
     Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
         builder: (_) => const LecturersListScreen(),
+      ),
+    );
+  }
+
+  void _pushAdministrators(BuildContext context) {
+    Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => const AdministratorsListScreen(),
       ),
     );
   }
@@ -175,7 +186,7 @@ class _CompactColumnLayout extends StatelessWidget {
                   child: _DirectoryTile(
                     icon: Icons.school_rounded,
                     title: 'Lecturers',
-                    subtitle: 'KIU accounts, sign-in with staff ID',
+                    subtitle: 'KIU-#### sign-in, attendance lists',
                     tint: AppTheme.primary,
                     onTap: () {
                       Navigator.of(context).push<void>(
@@ -189,10 +200,26 @@ class _CompactColumnLayout extends StatelessWidget {
                 const SizedBox(width: 12),
                 Expanded(
                   child: _DirectoryTile(
+                    icon: Icons.admin_panel_settings_rounded,
+                    title: 'Administrators',
+                    subtitle: 'Full admin access, grant roles',
+                    tint: AppTheme.secondary,
+                    onTap: () {
+                      Navigator.of(context).push<void>(
+                        MaterialPageRoute<void>(
+                          builder: (_) => const AdministratorsListScreen(),
+                        ),
+                      );
+                    },
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _DirectoryTile(
                     icon: Icons.verified_user_rounded,
                     title: 'QA staff',
-                    subtitle: 'Admins and full access roles',
-                    tint: AppTheme.secondary,
+                    subtitle: 'Operational admin (QA role)',
+                    tint: AppTheme.primaryLight,
                     onTap: () {
                       Navigator.of(context).push<void>(
                         MaterialPageRoute<void>(
@@ -209,7 +236,7 @@ class _CompactColumnLayout extends StatelessWidget {
           _DirectoryTile(
             icon: Icons.school_rounded,
             title: 'Lecturers',
-            subtitle: 'KIU accounts, sign-in with staff ID',
+            subtitle: 'KIU-#### sign-in, attendance lists',
             tint: AppTheme.primary,
             onTap: () {
               Navigator.of(context).push<void>(
@@ -221,10 +248,24 @@ class _CompactColumnLayout extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           _DirectoryTile(
+            icon: Icons.admin_panel_settings_rounded,
+            title: 'Administrators',
+            subtitle: 'Full admin access, grant roles',
+            tint: AppTheme.secondary,
+            onTap: () {
+              Navigator.of(context).push<void>(
+                MaterialPageRoute<void>(
+                  builder: (_) => const AdministratorsListScreen(),
+                ),
+              );
+            },
+          ),
+          const SizedBox(height: 12),
+          _DirectoryTile(
             icon: Icons.verified_user_rounded,
             title: 'QA staff',
-            subtitle: 'Admins and full access roles',
-            tint: AppTheme.secondary,
+            subtitle: 'Operational admin (QA role)',
+            tint: AppTheme.primaryLight,
             onTap: () {
               Navigator.of(context).push<void>(
                 MaterialPageRoute<void>(
@@ -244,11 +285,13 @@ class _BrowsePanelCard extends StatelessWidget {
   const _BrowsePanelCard({
     required this.textTheme,
     required this.onLecturers,
+    required this.onAdministrators,
     required this.onQaStaff,
   });
 
   final TextTheme textTheme;
   final VoidCallback onLecturers;
+  final VoidCallback onAdministrators;
   final VoidCallback onQaStaff;
 
   @override
@@ -294,10 +337,18 @@ class _BrowsePanelCard extends StatelessWidget {
           ),
           const Divider(height: 1),
           _PanelLinkTile(
-            icon: Icons.verified_user_rounded,
+            icon: Icons.admin_panel_settings_rounded,
             iconTint: AppTheme.secondary,
+            title: 'Administrators',
+            subtitle: 'Full administrators (grant access)',
+            onTap: onAdministrators,
+          ),
+          const Divider(height: 1),
+          _PanelLinkTile(
+            icon: Icons.verified_user_rounded,
+            iconTint: AppTheme.primaryLight,
             title: 'QA staff',
-            subtitle: 'Admin accounts (isAdmin)',
+            subtitle: 'Operational admin accounts',
             onTap: onQaStaff,
           ),
           const SizedBox(height: 4),
@@ -408,6 +459,27 @@ class _GrantAdministratorSection extends StatelessWidget {
               compact: MediaQuery.sizeOf(context).width <
                   StaffAdminHubScreen._splitBreakpoint,
             ),
+            const SizedBox(height: 12),
+            _KiuAdministratorHeroCard(
+              onTap: () {
+                Navigator.of(context).push<void>(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const RegisterKiuAdministratorScreen(),
+                  ),
+                );
+              },
+              onBootstrapMichael: () {
+                Navigator.of(context).push<void>(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const RegisterKiuAdministratorScreen(
+                      initialEmail: 'michaeldieve7@gmail.com',
+                    ),
+                  ),
+                );
+              },
+              compact: MediaQuery.sizeOf(context).width <
+                  StaffAdminHubScreen._splitBreakpoint,
+            ),
           ],
         );
       },
@@ -469,6 +541,91 @@ class _GrantAdministratorHeroCard extends StatelessWidget {
                 Icons.arrow_forward_ios_rounded,
                 size: 14,
                 color: Colors.white.withValues(alpha: 0.85),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _KiuAdministratorHeroCard extends StatelessWidget {
+  const _KiuAdministratorHeroCard({
+    required this.onTap,
+    required this.onBootstrapMichael,
+    required this.compact,
+  });
+
+  final VoidCallback onTap;
+  final VoidCallback onBootstrapMichael;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) {
+    final textTheme = Theme.of(context).textTheme;
+
+    return Material(
+      color: AppTheme.primary,
+      elevation: 2,
+      shadowColor: AppTheme.primary.withValues(alpha: 0.35),
+      borderRadius: BorderRadius.circular(AppTheme.cardRadius),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: EdgeInsets.symmetric(
+            horizontal: compact ? 20 : 24,
+            vertical: compact ? 20 : 22,
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.2),
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: const Icon(
+                      Icons.badge_rounded,
+                      color: Colors.white,
+                      size: 26,
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Text(
+                      'Register KIU administrator',
+                      style: textTheme.titleMedium?.copyWith(
+                        color: Colors.white,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  Icon(
+                    Icons.arrow_forward_ios_rounded,
+                    size: 14,
+                    color: Colors.white.withValues(alpha: 0.85),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Text(
+                'Campus check-in required · @kiu.ac.ug · attendance lists',
+                style: textTheme.bodySmall?.copyWith(
+                  color: Colors.white.withValues(alpha: 0.9),
+                ),
+              ),
+              TextButton(
+                onPressed: onBootstrapMichael,
+                style: TextButton.styleFrom(
+                  foregroundColor: Colors.white,
+                  padding: EdgeInsets.zero,
+                ),
+                child: const Text('Quick: michaeldieve7@gmail.com (no verify)'),
               ),
             ],
           ),

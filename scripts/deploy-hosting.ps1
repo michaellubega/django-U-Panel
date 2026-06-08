@@ -11,6 +11,7 @@ Write-Host "Building Flutter web (release)..."
 flutter build web --release
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+& (Join-Path $PSScriptRoot "update-android-assetlinks.ps1")
 & (Join-Path $PSScriptRoot "prepare-download-site.ps1")
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

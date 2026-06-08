@@ -1,3 +1,5 @@
+import '../device/device_student_registration_lock.dart';
+import '../notifications/notification_maintenance_coordinator.dart';
 import '../push/push_controller.dart';
 import '../storage/attendance_local_queues.dart';
 import '../../features/attendance/data/attendance_repository.dart';
@@ -14,8 +16,10 @@ class AppSessionReset {
   /// Slow I/O (FCM unsubscribe, local queues) — run after UI has switched.
   static Future<void> onSignOutDeferred() async {
     await Future.wait<void>([
+      DeviceStudentRegistrationLock.clearOnSignOut(),
       AttendanceLocalQueues.clearAllPending(),
       PushController.instance.resetForSignOut(),
+      NotificationMaintenanceCoordinator.onSignedOut(),
     ]);
   }
 

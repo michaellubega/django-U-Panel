@@ -16,10 +16,11 @@ void popToRootRoute() {
 }
 
 ScaffoldMessengerState? _rootScaffoldMessenger() {
-  return uPanelRootScaffoldMessengerKey.currentState ??
-      (uPanelRootNavigatorKey.currentContext != null
-          ? ScaffoldMessenger.maybeOf(uPanelRootNavigatorKey.currentContext!)
-          : null);
+  final keyed = uPanelRootScaffoldMessengerKey.currentState;
+  if (keyed != null) return keyed;
+  final ctx = uPanelRootNavigatorKey.currentContext;
+  if (ctx == null || !ctx.mounted) return null;
+  return ScaffoldMessenger.maybeOf(ctx);
 }
 
 /// Hides the current root snackbar if one is showing.

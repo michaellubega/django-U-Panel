@@ -1,5 +1,7 @@
 import 'dart:math';
 
+import '../data/pending_retention.dart';
+
 /// Short labels for [DateTime.weekday] (1 = Monday … 7 = Sunday).
 const kAttendanceWeekdayShortLabels = [
   'Mon',
@@ -186,8 +188,8 @@ class AttendanceSession {
   final String id;
   final String listId;
 
-  /// Join code shown to students: 3 digits (e.g. 042). Legacy sessions may still
-  /// use 4 digits (7291) or one letter + 3 digits (A123).
+  /// Join code shown to students: letter + two digits + letter (e.g. A12B).
+  /// Legacy sessions may still use ###, ####, or L###.
   final String sessionCode;
   final double latitude;
   final double longitude;
@@ -219,13 +221,17 @@ class AttendanceSession {
   bool get isExpired => DateTime.now().isAfter(endTime);
   bool get isActive => status == SessionStatus.active && !isExpired;
 
+  /// Lecturer has not closed the session — students may join until [status] is closed,
+  /// including the brief window after [endTime] before auto-close on the lecturer device.
+  bool get isOpenForCheckIn => status == SessionStatus.active;
+
   /// Completed sessions that count toward student attendance percentage
   /// (ended by time or closed in Firestore).
   bool get countsTowardRollStats =>
       DateTime.now().isAfter(endTime) || status == SessionStatus.closed;
 }
 
-/// One check-in record: student + session + location (optional legacy selfie URL).
+/// One check-in record: student + session + location.
 class AttendanceRecord {
   final String id;
   final String sessionId;
@@ -234,13 +240,10 @@ class AttendanceRecord {
   final DateTime timestamp;
   final double latitude;
   final double longitude;
-
-  /// Firebase Storage path for selfie image.
-  final String? selfieStoragePath;
   final bool verified;
 
   /// Whether the student attended in person. `false` = auto-marked absent for
-  /// the roll (no location/selfie expected).
+  /// the roll (no GPS expected on absent rows).
   final bool present;
 
   /// Present check-ins only: device/install id so one phone cannot record two
@@ -255,7 +258,6 @@ class AttendanceRecord {
     required this.timestamp,
     required this.latitude,
     required this.longitude,
-    this.selfieStoragePath,
     this.verified = false,
     this.present = true,
     this.deviceId,
@@ -295,10 +297,22 @@ class AttendanceListRollStats {
   final AttendanceRollStats stats;
 }
 
-/// Generates a new **3-digit numeric** join code (`000`–`999`).
+/// Example join code for UI hints (letter + 2 digits + letter).
+const kSessionJoinCodeExample = 'A12B';
+
+/// Short description of the join-code shape for help text.
+const kSessionJoinCodeFormatHint =
+    'letter, two numbers, letter (e.g. $kSessionJoinCodeExample)';
+
+/// Primary join-code pattern: one letter, two digits, one letter.
+final RegExp kSessionJoinCodePrimaryPattern = RegExp(r'^[A-Z]\d{2}[A-Z]$');
+
+/// Generates a new join code: letter + two digits + letter (e.g. A12B).
 String generateSessionCode() {
   final rnd = Random();
-  return rnd.nextInt(1000).toString().padLeft(3, '0');
+  String letter() => String.fromCharCode(65 + rnd.nextInt(26));
+  final digits = rnd.nextInt(100).toString().padLeft(2, '0');
+  return '${letter()}$digits${letter()}';
 }
 
 /// Normalizes join-code input (strip spaces, uppercase letters; digits unchanged).
@@ -306,12 +320,17 @@ String normalizeSessionCodeInput(String raw) {
   return raw.trim().replaceAll(RegExp(r'\s'), '').toUpperCase();
 }
 
-/// Valid join codes: 3 digits (###), legacy 4 digits (####), or legacy letter + 3
-/// digits (L###).
+/// Valid join codes: primary [A-Z][0-9]{2}[A-Z], plus legacy ### / #### / L###.
 bool isValidJoinCodeFormat(String normalized) {
+  if (kSessionJoinCodePrimaryPattern.hasMatch(normalized)) return true;
   return RegExp(r'^\d{3}$').hasMatch(normalized) ||
       RegExp(r'^\d{4}$').hasMatch(normalized) ||
       RegExp(r'^[A-Z]\d{3}$').hasMatch(normalized);
+}
+
+/// True when [normalized] matches the current join-code format (not legacy).
+bool isPrimarySessionJoinCodeFormat(String normalized) {
+  return kSessionJoinCodePrimaryPattern.hasMatch(normalized);
 }
 
 /// Validates student-chosen initials: 2–4 letters A–Z (spaces stripped).
@@ -344,7 +363,7 @@ String initialsFromFullName(String name) {
   return 'NA';
 }
 
-/// Student: first sign-in with name + reg; initials derived from name; 3-digit code assigned.
+/// Student roster row: name from account registration + reg; initials derived from name; 3-digit code assigned.
 class StudentRecord {
   final String id;
   final String name;
@@ -373,13 +392,39 @@ class SignInRecord {
   final String course;
   final DateTime signedInAt;
 
+  /// Denormalized for lecturer roster when the [students] doc is not loaded yet.
+  final String? studentName;
+  final String? registrationNumber;
+
   SignInRecord({
     required this.id,
     required this.listId,
     required this.studentId,
     required this.course,
     required this.signedInAt,
+    this.studentName,
+    this.registrationNumber,
   });
+
+  SignInRecord copyWith({
+    String? id,
+    String? listId,
+    String? studentId,
+    String? course,
+    DateTime? signedInAt,
+    String? studentName,
+    String? registrationNumber,
+  }) {
+    return SignInRecord(
+      id: id ?? this.id,
+      listId: listId ?? this.listId,
+      studentId: studentId ?? this.studentId,
+      course: course ?? this.course,
+      signedInAt: signedInAt ?? this.signedInAt,
+      studentName: studentName ?? this.studentName,
+      registrationNumber: registrationNumber ?? this.registrationNumber,
+    );
+  }
 }
 
 /// In-memory store for attendance (lists, sessions, students, sign-ins, records).
@@ -432,6 +477,13 @@ class AttendanceStore {
     _touchListMemo(list);
   }
 
+  static void replaceLists(List<AttendanceList> remoteLists) {
+    lists
+      ..clear()
+      ..addAll(remoteLists);
+    _listByIdMemo = null;
+  }
+
   static void updateList(AttendanceList list) {
     final i = lists.indexWhere((e) => e.id == list.id);
     if (i >= 0) {
@@ -441,14 +493,16 @@ class AttendanceStore {
   }
 
   static void removeList(String id) {
+    final sessionIdsForList = sessions
+        .where((s) => s.listId == id)
+        .map((s) => s.id)
+        .toSet();
     lists.removeWhere((l) => l.id == id);
     signIns.removeWhere((r) => r.listId == id);
-    attendanceRecords.removeWhere((r) {
-      return sessions.any((s) => s.id == r.sessionId && s.listId == id);
-    });
+    attendanceRecords.removeWhere((r) => sessionIdsForList.contains(r.sessionId));
     sessions.removeWhere((s) => s.listId == id);
     _listByIdMemo?.remove(id);
-    _sessionByIdMemo = null;
+    invalidateLookupCaches();
   }
 
   // —— Session (code + location + expiry) ——
@@ -466,6 +520,21 @@ class AttendanceStore {
     } catch (_) {
       return null;
     }
+  }
+
+  /// Latest joinable session for [code] (lecturer has not closed it).
+  static AttendanceSession? sessionByCodeOpenForCheckIn(String code) {
+    final normalized = normalizeSessionCodeInput(code);
+    if (!isValidJoinCodeFormat(normalized)) return null;
+    AttendanceSession? best;
+    for (final s in sessions) {
+      if (normalizeSessionCodeInput(s.sessionCode) != normalized) continue;
+      if (!s.isOpenForCheckIn) continue;
+      if (best == null || s.startTime.isAfter(best.startTime)) {
+        best = s;
+      }
+    }
+    return best;
   }
 
   static void addSession(AttendanceSession s) {
@@ -617,8 +686,7 @@ class AttendanceStore {
 
   /// Earliest [SignInRecord.signedInAt] for this student on this list (any course).
   ///
-  /// Used so we do not mark absent for class sessions that ended before they
-  /// joined the list (e.g. offline enrollment mid-term).
+  /// Used to detect sessions the student missed before joining (retroactive absent).
   static DateTime? earliestSignInAtForStudentOnList(
     String listId,
     String studentId,
@@ -669,10 +737,48 @@ class AttendanceStore {
   static Set<String> _studentIdsForRegistrationNormalized(String reg) {
     final key = reg.trim().toUpperCase();
     if (key.isEmpty) return {};
-    return students
+    final ids = students
         .where((s) => s.registrationNumber.trim().toUpperCase() == key)
-        .map((s) => s.id)
+        .map((s) => s.id.trim())
+        .where((id) => id.isNotEmpty)
         .toSet();
+    // Sign-ins may carry registration metadata before the roster row is hydrated.
+    for (final si in signIns) {
+      if (si.registrationNumber?.trim().toUpperCase() != key) continue;
+      final sid = si.studentId.trim();
+      if (sid.isNotEmpty) ids.add(sid);
+    }
+    return ids;
+  }
+
+  /// All roster ids for one registration (same lookup as profile attendance %).
+  static Set<String> studentIdsForRegistrationNormalized(String reg) =>
+      _studentIdsForRegistrationNormalized(reg);
+
+  /// True when the student has joined at least one list or has attendance rows.
+  static bool hasAttendanceDataForRegistrationNormalized(String reg) {
+    final key = reg.trim().toUpperCase();
+    if (key.isEmpty) return false;
+    if (signIns.any((si) => si.registrationNumber?.trim().toUpperCase() == key)) {
+      return true;
+    }
+    final ids = _studentIdsForRegistrationNormalized(reg);
+    if (ids.isEmpty) return false;
+    for (final sid in ids) {
+      if (signIns.any((si) => si.studentId == sid)) return true;
+      if (attendanceRecords.any((r) => r.studentId == sid)) return true;
+    }
+    return false;
+  }
+
+  /// True when cached sessions exist for lists the student has joined.
+  /// Profile % and session history need this — sign-in alone is not enough.
+  static bool hasStudentSessionHistoryForRegistrationNormalized(String reg) {
+    final ids = _studentIdsForRegistrationNormalized(reg);
+    if (ids.isEmpty) return false;
+    final enrolledListIds = _enrolledListIdsForStudentIds(ids);
+    if (enrolledListIds.isEmpty) return false;
+    return sessions.any((s) => enrolledListIds.contains(s.listId));
   }
 
   static Set<String> _enrolledListIdsForStudentIds(Set<String> studentIds) {
@@ -690,8 +796,8 @@ class AttendanceStore {
     return enrolledListIds;
   }
 
-  /// Attendance % for one list: completed sessions after the student's first
-  /// sign-in on that list (late join does not count past sessions as absent).
+  /// Attendance % for one list: all completed sessions on the list, including
+  /// sessions that ended before the student joined (counted as missed/absent).
   static AttendanceRollStats rollStatsForRegistrationOnList(
     String reg,
     String listId, {
@@ -704,23 +810,57 @@ class AttendanceStore {
 
     var total = 0;
     var present = 0;
-    final rollStartAt = earliestSignInAtForAnyStudentOnList(listId, ids);
-    for (final sess in sessionsForListNewestFirst(listId)) {
-      if (!sess.countsTowardRollStats) continue;
-      if (rollStartAt != null && sess.endTime.isBefore(rollStartAt)) {
-        continue;
-      }
-      AttendanceRecord? rec;
+    final enrolledAt = earliestSignInAtForAnyStudentOnList(listId, ids);
+    final completedSessions = sessionsForListNewestFirst(listId)
+        .where((s) => s.countsTowardRollStats)
+        .toList();
+    final countedSessionIds = <String>{};
+
+    AttendanceRecord? bestRecordForSession(String sessionId) {
+      AttendanceRecord? best;
       for (final sid in ids) {
-        final r = attendanceRecordForSessionStudent(sess.id, sid);
+        final r = attendanceRecordForSessionStudent(sessionId, sid);
         if (r == null) continue;
-        if (rec == null || (r.present && !rec.present)) {
-          rec = r;
+        if (best == null || (r.present && !best.present)) {
+          best = r;
         }
       }
-      total++;
-      if (rec != null && rec.present) present++;
+      return best;
     }
+
+    final now = DateTime.now();
+    for (final sess in completedSessions) {
+      final rec = bestRecordForSession(sess.id);
+      if (rec != null) {
+        total++;
+        if (rec.present) present++;
+        countedSessionIds.add(sess.id);
+        continue;
+      }
+      final graceExpired = PendingRetention.sessionGraceExpired(sess.endTime, now);
+      final missedBeforeJoin =
+          enrolledAt != null && sess.endTime.isBefore(enrolledAt);
+      if (!missedBeforeJoin && !graceExpired) continue;
+      total++;
+      countedSessionIds.add(sess.id);
+    }
+
+    for (final sid in ids) {
+      for (final r in attendanceRecords) {
+        if (r.studentId != sid) continue;
+        if (countedSessionIds.contains(r.sessionId)) continue;
+        final sess = sessionById(r.sessionId);
+        if (sess == null ||
+            sess.listId != listId ||
+            !sess.countsTowardRollStats) {
+          continue;
+        }
+        total++;
+        if (r.present) present++;
+        countedSessionIds.add(r.sessionId);
+      }
+    }
+
     return AttendanceRollStats(present: present, total: total);
   }
 
@@ -791,6 +931,16 @@ class AttendanceStore {
     }
   }
 
+  static void upsertStudent(StudentRecord student) {
+    final i = students.indexWhere((s) => s.id == student.id);
+    if (i >= 0) {
+      students[i] = student;
+    } else {
+      students.add(student);
+    }
+    _studentByRegUpperMemo = null;
+  }
+
   static StudentRecord registerStudent(
     String name,
     String registrationNumber,
@@ -801,15 +951,17 @@ class AttendanceStore {
       return dup;
     }
     final ini = normalizeSessionCodeInput(initials);
+    final reg = registrationNumber.trim().toUpperCase();
     String code;
     do {
       code = _newCode();
     } while (students.any((s) => s.threeDigitCode == code));
-    final id = _newId();
+    // Stable id = registration number so lecturers can load students/{reg} reliably.
+    final id = reg.isNotEmpty ? reg : _newId();
     final record = StudentRecord(
       id: id,
       name: name.trim(),
-      registrationNumber: registrationNumber.trim().toUpperCase(),
+      registrationNumber: reg,
       threeDigitCode: code,
       initials: ini,
     );
@@ -826,6 +978,53 @@ class AttendanceStore {
   /// Lightweight hot-path index for O(1) student lookup in UI/reports.
   static Map<String, StudentRecord> studentMapById() {
     return <String, StudentRecord>{for (final s in students) s.id: s};
+  }
+
+  /// Roster lookup for one list: store students plus sign-in metadata fallbacks.
+  static Map<String, StudentRecord> rosterStudentMapForList(String listId) {
+    final byId = studentMapById();
+    for (final si in signIns) {
+      if (si.listId != listId) continue;
+      final sid = si.studentId.trim();
+      if (sid.isEmpty) continue;
+
+      final signInName = si.studentName?.trim() ?? '';
+      final signInReg = si.registrationNumber?.trim().toUpperCase() ?? '';
+      final existing = byId[sid];
+
+      if (existing != null) {
+        final nameBetter = signInName.isNotEmpty &&
+            (existing.name.trim().isEmpty ||
+                existing.name.trim() == 'Unknown');
+        final regBetter = signInReg.isNotEmpty &&
+            (existing.registrationNumber.trim().isEmpty ||
+                existing.registrationNumber.trim() == '—');
+        if (!nameBetter && !regBetter) continue;
+        byId[sid] = StudentRecord(
+          id: existing.id,
+          name: nameBetter ? signInName : existing.name,
+          registrationNumber:
+              regBetter ? signInReg : existing.registrationNumber,
+          threeDigitCode: existing.threeDigitCode,
+          initials: nameBetter
+              ? deriveStudentInitialsFromName(signInName)
+              : existing.initials,
+        );
+        continue;
+      }
+
+      if (signInName.isEmpty && signInReg.isEmpty) continue;
+      byId[sid] = StudentRecord(
+        id: sid,
+        name: signInName.isNotEmpty ? signInName : 'Unknown',
+        registrationNumber: signInReg.isNotEmpty ? signInReg : '—',
+        threeDigitCode: '000',
+        initials: signInName.isNotEmpty
+            ? deriveStudentInitialsFromName(signInName)
+            : '??',
+      );
+    }
+    return byId;
   }
 
   /// Lightweight hot-path index for O(1) session lookup in UI/reports.

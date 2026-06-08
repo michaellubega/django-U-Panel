@@ -21,12 +21,24 @@ class _RegisterAdministratorScreenState
   _StaffIdMode _staffIdMode = _StaffIdMode.auto;
   final _fullNameC = TextEditingController();
   final _manualStaffIdC = TextEditingController();
+  late final TextEditingController _defaultPasswordC;
+  bool _markAsKiuAdministrator = false;
   bool _busy = false;
+  bool _defaultPasswordVisible = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _defaultPasswordC = TextEditingController(
+      text: StaffAuthEmail.defaultLecturerPassword,
+    );
+  }
 
   @override
   void dispose() {
     _fullNameC.dispose();
     _manualStaffIdC.dispose();
+    _defaultPasswordC.dispose();
     super.dispose();
   }
 
@@ -57,6 +69,7 @@ class _RegisterAdministratorScreenState
     final result = await AuthRepository.instance.registerAdministratorAccount(
       fullName: fullName,
       manualStaffNumber: manualArg,
+      markAsKiuAdministrator: _markAsKiuAdministrator,
     );
     if (!mounted) return;
     setState(() => _busy = false);
@@ -186,12 +199,38 @@ class _RegisterAdministratorScreenState
                 ),
               ],
               const SizedBox(height: 12),
-              Text(
-                'Default password for new accounts: '
-                '${StaffAuthEmail.defaultLecturerPassword}',
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: AppTheme.textSecondary,
+              CheckboxListTile(
+                value: _markAsKiuAdministrator,
+                onChanged: (v) =>
+                    setState(() => _markAsKiuAdministrator = v ?? false),
+                title: const Text('KIU administrator (campus check-in)'),
+                subtitle: const Text(
+                  'Also grants campus check-in/out and lecturer attendance access.',
+                ),
+                controlAffinity: ListTileControlAffinity.leading,
+                contentPadding: EdgeInsets.zero,
+              ),
+              const SizedBox(height: 12),
+              TextFormField(
+                readOnly: true,
+                controller: _defaultPasswordC,
+                obscureText: !_defaultPasswordVisible,
+                decoration: InputDecoration(
+                  labelText: 'Default password for new accounts',
+                  suffixIcon: IconButton(
+                    tooltip: _defaultPasswordVisible
+                        ? 'Hide password'
+                        : 'Show password',
+                    onPressed: () => setState(
+                      () => _defaultPasswordVisible = !_defaultPasswordVisible,
                     ),
+                    icon: Icon(
+                      _defaultPasswordVisible
+                          ? Icons.visibility_off_outlined
+                          : Icons.visibility_outlined,
+                    ),
+                  ),
+                ),
               ),
               const SizedBox(height: 28),
               FilledButton(

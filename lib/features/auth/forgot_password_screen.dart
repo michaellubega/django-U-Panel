@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
 
 import '../../core/auth/auth_repository.dart';
+import '../../core/auth/login_email.dart';
 import '../../core/auth/student_auth_email.dart';
 import '../../core/connectivity/app_connectivity.dart';
 import '../../core/theme/app_theme.dart';
 
-/// Request a Firebase password-reset link for a KIU student school email.
+/// Request a Firebase password-reset link for a KIU student or staff email.
 class ForgotPasswordScreen extends StatefulWidget {
   const ForgotPasswordScreen({super.key, this.initialEmail = ''});
 
@@ -33,8 +34,11 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
     super.dispose();
   }
 
+  String _normalizedLoginEmail(String raw) =>
+      LoginEmail.normalizeForPasswordReset(raw);
+
   bool get _canSend =>
-      StudentAuthEmail.validateLoginFormat(_emailC.text) == null &&
+      AuthRepository.validateLoginEmailFormat(_emailC.text) == null &&
       !_busy &&
       !_sent;
 
@@ -42,12 +46,12 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
     if (_sent) return null;
     final raw = _emailC.text.trim();
     if (raw.isEmpty) return null;
-    return StudentAuthEmail.validateLoginFormat(_emailC.text);
+    return AuthRepository.validateLoginEmailFormat(_emailC.text);
   }
 
   Future<void> _send() async {
     FocusScope.of(context).unfocus();
-    final formatErr = StudentAuthEmail.validateLoginFormat(_emailC.text);
+    final formatErr = AuthRepository.validateLoginEmailFormat(_emailC.text);
     if (formatErr != null) {
       setState(() => _error = formatErr);
       return;
@@ -121,7 +125,7 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                         ),
                         const SizedBox(height: 12),
                         Text(
-                          'If an account exists for ${StudentAuthEmail.normalizeStudentEmail(_emailC.text)}, '
+                          'If an account exists for ${_normalizedLoginEmail(_emailC.text)}, '
                           'we sent a password reset link. Open it to choose a new password, then return here to log in.',
                           textAlign: TextAlign.center,
                           style: theme.textTheme.bodyMedium?.copyWith(
@@ -141,7 +145,8 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                         ),
                       ] else ...[
                         Text(
-                          'Enter your KIU school email. We will send a link to reset your password.',
+                          'Enter your ${LoginEmail.supportedDomainsHint()} '
+                          'We will send a link to reset your password.',
                           style: theme.textTheme.bodyMedium?.copyWith(
                             color: AppTheme.textSecondary,
                             height: 1.4,
@@ -160,8 +165,8 @@ class _ForgotPasswordScreenState extends State<ForgotPasswordScreen> {
                           controller: _emailC,
                           enabled: !offline,
                           decoration: InputDecoration(
-                            labelText: 'KIU school email',
-                            hintText: StudentAuthEmail.exampleEmail,
+                            labelText: 'KIU email',
+                            hintText: StudentAuthEmail.exampleEmailWest,
                             errorText: _emailFieldError,
                             errorMaxLines: 4,
                           ),

@@ -6,7 +6,7 @@ import '../attendance/attendance_list_title.dart';
 import '../attendance/models/attendance_models.dart';
 import '../../core/theme/app_theme.dart';
 
-/// Who should receive and see the notice (besides admins, who always see all).
+/// Who should receive and see the notice in their personal feed.
 enum NoticeAudienceKind {
   /// Visible to all signed-in app users; push targets the broadcast topic.
   allAppUsers,

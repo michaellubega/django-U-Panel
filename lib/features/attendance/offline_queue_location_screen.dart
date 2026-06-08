@@ -1,37 +1,15 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
-import 'package:geolocator/geolocator.dart';
 
 import '../../core/connectivity/app_connectivity.dart';
 import '../../core/location/location_permission.dart';
+import '../../core/location/location_resolving_panel.dart';
 import '../../core/theme/app_theme.dart';
+import 'data/attendance_offline_sync.dart';
+import 'data/pending_retention.dart';
 import 'data/pending_session_code_queue.dart';
 import 'pending_sessions_screen.dart';
-
-/// Matches [StudentCheckInProgressScreen] last-known window for provisional queue rows.
-const Duration kOfflineQueueLastKnownMaxAge = Duration(hours: 4);
-
-Future<({Position? position, String? errorMessage})> acquirePositionForOfflineQueue({
-  bool requireFreshFix = false,
-}) async {
-  if (!requireFreshFix && !AppConnectivity.instance.isOnline) {
-    final ready = await ensureLocationReady();
-    if (ready != null) {
-      return (position: null, errorMessage: ready);
-    }
-    final last = await Geolocator.getLastKnownPosition();
-    if (last != null) {
-      final age = DateTime.now().difference(last.timestamp);
-      if (age <= kOfflineQueueLastKnownMaxAge) {
-        return (position: last, errorMessage: null);
-      }
-    }
-  }
-  return tryAcquireGpsPosition(
-    timeLimit: AppConnectivity.instance.isOnline
-        ? const Duration(seconds: 12)
-        : const Duration(seconds: 24),
-  );
-}
 
 PendingSessionCodeEntry _offlinePendingEntry({
   required String id,
@@ -56,8 +34,8 @@ PendingSessionCodeEntry _offlinePendingEntry({
   );
 }
 
-/// Fullscreen pipeline (same feel as [StudentCheckInProgressScreen]) while saving
-/// a session-code attempt to the offline pending queue with GPS evidence.
+/// Fullscreen pipeline while saving a session-code attempt to the offline
+/// pending queue (reuses last-known GPS when captured within 5 minutes).
 class OfflineQueueLocationScreen extends StatefulWidget {
   const OfflineQueueLocationScreen({
     super.key,
@@ -82,9 +60,12 @@ class OfflineQueueLocationScreen extends StatefulWidget {
 class _OfflineQueueLocationScreenState extends State<OfflineQueueLocationScreen>
     with SingleTickerProviderStateMixin {
   late final AnimationController _pulse;
-  String _statusLine = 'Preparing…';
+  String _statusLine = 'Checking location…';
   String? _errorMessage;
   bool _done = false;
+  bool _resolving = false;
+  bool _locationServiceDisabled = false;
+  bool _permissionBlocked = false;
   var _openedPendingList = false;
 
   @override
@@ -122,91 +103,85 @@ class _OfflineQueueLocationScreenState extends State<OfflineQueueLocationScreen>
   }
 
   Future<void> _run() async {
-    Position? quickLast;
-    final last = await Geolocator.getLastKnownPosition();
-    if (last != null) {
-      final age = DateTime.now().difference(last.timestamp);
-      if (age <= kOfflineQueueLastKnownMaxAge) {
-        quickLast = last;
-      }
-    }
-
-    if (quickLast != null) {
-      _setStage('Saving your place in line…');
-      await PendingSessionCodeQueue.enqueue(
-        _offlinePendingEntry(
-          id: widget.id,
-          registrationNumber: widget.registrationNumber,
-          rawCode: widget.rawCode,
-          capturedAt: widget.captureIntentAt,
-          latitude: quickLast.latitude,
-          longitude: quickLast.longitude,
-          deviceId: widget.deviceId,
-          note: 'Live queue · refining GPS…',
-        ),
-      );
-      if (!mounted) return;
-      _setStage('Refining GPS for accurate check-in…');
-      await _openPendingListOnce();
-    } else {
-      _setStage('Resolving your location…');
-    }
-
-    final pos = await acquirePositionForOfflineQueue(
-      requireFreshFix: quickLast != null,
-    );
-    if (!mounted) return;
-
-    if (pos.position == null) {
-      if (quickLast != null) {
-        await PendingSessionCodeQueue.enqueue(
-          _offlinePendingEntry(
-            id: widget.id,
-            registrationNumber: widget.registrationNumber,
-            rawCode: widget.rawCode,
-            capturedAt: widget.captureIntentAt,
-            latitude: quickLast.latitude,
-            longitude: quickLast.longitude,
-            deviceId: widget.deviceId,
-            note:
-                'Saved with last known location. Open sky or retry online to refine.',
-          ),
-        );
-        if (!mounted) return;
-        if (!_openedPendingList) await _openPendingListOnce();
-        setState(() {
-          _done = true;
-          _statusLine = 'Saved using last known location.';
-        });
-        await Future<void>.delayed(const Duration(milliseconds: 280));
-        if (mounted) Navigator.of(context).pop(true);
-        return;
-      }
+    if (!await isDeviceLocationServiceEnabled()) {
       setState(() {
-        _errorMessage = pos.errorMessage ??
-            'Offline queue needs your location. Turn on GPS and try again.';
+        _locationServiceDisabled = true;
+        _statusLine = 'Turn on location to continue';
       });
       return;
     }
 
+    setState(() {
+      _resolving = true;
+      _locationServiceDisabled = false;
+      _permissionBlocked = false;
+      _errorMessage = null;
+      _statusLine = 'Resolving your current location…';
+    });
+
+    final pos = await acquireCurrentGpsPosition(
+      timeLimit: const Duration(seconds: 24),
+      forceFresh: false,
+    );
+    if (!mounted) return;
+
+    setState(() => _resolving = false);
+
+    if (pos.locationServiceDisabled) {
+      setState(() {
+        _locationServiceDisabled = true;
+        _statusLine = 'Turn on location to continue';
+      });
+      return;
+    }
+
+    if (pos.position == null) {
+      setState(() {
+        _errorMessage = pos.errorMessage ??
+            'Could not read your current location. Turn on GPS and try again.';
+        _permissionBlocked = pos.permissionBlocked;
+        _statusLine = 'Location required';
+      });
+      return;
+    }
+
+    _setStage('Saving your check-in for verification…');
+    final entryId = widget.id;
     await PendingSessionCodeQueue.enqueue(
       _offlinePendingEntry(
-        id: widget.id,
+        id: entryId,
         registrationNumber: widget.registrationNumber,
         rawCode: widget.rawCode,
         capturedAt: widget.captureIntentAt,
         latitude: pos.position!.latitude,
         longitude: pos.position!.longitude,
         deviceId: widget.deviceId,
-        note: 'Saved offline. Will validate and submit when online.',
+        note:
+            'Waiting for session code to appear (up to ${PendingRetention.unverifiedPending.inDays} days). '
+            'Your lecturer may start the session offline — it will auto-verify when synced. '
+            'No attendance is recorded until verified.',
       ),
     );
     if (!mounted) return;
-    if (!_openedPendingList) await _openPendingListOnce();
+    final stillOnDevice = (await PendingSessionCodeQueue.loadAll())
+        .any((e) => e.id == entryId);
+    if (!stillOnDevice) {
+      await _openPendingListOnce();
+    }
+    final online = AppConnectivity.instance.isOnline;
     setState(() {
       _done = true;
-      _statusLine = 'Saved on this device.';
+      _statusLine = stillOnDevice
+          ? (online
+              ? 'Saved on this device — will retry upload when stable.'
+              : 'Saved as pending — will upload when online.')
+          : (online
+              ? 'Uploaded to server — will verify as soon as the lecturer session appears (up to ${PendingRetention.unverifiedPending.inDays} days if only your side is recorded).'
+              : 'Saved as pending — will verify when online.');
     });
+    if (online && stillOnDevice) {
+      unawaited(AttendanceOfflineSync.drainAllInOrder());
+    }
     await Future<void>.delayed(const Duration(milliseconds: 220));
     if (mounted) Navigator.of(context).pop(true);
   }
@@ -221,18 +196,17 @@ class _OfflineQueueLocationScreenState extends State<OfflineQueueLocationScreen>
           padding: const EdgeInsets.all(24),
           child: AnimatedSwitcher(
             duration: const Duration(milliseconds: 350),
-            child: _errorMessage != null
+            child: _errorMessage != null || _locationServiceDisabled
                 ? Column(
                     key: const ValueKey('err'),
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      const Icon(Icons.error_outline_rounded,
-                          size: 56, color: AppTheme.error),
-                      const SizedBox(height: 20),
-                      Text(
-                        _errorMessage!,
-                        style: theme.textTheme.bodyLarge,
-                        textAlign: TextAlign.center,
+                      LocationResolvingPanel(
+                        resolving: _resolving,
+                        errorMessage: _errorMessage,
+                        locationServiceDisabled: _locationServiceDisabled,
+                        permissionBlocked: _permissionBlocked,
+                        onRetry: _run,
                       ),
                       const SizedBox(height: 28),
                       FilledButton(
@@ -269,7 +243,13 @@ class _OfflineQueueLocationScreenState extends State<OfflineQueueLocationScreen>
                           fontWeight: FontWeight.w600,
                         ),
                       ),
-                      if (!_done) ...[
+                      const SizedBox(height: 16),
+                      LocationResolvingPanel(
+                        resolving: _resolving,
+                        locationServiceDisabled: _locationServiceDisabled,
+                        onRetry: _run,
+                      ),
+                      if (!_done && _resolving) ...[
                         const SizedBox(height: 20),
                         const Center(
                           child: SizedBox(

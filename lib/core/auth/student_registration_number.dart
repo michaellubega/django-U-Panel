@@ -7,6 +7,12 @@ abstract final class StudentRegistrationNumber {
 
   static String normalize(String raw) => raw.trim();
 
+  /// True when [value] matches the canonical registration number format.
+  static bool isCanonicalFormat(String value) {
+    final v = normalize(value).toUpperCase();
+    return v.isNotEmpty && _pattern.hasMatch(v);
+  }
+
   /// Null when valid; otherwise a user-facing error.
   static String? validateFormat(String raw) {
     final r = normalize(raw);
@@ -20,11 +26,10 @@ abstract final class StudentRegistrationNumber {
   /// User-facing message when [reg] is locked to another Firebase account.
   static String messageRegLinkedToAnotherAccount(String reg) =>
       'Registration number $reg is already linked to another student account. '
-      'Sign in with the @studmc.kiu.ac.ug email used when that number was first '
-      'registered, or contact ICT if you need help.';
+      'If this is your registration number, visit the IT department for corrections.';
 
   /// User-facing message when [reg] is locked to a different school email.
   static String messageRegLinkedToDifferentEmail(String reg) =>
-      'Registration number $reg is already linked to a different school email. '
-      'Use that email to sign in, or contact ICT if your student mailbox changed.';
+      'Registration number $reg is already linked to another email. '
+      'If this is your registration number, visit the IT department for corrections.';
 }

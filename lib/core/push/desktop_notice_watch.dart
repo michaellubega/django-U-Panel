@@ -6,7 +6,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../auth/auth_repository.dart';
 import '../../features/attendance/attendance_list_hierarchy.dart';
-import '../../features/attendance/data/attendance_repository.dart';
 import '../../features/attendance/models/attendance_models.dart';
 import '../../features/notices/data/notices_repository.dart';
 import 'local_push_display.dart';
@@ -74,11 +73,6 @@ class DesktopNoticeWatch {
       final auth = AuthRepository.instance;
       if (!auth.isLoggedIn || !auth.roleCheckDone) return;
 
-      await AttendanceRepository.instance.loadAll(
-        force: false,
-        scopeToLecturerUid: AttendanceRepository.currentLecturerLoadScopeUid(),
-      );
-
       final uid = auth.currentFirebaseUid?.trim() ?? '';
       if (uid.isEmpty) return;
 
@@ -93,8 +87,10 @@ class DesktopNoticeWatch {
 
       NoticeRecord? newest;
       for (final n in visible) {
-        if (!n.createdAt.isAfter(watermark)) continue;
-        if (newest == null || n.createdAt.isAfter(newest.createdAt)) {
+        if (!noticeIsLive(n)) continue;
+        final effective = noticeEffectiveAt(n);
+        if (!effective.isAfter(watermark)) continue;
+        if (newest == null || effective.isAfter(noticeEffectiveAt(newest))) {
           newest = n;
         }
         if (wmMs == 0) continue;
@@ -104,6 +100,7 @@ class DesktopNoticeWatch {
           kind: n.kind,
         );
         if (!_shouldShowPushForNotice(n)) continue;
+        if (isRemoteLearningSessionCodeNotice(n)) continue;
         await localPushShow(
           id: n.id.hashCode,
           title: title,
@@ -112,7 +109,10 @@ class DesktopNoticeWatch {
       }
 
       if (newest != null) {
-        await prefs.setInt(wmKey, newest.createdAt.millisecondsSinceEpoch);
+        await prefs.setInt(
+          wmKey,
+          noticeEffectiveAt(newest).millisecondsSinceEpoch,
+        );
       }
     } catch (e) {
       if (kDebugMode) debugPrint('DesktopNoticeWatch: $e');
@@ -149,6 +149,7 @@ class DesktopNoticeWatch {
             admin: admin,
             lecturer: lecturer,
             lecturerListIds: lecturerListIds,
+            lecturerFirebaseUid: auth.currentFirebaseUid,
             studentId: studentId,
             signedListIds: signedListIds,
           ),
@@ -158,10 +159,10 @@ class DesktopNoticeWatch {
 
   bool _shouldShowPushForNotice(NoticeRecord n) {
     final auth = AuthRepository.instance;
-    final kind = (n.kind ?? '').toLowerCase();
     if (auth.adminCheckDone && auth.isAdmin) {
-      if (kind == 'sessioncode' || kind == 'missedsession') return false;
+      return noticeNotifiesAdmin(n);
     }
+    final kind = (n.kind ?? '').toLowerCase();
     if (auth.lecturerCheckDone && auth.isLecturer && !auth.isAdmin) {
       if (kind == 'missedsession' || kind == 'sessioncode') return false;
     }

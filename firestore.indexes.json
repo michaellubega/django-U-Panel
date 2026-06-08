@@ -67,6 +67,14 @@
       "collectionGroup": "attendance_sessions",
       "queryScope": "COLLECTION",
       "fields": [
+        { "fieldPath": "sessionCode", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "attendance_sessions",
+      "queryScope": "COLLECTION",
+      "fields": [
         { "fieldPath": "status", "order": "ASCENDING" },
         { "fieldPath": "finalized", "order": "ASCENDING" }
       ]
@@ -88,6 +96,36 @@
       ]
     },
     {
+      "collectionGroup": "attendance_sessions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "listId", "order": "ASCENDING" },
+        { "fieldPath": "startTime", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "attendance_sessions",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "listId", "order": "ASCENDING" },
+        { "fieldPath": "endTime", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "notices",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "scheduledFor", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "notices",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "expiresAt", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "sign_ins",
       "queryScope": "COLLECTION",
       "fields": [
@@ -96,11 +134,132 @@
       ]
     },
     {
+      "collectionGroup": "sign_ins",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "listId", "order": "ASCENDING" },
+        { "fieldPath": "studentId", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "check_in_attempts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "listId", "order": "ASCENDING" },
+        { "fieldPath": "studentId", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "check_in_attempts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "studentId", "order": "ASCENDING" },
+        { "fieldPath": "sessionId", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "check_in_attempts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "studentId", "order": "ASCENDING" },
+        { "fieldPath": "sessionCodeRaw", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "check_in_attempts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "sessionId", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "check_in_attempts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "check_in_attempts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "status", "order": "ASCENDING" },
+        { "fieldPath": "sessionCodeRaw", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "check_in_attempts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "awaitingSession", "order": "ASCENDING" },
+        { "fieldPath": "sessionCodeRaw", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "check_in_attempts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "deviceId", "order": "ASCENDING" },
+        { "fieldPath": "sessionCodeRaw", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "check_in_attempts",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "deviceId", "order": "ASCENDING" },
+        { "fieldPath": "sessionId", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "attendance_records",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "sessionId", "order": "ASCENDING" },
+        { "fieldPath": "present", "order": "ASCENDING" }
+      ]
+    },
+    {
       "collectionGroup": "attendance_records",
       "queryScope": "COLLECTION",
       "fields": [
         { "fieldPath": "sessionId", "order": "ASCENDING" },
         { "fieldPath": "timestamp", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "admin_campus_presence",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "adminUid", "order": "ASCENDING" },
+        { "fieldPath": "localDateKey", "order": "ASCENDING" },
+        { "fieldPath": "capturedAt", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "admin_campus_presence",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "localDateKey", "order": "ASCENDING" },
+        { "fieldPath": "capturedAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "admin_campus_presence",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "capturedAt", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "admin_campus_presence",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "capturedAt", "order": "DESCENDING" }
       ]
     }
   ],

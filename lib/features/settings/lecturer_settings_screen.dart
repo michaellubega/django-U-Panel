@@ -6,11 +6,19 @@ import '../../core/auth/auth_repository.dart';
 import '../../core/auth/staff_auth_email.dart';
 import '../../core/theme/app_theme.dart';
 import 'change_password_screen.dart';
+import 'update_profile_screen.dart';
 import 'settings_shared.dart';
+import '../../core/navigation/app_section.dart';
+import '../../core/navigation/screen_refresh.dart';
 
 /// Profile and security for lecturer (KIU-####) accounts.
 class LecturerSettingsScreen extends StatefulWidget {
-  const LecturerSettingsScreen({super.key});
+  const LecturerSettingsScreen({
+    super.key,
+    this.shellSection = AppSection.settings,
+  });
+
+  final AppSection shellSection;
 
   @override
   State<LecturerSettingsScreen> createState() => _LecturerSettingsScreenState();
@@ -54,14 +62,23 @@ class _LecturerSettingsScreenState extends State<LecturerSettingsScreen> {
                 null
             ? '—'
             : email;
+        final isKiuAdmin = auth.isKiuAdmin;
         final fullName =
             (_profile?['fullName'] ?? auth.currentFullName)?.trim();
-        final displayName =
-            (fullName != null && fullName.isNotEmpty) ? fullName : 'Lecturer';
+        final displayName = (fullName != null && fullName.isNotEmpty)
+            ? fullName
+            : (isKiuAdmin ? 'KIU Administrator' : 'Lecturer');
         final staffNumber = auth.currentStaffNumber?.trim();
+        final accountLabel = isKiuAdmin ? 'KIU ADMIN' : 'Lecturer account';
+        final profileSubtitle =
+            isKiuAdmin ? 'Your KIU admin account' : 'Your lecturer account';
 
-        return SingleChildScrollView(
-          child: Column(
+        return ScreenRefreshRegistrar(
+          section: widget.shellSection,
+          onRefresh: _loadProfile,
+          child: PullToRefreshBody(
+            onRefresh: _loadProfile,
+            child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
@@ -70,7 +87,7 @@ class _LecturerSettingsScreenState extends State<LecturerSettingsScreen> {
               ),
               const SizedBox(height: 6),
               Text(
-                'Your lecturer account',
+                profileSubtitle,
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                       color: AppTheme.textSecondary,
                     ),
@@ -172,7 +189,7 @@ class _LecturerSettingsScreenState extends State<LecturerSettingsScreen> {
                                         ),
                                         const SizedBox(width: 6),
                                         Text(
-                                          'Lecturer account',
+                                          accountLabel,
                                           style: Theme.of(context)
                                               .textTheme
                                               .labelMedium
@@ -202,6 +219,16 @@ class _LecturerSettingsScreenState extends State<LecturerSettingsScreen> {
                 ),
               const SizedBox(height: 16),
               settingsSecurityCard(
+                onUpdateProfile: () async {
+                  final updated = await Navigator.of(context).push<bool>(
+                    MaterialPageRoute<bool>(
+                      builder: (_) => const UpdateProfileScreen(),
+                    ),
+                  );
+                  if (updated == true && mounted) {
+                    await _loadProfile();
+                  }
+                },
                 onChangePassword: () {
                   Navigator.of(context).push(
                     MaterialPageRoute<void>(
@@ -214,6 +241,7 @@ class _LecturerSettingsScreenState extends State<LecturerSettingsScreen> {
               const SizedBox(height: 24),
             ],
           ),
+        ),
         );
       },
     );

@@ -57,13 +57,12 @@ class LecturersListScreen extends StatelessWidget {
               final staff = (data['staffNumber'] as String?) ?? '—';
               final name = (data['fullName'] as String?)?.trim();
               final title = (name != null && name.isNotEmpty) ? name : staff;
-              final subtitle = (name != null && name.isNotEmpty)
-                  ? '$staff\nUID: ${d.id}'
-                  : 'UID: ${d.id}';
+              final subtitle = (name != null && name.isNotEmpty) ? staff : null;
               return ListTile(
                 title: Text(title, style: const TextStyle(fontWeight: FontWeight.w600)),
-                subtitle: Text(subtitle, style: const TextStyle(fontSize: 12)),
-                isThreeLine: true,
+                subtitle: subtitle != null
+                    ? Text(subtitle, style: const TextStyle(fontSize: 12))
+                    : null,
               );
             },
           );

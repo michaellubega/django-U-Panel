@@ -1,6 +1,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
+import '../../core/auth/auth_repository.dart';
 import '../../core/firebase/firestore_collections.dart';
 import '../../core/firebase/u_panel_firestore.dart';
 import '../../core/theme/app_theme.dart';
@@ -13,7 +14,7 @@ class QaStaffListScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('QA staff (admins)'),
+        title: const Text('QA staff'),
         backgroundColor: AppTheme.primary,
         foregroundColor: Colors.white,
       ),
@@ -29,11 +30,17 @@ class QaStaffListScreen extends StatelessWidget {
             return const Center(child: CircularProgressIndicator());
           }
           final docs = snap.data!.docs
-              .where((d) => d.data()['isAdmin'] == true)
+              .where((d) =>
+                  d.data()['isAdmin'] == true &&
+                  AuthRepository.adminDocIsQaStaff(d.data()))
               .toList()
             ..sort((a, b) {
-              final ra = (a.data()['registrationNumber'] as String?) ?? '';
-              final rb = (b.data()['registrationNumber'] as String?) ?? '';
+              final ra = (a.data()['staffNumber'] as String?) ??
+                  (a.data()['registrationNumber'] as String?) ??
+                  '';
+              final rb = (b.data()['staffNumber'] as String?) ??
+                  (b.data()['registrationNumber'] as String?) ??
+                  '';
               return ra.compareTo(rb);
             });
           if (docs.isEmpty) {
@@ -41,7 +48,7 @@ class QaStaffListScreen extends StatelessWidget {
               child: Padding(
                 padding: EdgeInsets.all(24),
                 child: Text(
-                  'No admin accounts found.',
+                  'No QA staff accounts found.',
                   textAlign: TextAlign.center,
                 ),
               ),
@@ -54,24 +61,22 @@ class QaStaffListScreen extends StatelessWidget {
             itemBuilder: (context, i) {
               final d = docs[i];
               final data = d.data();
-              final reg = (data['registrationNumber'] as String?) ?? '—';
+              final reg = (data['staffNumber'] as String?) ??
+                  (data['registrationNumber'] as String?) ??
+                  '—';
               final name = (data['fullName'] as String?)?.trim();
               final title = (name != null && name.isNotEmpty)
                   ? name
                   : (reg != '—' ? reg : 'Staff account');
-              final sub = (name != null && name.isNotEmpty)
-                  ? (reg != '—'
-                      ? '$reg\nUID: ${d.id}'
-                      : 'UID: ${d.id}')
-                  : (reg != '—'
-                      ? 'UID: ${d.id}'
-                      : 'UID: ${d.id}');
+              final subtitle = (name != null && name.isNotEmpty && reg != '—')
+                  ? reg
+                  : null;
               return ListTile(
                 title: Text(title,
                     style: const TextStyle(fontWeight: FontWeight.w600)),
-                subtitle:
-                    Text(sub, style: const TextStyle(fontSize: 12)),
-                isThreeLine: true,
+                subtitle: subtitle != null
+                    ? Text(subtitle, style: const TextStyle(fontSize: 12))
+                    : null,
               );
             },
           );

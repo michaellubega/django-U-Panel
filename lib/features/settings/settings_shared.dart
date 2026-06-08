@@ -82,10 +82,31 @@ Widget settingsSignOutButton({
 
 Widget settingsSecurityCard({
   required VoidCallback onChangePassword,
+  VoidCallback? onUpdateProfile,
 }) {
   return Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
+      if (onUpdateProfile != null) ...[
+        Text(
+          'Profile',
+          style: TextStyle(
+            fontWeight: FontWeight.w600,
+            color: AppTheme.textSecondary,
+          ),
+        ),
+        const SizedBox(height: 8),
+        Card(
+          child: ListTile(
+            leading: Icon(Icons.person_outline_rounded, color: AppTheme.primary),
+            title: const Text('Update profile'),
+            subtitle: const Text('Change your name and registration number'),
+            trailing: const Icon(Icons.chevron_right_rounded),
+            onTap: onUpdateProfile,
+          ),
+        ),
+        const SizedBox(height: 16),
+      ],
       Text(
         'Security',
         style: TextStyle(

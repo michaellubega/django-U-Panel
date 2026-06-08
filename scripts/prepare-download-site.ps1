@@ -152,6 +152,24 @@ Write-Host "Updated $jsonPath"
 $webBuild = Join-Path $root "build\web"
 $webFlutterIndex = Join-Path $webBuild "index.html"
 if (Test-Path $webFlutterIndex) {
+    $wellKnownSrc = Join-Path $root "web\.well-known"
+    if (Test-Path $wellKnownSrc) {
+        $wellKnownDest = Join-Path $webBuild ".well-known"
+        New-Item -ItemType Directory -Force -Path $wellKnownDest | Out-Null
+        Copy-Item (Join-Path $wellKnownSrc "*") $wellKnownDest -Force
+        Write-Host "Staged Digital Asset Links: $wellKnownDest"
+    }
+
+    $gateJs = Join-Path $root "web\android_web_gate.js"
+    if (Test-Path $gateJs) {
+        Copy-Item $gateJs (Join-Path $webBuild "android_web_gate.js") -Force
+    }
+
+    $brandJs = Join-Path $root "web\upanel_brand.js"
+    if (Test-Path $brandJs) {
+        Copy-Item $brandJs (Join-Path $webBuild "upanel_brand.js") -Force
+    }
+
     $downloadDest = Join-Path $webBuild "download"
     if (Test-Path $downloadDest) { Remove-Item $downloadDest -Recurse -Force }
     New-Item -ItemType Directory -Force -Path $downloadDest | Out-Null

@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../core/navigation/screen_refresh.dart';
 import '../../core/theme/app_theme.dart';
 import '../attendance/data/attendance_repository.dart';
 import '../attendance/attendance_list_title.dart';
 import '../attendance/models/attendance_models.dart';
+import '../attendance/roll_cell_status.dart';
 import 'attendance_list_roll.dart';
 import 'report_download.dart';
 import 'report_print.dart';
@@ -23,18 +25,23 @@ class AttendanceListRollReportScreen extends StatefulWidget {
 
 class _AttendanceListRollReportScreenState
     extends State<AttendanceListRollReportScreen> {
-  bool _refreshing = false;
+  late Future<AttendanceListRollData> _rollFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _rollFuture = buildAttendanceListRoll(widget.list);
+  }
 
   Future<void> _refresh() async {
-    if (_refreshing) return;
-    setState(() => _refreshing = true);
-    try {
-      await AttendanceRepository.instance.loadAll(
-        force: true,
-        scopeToLecturerUid: AttendanceRepository.currentLecturerLoadScopeUid(),
-      );
-    } finally {
-      if (mounted) setState(() => _refreshing = false);
+    await AttendanceRepository.instance.loadAll(
+      force: true,
+      scopeToLecturerUid: AttendanceRepository.currentLecturerLoadScopeUid(),
+    );
+    if (mounted) {
+      setState(() {
+        _rollFuture = buildAttendanceListRoll(widget.list);
+      });
     }
   }
 
@@ -43,7 +50,7 @@ class _AttendanceListRollReportScreenState
 
   Future<void> _exportCsv(AttendanceListRollData roll) async {
     const bom = '\uFEFF';
-    final csv = '$bom${buildSingleListRollCsv(roll.list)}';
+    final csv = '$bom${buildSingleListRollCsv(roll)}';
     await Clipboard.setData(ClipboardData(text: csv));
     final safeTitle = roll.list.displayTitle
         .replaceAll(RegExp(r'[^\w.\- ]'), '_')
@@ -77,7 +84,23 @@ class _AttendanceListRollReportScreenState
 
   @override
   Widget build(BuildContext context) {
-    final roll = buildAttendanceListRoll(widget.list);
+    return FutureBuilder<AttendanceListRollData>(
+      future: _rollFuture,
+      builder: (context, snapshot) {
+        if (snapshot.connectionState != ConnectionState.done ||
+            !snapshot.hasData) {
+          return Scaffold(
+            appBar: AppBar(title: Text(widget.list.displayTitle)),
+            body: const Center(child: CircularProgressIndicator()),
+          );
+        }
+        final roll = snapshot.data!;
+        return _buildRollScaffold(context, roll);
+      },
+    );
+  }
+
+  Widget _buildRollScaffold(BuildContext context, AttendanceListRollData roll) {
     final theme = Theme.of(context);
 
     return Scaffold(
@@ -95,17 +118,7 @@ class _AttendanceListRollReportScreenState
           subtitleMaxLines: 1,
         ),
         actions: [
-          IconButton(
-            icon: _refreshing
-                ? const SizedBox(
-                    width: 22,
-                    height: 22,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.refresh_rounded),
-            tooltip: 'Refresh',
-            onPressed: _refreshing ? null : _refresh,
-          ),
+          RefreshIconButton(onRefresh: _refresh),
           IconButton(
             icon: const Icon(Icons.table_chart_outlined),
             tooltip: 'Export CSV',
@@ -202,9 +215,11 @@ class _AttendanceListRollReportScreenState
                                       final text = (label ?? '—').toLowerCase();
                                       final color = label == null
                                           ? AppTheme.textSecondary
-                                          : label == 'Present'
+                                          : label == kRollLabelPresent
                                               ? AppTheme.primary
-                                              : AppTheme.error;
+                                              : label == kRollLabelPending
+                                                  ? AppTheme.warning
+                                                  : AppTheme.error;
                                       return Text(
                                         text,
                                         style: TextStyle(

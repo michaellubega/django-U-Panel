@@ -1,6 +1,11 @@
+import 'dart:async';
 import 'dart:convert';
 
+import '../../../core/connectivity/app_connectivity.dart';
+import '../../../core/notifications/pending_work_notification_hooks.dart';
 import '../../../core/storage/attendance_local_queues.dart';
+import '../../../core/storage/local_json_decode.dart';
+import 'pending_session_create_sync.dart';
 
 const _maxEntries = 50;
 
@@ -101,19 +106,22 @@ class PendingSessionCreateQueue {
   static Future<List<PendingSessionCreateEntry>> loadAll() async {
     final raw = await AttendanceLocalQueues.readString(_storageKey);
     if (raw == null || raw.isEmpty) return [];
-    try {
-      final list = jsonDecode(raw) as List<dynamic>;
-      final out = <PendingSessionCreateEntry>[];
-      for (final e in list) {
-        if (e is! Map) continue;
-        final ent =
-            PendingSessionCreateEntry.fromJson(Map<String, dynamic>.from(e));
-        if (ent != null) out.add(ent);
-      }
-      return out;
-    } catch (_) {
-      return [];
+    final list = await decodeStoredJson<List<dynamic>>(
+      raw: raw,
+      storageKey: _storageKey,
+      removeKey: AttendanceLocalQueues.removeKey,
+      parse: (decoded) => decoded is List ? decoded : const <dynamic>[],
+      debugLabel: 'PendingSessionCreateQueue',
+    );
+    if (list == null || list.isEmpty) return [];
+    final out = <PendingSessionCreateEntry>[];
+    for (final e in list) {
+      if (e is! Map) continue;
+      final ent =
+          PendingSessionCreateEntry.fromJson(Map<String, dynamic>.from(e));
+      if (ent != null) out.add(ent);
     }
+    return out;
   }
 
   static Future<void> saveAll(List<PendingSessionCreateEntry> items) async {
@@ -131,11 +139,16 @@ class PendingSessionCreateQueue {
     all.removeWhere((e) => e.sessionId == entry.sessionId);
     all.add(entry);
     await saveAll(all);
+    notifyPendingWorkEnqueued();
+    if (AppConnectivity.instance.hasNetworkInterface) {
+      await PendingSessionCreateSync.drainUrgent();
+    }
   }
 
   static Future<void> removeBySessionId(String sessionId) async {
     final all = await loadAll();
     all.removeWhere((e) => e.sessionId == sessionId);
     await saveAll(all);
+    notifyPendingWorkQueuesChanged();
   }
 }

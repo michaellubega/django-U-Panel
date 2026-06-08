@@ -6,6 +6,9 @@ const _androidChannelName = 'U-Panel';
 
 final FlutterLocalNotificationsPlugin _local =
     FlutterLocalNotificationsPlugin();
+
+/// Shared plugin instance (also used by [LocalNotificationScheduler]).
+FlutterLocalNotificationsPlugin get localNotificationsPlugin => _local;
 bool _initialized = false;
 
 Future<void> localPushEnsureInitialized() async {
@@ -32,6 +35,16 @@ Future<void> localPushEnsureInitialized() async {
         description: 'Announcements and updates for your classes',
         importance: Importance.high,
       ),
+    );
+  }
+  if (defaultTargetPlatform == TargetPlatform.iOS ||
+      defaultTargetPlatform == TargetPlatform.macOS) {
+    final iosPlugin = _local.resolvePlatformSpecificImplementation<
+        IOSFlutterLocalNotificationsPlugin>();
+    await iosPlugin?.requestPermissions(
+      alert: true,
+      badge: true,
+      sound: true,
     );
   }
   _initialized = true;

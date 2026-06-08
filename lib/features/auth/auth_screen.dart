@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import '../../core/auth/auth_action_result.dart';
 import '../../core/auth/auth_repository.dart';
 import '../../core/auth/staff_auth_email.dart';
+import 'kiu_staff_register_screen.dart';
+import '../../core/auth/kiu_staff_auth_email.dart';
 import '../../core/auth/student_auth_email.dart';
 import '../../core/auth/student_registration_number.dart';
 import '../../core/connectivity/app_connectivity.dart';
@@ -58,6 +60,10 @@ class _AuthScreenState extends State<AuthScreen> {
     if (!resolved.contains('@')) return false;
     if (StaffAuthEmail.syntheticEmailToStaffNumber(resolved) != null) {
       return true;
+    }
+    if (KiuStaffAuthEmail.skipsVerification(raw)) return true;
+    if (KiuStaffAuthEmail.isStaffMailbox(raw)) {
+      return KiuStaffAuthEmail.validateLoginFormat(raw) == null;
     }
     return StudentAuthEmail.validateLoginFormat(raw) == null;
   }
@@ -219,8 +225,8 @@ class _AuthScreenState extends State<AuthScreen> {
                   const SizedBox(height: 20),
                   Text(
                     _register
-                        ? 'Use your official KIU student email (@studmc.kiu.ac.ug), full name, registration number, and password.'
-                        : 'Sign in with your email and password.',
+                        ? 'Use your official KIU student email (${StudentAuthEmail.studentDomainsLabel()}), full name, registration number, and password.'
+                        : 'Sign in with your ${StudentAuthEmail.studentDomainsLabel()} or @kiu.ac.ug email, or KIU-#### staff ID.',
                     textAlign: TextAlign.center,
                     style: Theme.of(context).textTheme.bodyMedium,
                   ),
@@ -241,7 +247,7 @@ class _AuthScreenState extends State<AuthScreen> {
                             labelText: _register ? 'KIU school email' : 'Email or staff ID',
                             hintText: _register
                                 ? StudentAuthEmail.exampleEmail
-                                : 'e.g. ${StudentAuthEmail.exampleEmail} or KIU-0001',
+                                : 'e.g. ${KiuStaffAuthEmail.exampleEmail} or KIU-0001',
                             errorText: _studentEmailError,
                             errorMaxLines: 4,
                           ),
@@ -255,26 +261,17 @@ class _AuthScreenState extends State<AuthScreen> {
                             _emailC.text.trim().isEmpty) ...[
                           const SizedBox(height: 6),
                           Text(
-                            'Only your official KIU student mailbox (@${StudentAuthEmail.studentEmailDomain}) can be used — not Gmail, Yahoo, or other personal email.',
+                            'Only your official KIU student mailbox (${StudentAuthEmail.studentDomainsLabel()}) can be used — not Gmail, Yahoo, or other personal email.',
                             style: Theme.of(context).textTheme.bodySmall?.copyWith(
                                   color: AppTheme.textSecondary,
                                   height: 1.35,
                                 ),
                           ),
                         ],
-                        if (!_register) ...[
-                          const SizedBox(height: 6),
-                          Text(
-                            'Lecturers: enter your KIU-#### ID and your password.',
-                            style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                                  color: AppTheme.textSecondary,
-                                ),
-                          ),
-                        ],
                         if (_register && _studentEmailOk) ...[
                           const SizedBox(height: 6),
                           Text(
-                            'Format: firstname.lastname@${StudentAuthEmail.studentEmailDomain}',
+                            'Format: firstname.lastname@${StudentAuthEmail.studentEmailDomain} or firstname.lastname@${StudentAuthEmail.studentEmailDomains.last}',
                             style: Theme.of(context).textTheme.bodySmall?.copyWith(
                                   color: AppTheme.textSecondary,
                                 ),
@@ -351,6 +348,23 @@ class _AuthScreenState extends State<AuthScreen> {
                                       );
                                     },
                               child: const Text('Forgot password?'),
+                            ),
+                          ),
+                          Center(
+                            child: TextButton(
+                              onPressed: _busy
+                                  ? null
+                                  : () {
+                                      Navigator.of(context).push(
+                                        MaterialPageRoute<void>(
+                                          builder: (_) =>
+                                              const KiuStaffRegisterScreen(),
+                                        ),
+                                      );
+                                    },
+                              child: const Text(
+                                'KIU staff? Register with @kiu.ac.ug',
+                              ),
                             ),
                           ),
                         ],
@@ -448,16 +462,12 @@ class _LoginVerificationScreenState extends State<_LoginVerificationScreen> {
   @override
   void initState() {
     super.initState();
-    _runAuthFlow();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _runAuthFlow());
   }
 
   Future<void> _runAuthFlow() async {
-    await Future<void>.delayed(const Duration(milliseconds: 320));
     if (!mounted) return;
-    setState(() => _stageIndex = 1);
-    await Future<void>.delayed(const Duration(milliseconds: 360));
-    if (!mounted) return;
-    setState(() => _stageIndex = 2);
+    setState(() => _stageIndex = _stages.length - 1);
     final auth = AuthRepository.instance;
     final AuthActionResult result = widget.registering
         ? await auth.registerWithEmail(

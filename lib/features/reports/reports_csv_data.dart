@@ -75,9 +75,8 @@ String buildAttendanceListsSummaryCsv({Set<String>? listIds}) {
   return '${lines.join('\n')}\n';
 }
 
-/// Consolidated roll for one list (student × session present/absent).
-String buildSingleListRollCsv(AttendanceList list) {
-  final roll = buildAttendanceListRoll(list);
+/// Consolidated roll for one list (student × session present/absent/pending).
+String buildSingleListRollCsv(AttendanceListRollData roll) {
   final lines = <String>[
     [
       'attendance_percent',

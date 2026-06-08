@@ -1,4 +1,5 @@
 import '../attendance/models/attendance_models.dart';
+import '../attendance/roll_cell_status.dart';
 
 export '../attendance/attendance_list_hierarchy.dart' show attendanceListsForCurrentStaff;
 
@@ -17,7 +18,7 @@ class AttendanceListRollStudentRow {
   final String registrationNumber;
   final int attendancePercent;
 
-  /// Session id → Present / Absent / null (session still open, no row yet).
+  /// Session id → Present / Absent / Pending / null (session still open).
   final Map<String, String?> sessionLabels;
 }
 
@@ -45,11 +46,20 @@ class AttendanceListRollData {
     return n;
   }
 
+  int get pendingRollRows {
+    var n = 0;
+    for (final s in students) {
+      for (final label in s.sessionLabels.values) {
+        if (label == kRollLabelPending) n++;
+      }
+    }
+    return n;
+  }
   int get absentRollRows {
     var n = 0;
     for (final s in students) {
       for (final label in s.sessionLabels.values) {
-        if (label == 'Absent') n++;
+        if (label == kRollLabelAbsent) n++;
       }
     }
     return n;
@@ -60,8 +70,12 @@ String _fmtSessionDate(DateTime d) =>
     '${d.day.toString().padLeft(2, '0')}/${d.month.toString().padLeft(2, '0')}/${d.year}';
 
 /// Builds consolidated roll data for [list] from the in-memory [AttendanceStore].
-AttendanceListRollData buildAttendanceListRoll(AttendanceList list) {
-  final studentsById = AttendanceStore.studentMapById();
+Future<AttendanceListRollData> buildAttendanceListRoll(
+  AttendanceList list, {
+  RollPendingContext? pendingContext,
+}) async {
+  final pending = pendingContext ?? await RollPendingContext.load();
+  final studentsById = AttendanceStore.rosterStudentMapForList(list.id);
   final listSessions = AttendanceStore.sessionsForListNewestFirst(list.id);
   final listSessionIds = listSessions.map((s) => s.id).toSet();
   final listRecords = AttendanceStore.attendanceRecords
@@ -110,31 +124,25 @@ AttendanceListRollData buildAttendanceListRoll(AttendanceList list) {
     final student = studentsById[sid];
     final rows = rollRowsByKey[k] ?? const <AttendanceRecord>[];
 
-    final statusesBySessionId = <String, String>{};
-    for (final r in rows) {
-      final next = r.present ? 'Present' : 'Absent';
-      final prev = statusesBySessionId[r.sessionId];
-      statusesBySessionId[r.sessionId] =
-          (prev == 'Present' || next == 'Present') ? 'Present' : 'Absent';
-    }
-
     String? cellLabelForSession(AttendanceSession s) {
-      final fromRow = statusesBySessionId[s.id];
-      if (fromRow != null) return fromRow;
-      if (s.countsTowardRollStats) return 'Absent';
-      return null;
+      return rollCellLabelForStudentSession(
+        session: s,
+        studentId: sid,
+        recordsForStudent: rows,
+        pending: pending,
+      );
     }
 
     final rateSessions =
         listSessions.where((s) => s.countsTowardRollStats).toList();
-    var presentForRate = 0;
-    for (final s in rateSessions) {
-      if (cellLabelForSession(s) == 'Present') presentForRate++;
-    }
-    final totalRate = rateSessions.length;
-    final percent = totalRate <= 0
-        ? 0
-        : ((100 * presentForRate) / totalRate).round().clamp(0, 100);
+    final rateCounts = rollRateCountsForStudentOnList(
+      studentId: sid,
+      listId: list.id,
+      completedSessions: rateSessions,
+      recordsForStudent: rows,
+      pending: pending,
+    );
+    final percent = rateCounts.percentRounded;
 
     final sessionLabels = <String, String?>{
       for (final s in listSessions) s.id: cellLabelForSession(s),
@@ -165,7 +173,7 @@ String buildAttendanceListRollPlainText(AttendanceListRollData roll) {
   final buf = StringBuffer()
     ..writeln(attendanceListRollPrintTitle(roll))
     ..writeln('Roster: ${roll.rosterCount} · Sessions: ${roll.sessions.length}')
-    ..writeln('Present rows: ${roll.presentRollRows} · Absent rows: ${roll.absentRollRows}')
+    ..writeln('Present rows: ${roll.presentRollRows} · Pending rows: ${roll.pendingRollRows} · Absent rows: ${roll.absentRollRows}')
     ..writeln('');
   final header = [
     '%',

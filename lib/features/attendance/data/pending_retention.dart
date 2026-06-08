@@ -15,4 +15,8 @@ class PendingRetention {
     if (left.isNegative) return 0;
     return left.inDays;
   }
+
+  /// True when [sessionEnd] is older than the verification grace window.
+  static bool sessionGraceExpired(DateTime sessionEnd, DateTime now) =>
+      isExpired(sessionEnd, now);
 }

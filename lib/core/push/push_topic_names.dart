@@ -14,3 +14,7 @@ String fcmListNoticeTopic(String listId) =>
 /// Per-student notice pushes (missed session, etc.). Sync with [functions/index.js].
 String fcmStudentNoticeTopic(String studentId) =>
     'stu_${sanitizeFcmTopicSegment(studentId.trim())}';
+
+/// Per-lecturer notice pushes (take attendance reminders). Sync with [functions/index.js].
+String fcmLecturerNoticeTopic(String lecturerUid) =>
+    'lec_${sanitizeFcmTopicSegment(lecturerUid.trim())}';
