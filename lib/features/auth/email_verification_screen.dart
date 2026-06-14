@@ -6,6 +6,7 @@ import '../../core/auth/auth_repository.dart';
 import '../../core/auth/kiu_staff_auth_email.dart';
 import '../../core/navigation/app_navigator.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/widgets/dismissible_error_banner.dart';
 
 /// Blocks app access until a KIU student or staff mailbox is verified in Firebase Auth.
 class EmailVerificationScreen extends StatefulWidget {
@@ -23,9 +24,25 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
   @override
   void initState() {
     super.initState();
+    AuthRepository.instance.addListener(_onAuthChanged);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(_tryAlreadyVerified(silent: true));
     });
+  }
+
+  @override
+  void dispose() {
+    AuthRepository.instance.removeListener(_onAuthChanged);
+    super.dispose();
+  }
+
+  void _onAuthChanged() {
+    if (!mounted) return;
+    setState(() {});
+  }
+
+  void _clearProfileError() {
+    AuthRepository.instance.clearAuthFormError();
   }
 
   String get _email =>
@@ -175,6 +192,26 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
                         ),
                       ],
                     ),
+                  ),
+                  Builder(
+                    builder: (context) {
+                      final profileError = AuthRepository.instance
+                          .authFormErrorMessage
+                          ?.trim();
+                      if (profileError == null || profileError.isEmpty) {
+                        return const SizedBox.shrink();
+                      }
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          const SizedBox(height: 16),
+                          DismissibleErrorBanner(
+                            message: profileError,
+                            onDismiss: _clearProfileError,
+                          ),
+                        ],
+                      );
+                    },
                   ),
                   if (_status != null) ...[
                     const SizedBox(height: 16),

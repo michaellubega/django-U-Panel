@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
 
-/// No animation — immediate route push/pop (feels like in-app tab switching).
-class InstantPageTransitionsBuilder extends PageTransitionsBuilder {
-  const InstantPageTransitionsBuilder();
+/// Short, smooth push/pop — fade with a slight horizontal slide.
+class FastPageTransitionsBuilder extends PageTransitionsBuilder {
+  const FastPageTransitionsBuilder();
 
   @override
   Widget buildTransitions<T>(
@@ -12,6 +12,38 @@ class InstantPageTransitionsBuilder extends PageTransitionsBuilder {
     Animation<double> secondaryAnimation,
     Widget child,
   ) {
-    return child;
+    final curved = CurvedAnimation(
+      parent: animation,
+      curve: Curves.easeOutCubic,
+      reverseCurve: Curves.easeInCubic,
+    );
+    return FadeTransition(
+      opacity: curved,
+      child: SlideTransition(
+        position: Tween<Offset>(
+          begin: const Offset(0.02, 0),
+          end: Offset.zero,
+        ).animate(curved),
+        child: child,
+      ),
+    );
   }
 }
+
+/// [MaterialPageRoute] with a shorter transition than the platform default.
+class UPanelPageRoute<T> extends MaterialPageRoute<T> {
+  UPanelPageRoute({
+    required super.builder,
+    super.fullscreenDialog,
+    super.settings,
+  });
+
+  @override
+  Duration get transitionDuration => const Duration(milliseconds: 220);
+
+  @override
+  Duration get reverseTransitionDuration => const Duration(milliseconds: 200);
+}
+
+@Deprecated('Use FastPageTransitionsBuilder')
+typedef InstantPageTransitionsBuilder = FastPageTransitionsBuilder;

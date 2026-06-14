@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/auth/auth_repository.dart';
 import '../../core/auth/user_role.dart';
+import '../../core/constants/app_constants.dart';
 import '../../core/connectivity/app_connectivity.dart';
 import '../../core/theme/app_theme.dart';
 import '../attendance/attendance_list_hierarchy.dart';
@@ -13,18 +14,19 @@ import '../notices/create_notice_screen.dart';
 import '../notices/data/notices_repository.dart';
 import '../attendance/attendance_screen.dart';
 import '../attendance/qa_overdue_attendance_screen.dart';
+import '../attendance/today_attendance_list_filter.dart';
+import '../attendance/today_attendance_lists_screen.dart';
 import '../lesson_insights/lesson_insights_dashboard_section.dart';
-import '../lesson_insights/qa_lesson_activity_screen.dart';
-import '../settings/staff_admin_hub_screen.dart';
+import '../../core/navigation/app_navigator.dart';
 import '../../core/navigation/app_section.dart';
 import '../../core/navigation/screen_refresh.dart';
 import '../campus_presence/admin_campus_absent_list_screen.dart';
 import '../campus_presence/admin_campus_presence_card.dart';
-import '../campus_presence/update_campus_location_screen.dart';
 import '../campus_presence/campus_presence_log_screen.dart';
 import '../campus_presence/data/campus_presence_repository.dart';
 import '../campus_presence/models/campus_presence_models.dart';
 import 'dashboard_shared_widgets.dart';
+import 'live_sessions_list_screen.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key, this.shellSection = AppSection.dashboard});
@@ -39,7 +41,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
   bool _loading = true;
   bool _refreshing = false;
   String? _loadError;
-  List<NoticeRecord> _notices = [];
   DateTime? _lastUpdated;
   AdminCampusPresenceDashboardSummary _adminCampusPresence =
       const AdminCampusPresenceDashboardSummary(
@@ -56,6 +57,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Future<void> _refresh({bool forceNetwork = false}) async {
+    await AttendanceRepository.instance.warmFromLocalSnapshot();
     final blocking = !AttendanceRepository.instance.hasCachedStore;
     setState(() {
       _loading = blocking;
@@ -63,47 +65,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
       _loadError = null;
     });
     try {
-      final auth = AuthRepository.instance;
-      final online = AppConnectivity.instance.isOnline;
-      final studentUser =
-          auth.roleCheckDone && auth.resolvedRole == UserRole.student;
       if (forceNetwork || blocking) {
         await AttendanceRepository.instance.bootstrapLoadIfNeeded(
-          force: forceNetwork || (online && studentUser),
+          force: forceNetwork,
         );
       } else {
         unawaited(AttendanceRepository.instance.bootstrapLoadIfNeeded());
       }
-      final raw = await NoticesRepository.instance.fetchRecent(limit: 40);
-      final admin = auth.adminCheckDone && auth.isAdmin;
-      final lecturer = auth.lecturerCheckDone && auth.isLecturer && !admin;
-      final lecturerListIds = lecturer
-          ? attendanceListsForCurrentStaff().map((l) => l.id).toSet()
-          : const <String>{};
-      final reg = auth.currentRegistrationNumber?.trim();
-      final student = reg == null || reg.isEmpty
-          ? null
-          : AttendanceStore.findStudentByReg(reg);
-      final signedListIds = <String>{
-        if (student != null)
-          ...AttendanceStore.signIns
-              .where((s) => s.studentId == student.id)
-              .map((s) => s.listId),
-      };
-      _notices = [
-        for (final n in raw)
-          if (noticeVisibleToUser(
-            n,
-            admin: admin,
-            lecturer: lecturer,
-            lecturerListIds: lecturerListIds,
-            lecturerFirebaseUid: auth.currentFirebaseUid,
-            studentId: student?.id,
-            signedListIds: signedListIds,
-          ))
-            n,
-      ].take(20).toList();
-      if (admin) {
+      AttendanceRepository.instance.prefetchActiveListDetails();
+      final auth = AuthRepository.instance;
+      if (auth.adminCheckDone && auth.isAdmin) {
         _adminCampusPresence = await CampusPresenceRepository.instance
             .fetchTodayAdminPresenceDashboardSummary();
       }
@@ -111,7 +82,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
       _loadError = null;
     } catch (e) {
       _loadError = '$e';
-      _notices = [];
     }
     if (mounted) {
       setState(() {
@@ -121,18 +91,26 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
+  void _openLiveSessionsList(BuildContext context) {
+    pushAppPage<void>(
+      context,
+      LiveSessionsListScreen(
+        onSessionTap: (s) => _openSession(context, s),
+      ),
+    );
+  }
+
   void _openSession(BuildContext context, AttendanceSession session) {
     final list = AttendanceStore.listById(session.listId);
     if (list == null) {
       DashboardShellNav.go(context, AppSection.attendance);
       return;
     }
-    Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(
-        builder: (_) => StartSessionScreen(
-          list: list,
-          resumeSession: session,
-        ),
+    pushAppPage<void>(
+      context,
+      StartSessionScreen(
+        list: list,
+        resumeSession: session,
       ),
     );
   }
@@ -269,6 +247,26 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return '$dateText · $timeText';
   }
 
+  String _welcomeDisplayName() {
+    final full = AuthRepository.instance.currentFullName?.trim();
+    if (full != null && full.isNotEmpty) {
+      return full.split(RegExp(r'\s+')).first;
+    }
+    final email = AuthRepository.instance.currentUserEmail?.trim();
+    if (email != null && email.isNotEmpty) {
+      return email.split('@').first;
+    }
+    return 'there';
+  }
+
+  String? _welcomeRoleLabel() {
+    final auth = AuthRepository.instance;
+    if (auth.isQaStaff) return 'QA staff';
+    if (auth.isFullAdministrator) return 'Administrator';
+    if (auth.isAdmin) return 'Admin';
+    return null;
+  }
+
   @override
   Widget build(BuildContext context) {
     return ListenableBuilder(
@@ -302,19 +300,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   children: [
                     DashboardLiveHeader(
                       title: 'Dashboard',
-                      subtitle:
-                          'Operational overview — tap tiles and buttons to act',
+                      welcomeName: _welcomeDisplayName(),
+                      roleLabel: _welcomeRoleLabel(),
+                      compact: true,
                       liveCount: liveCount,
                       lastUpdated: _lastUpdated,
                       refreshing: _loading || _refreshing,
                       onRefresh: () => unawaited(_refresh(forceNetwork: true)),
                     ),
                     if (offline) ...[
-                      const SizedBox(height: 12),
+                      const SizedBox(height: 8),
                       const _OfflineHint(),
                     ],
                     if (_loadError != null) ...[
-                      const SizedBox(height: 12),
+                      const SizedBox(height: 8),
                       Text(
                         _loadError!,
                         style: Theme.of(context)
@@ -323,7 +322,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             ?.copyWith(color: AppTheme.error),
                       ),
                     ],
-                    const SizedBox(height: 20),
+                    const SizedBox(height: 12),
                     if (_loading && !AttendanceRepository.instance.hasCachedStore)
                       const Padding(
                         padding: EdgeInsets.symmetric(vertical: 32),
@@ -336,34 +335,28 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       ],
                       _AdminStatsRow(
                         metrics: m,
-                        onLive: () => DashboardShellNav.go(
+                        campusSummary: _adminCampusPresence,
+                        onLive: () => _openLiveSessionsList(context),
+                        onPresent: () => openTodayRollClassLists(
                           context,
-                          AppSection.attendance,
+                          filter: TodayRollPresenceFilter.present,
                         ),
-                        onPresent: () => DashboardShellNav.go(
+                        onAbsent: () => openTodayRollClassLists(
                           context,
-                          AppSection.attendance,
-                        ),
-                        onAbsent: () => DashboardShellNav.go(
-                          context,
-                          AppSection.attendance,
+                          filter: TodayRollPresenceFilter.absent,
                         ),
                         onActiveLists: () => DashboardShellNav.go(
                           context,
                           AppSection.attendance,
                         ),
-                      ),
-                      const SizedBox(height: 10),
-                      _AdminCampusPresenceStatsRow(
-                        summary: _adminCampusPresence,
-                        onPresentTap: () {
+                        onAdminPresent: () {
                           Navigator.of(context).push<void>(
                             MaterialPageRoute<void>(
                               builder: (_) => const CampusPresenceLogScreen(),
                             ),
                           );
                         },
-                        onAbsentTap: () {
+                        onAdminAbsent: () {
                           Navigator.of(context).push<void>(
                             MaterialPageRoute<void>(
                               builder: (_) =>
@@ -372,132 +365,78 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           );
                         },
                       ),
-                      const SizedBox(height: 20),
-                      Text(
-                        'Quick actions',
-                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                              fontWeight: FontWeight.w600,
-                            ),
-                      ),
-                      const SizedBox(height: 10),
-                      if (AuthRepository.instance.isQaStaff) ...[
-                        DashboardQuickAction(
-                          filled: true,
-                          icon: Icons.my_location_rounded,
-                          label: 'Campus check-in area',
-                          subtitle:
-                              'Set campus centre (1.5 km radius) for administrator check-in',
-                          onTap: () {
-                            Navigator.of(context).push<void>(
-                              MaterialPageRoute<void>(
-                                builder: (_) =>
-                                    const UpdateCampusLocationScreen(),
-                              ),
-                            );
-                          },
-                        ),
-                        const SizedBox(height: 8),
-                      ],
-                      DashboardQuickAction(
-                        filled: true,
-                        icon: Icons.people_alt_rounded,
-                        label: 'Attendance',
-                        subtitle: 'All class lists and sessions',
-                        onTap: () => DashboardShellNav.go(
-                          context,
-                          AppSection.attendance,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      DashboardQuickAction(
-                        icon: Icons.campaign_rounded,
-                        label: 'Notices',
-                        subtitle: 'View and post announcements',
-                        onTap: () => DashboardShellNav.go(
-                          context,
-                          AppSection.notices,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      DashboardQuickAction(
-                        icon: Icons.add_circle_outline_rounded,
-                        label: 'Create notice',
-                        onTap: () {
-                          Navigator.of(context).push<void>(
-                            MaterialPageRoute<void>(
-                              builder: (_) => const CreateNoticeScreen(),
-                            ),
-                          );
-                        },
-                      ),
-                      const SizedBox(height: 8),
-                      DashboardQuickAction(
-                        icon: Icons.analytics_rounded,
-                        label: 'Reports',
-                        subtitle: 'Export attendance data',
-                        onTap: () => DashboardShellNav.go(
-                          context,
-                          AppSection.reports,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      DashboardQuickAction(
-                        icon: Icons.history_edu_rounded,
-                        label: 'Lecturer lessons',
-                        subtitle: 'Sessions taught by all lecturers',
-                        onTap: () {
-                          Navigator.of(context).push<void>(
-                            MaterialPageRoute<void>(
-                              builder: (_) => const QaLessonActivityScreen(),
-                            ),
-                          );
-                        },
-                      ),
-                      const SizedBox(height: 8),
-                      DashboardQuickAction(
-                        icon: Icons.timer_off_rounded,
-                        label: 'Overdue attendance',
-                        subtitle: 'Start sessions when lecturers are 1:30 late',
-                        onTap: () {
-                          Navigator.of(context).push<void>(
-                            MaterialPageRoute<void>(
-                              builder: (_) => const QaOverdueAttendanceScreen(),
-                            ),
-                          );
-                        },
-                      ),
-                      const SizedBox(height: 8),
-                      DashboardQuickAction(
-                        icon: Icons.place_rounded,
-                        label: 'KIU administrator presence',
-                        subtitle: 'Check-in log for KIU administrators only',
-                        onTap: () {
-                          Navigator.of(context).push<void>(
-                            MaterialPageRoute<void>(
-                              builder: (_) => const CampusPresenceLogScreen(),
-                            ),
-                          );
-                        },
-                      ),
                       const SizedBox(height: 12),
-                      const _StaffAdminEntryCard(),
-                      const SizedBox(height: 16),
-                      const QaLessonInsightsDashboardCard(),
-                      const SizedBox(height: 24),
-                      _AdminDetailSection(
+                      _DashboardAttendanceAndClassListsRow(
                         metrics: m,
-                        notices: _notices,
-                        formatNoticeTime: _formatNoticeTime,
-                        onSessionTap: (s) => _openSession(context, s),
-                        onSeeNotices: () => DashboardShellNav.go(
+                        presentToday: m.presentToday,
+                        absentToday: m.absentToday,
+                        onPresentTap: () => openTodayRollClassLists(
                           context,
-                          AppSection.notices,
+                          filter: TodayRollPresenceFilter.present,
+                        ),
+                        onAbsentTap: () => openTodayRollClassLists(
+                          context,
+                          filter: TodayRollPresenceFilter.absent,
                         ),
                         onSeeAttendance: () => DashboardShellNav.go(
                           context,
                           AppSection.attendance,
                         ),
                       ),
+                      const SizedBox(height: 16),
+                      Text(
+                        'Quick actions',
+                        style: DashboardCardText.itemTitle(
+                          Theme.of(context).textTheme,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      DashboardCompactQuickActionsRow(
+                        actions: [
+                          DashboardCompactQuickAction(
+                            icon: Icons.timer_off_rounded,
+                            label: 'Overdue',
+                            color: AppTheme.warning,
+                            onTap: () {
+                              Navigator.of(context).push<void>(
+                                MaterialPageRoute<void>(
+                                  builder: (_) =>
+                                      const QaOverdueAttendanceScreen(),
+                                ),
+                              );
+                            },
+                          ),
+                          DashboardCompactQuickAction(
+                            icon: Icons.people_alt_rounded,
+                            label: 'Attendance',
+                            onTap: () => DashboardShellNav.go(
+                              context,
+                              AppSection.attendance,
+                            ),
+                          ),
+                          DashboardCompactQuickAction(
+                            icon: Icons.add_circle_outline_rounded,
+                            label: 'New notice',
+                            onTap: () {
+                              Navigator.of(context).push<void>(
+                                MaterialPageRoute<void>(
+                                  builder: (_) => const CreateNoticeScreen(),
+                                ),
+                              );
+                            },
+                          ),
+                          DashboardCompactQuickAction(
+                            icon: Icons.analytics_rounded,
+                            label: 'Reports',
+                            onTap: () => DashboardShellNav.go(
+                              context,
+                              AppSection.reports,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 20),
+                      const QaLessonInsightsDashboardCard(),
                     ],
                   ],
                 ),
@@ -536,67 +475,207 @@ class _NonAdminDashboardPlaceholder extends StatelessWidget {
   }
 }
 
-class _AdminCampusPresenceStatsRow extends StatelessWidget {
-  const _AdminCampusPresenceStatsRow({
-    required this.summary,
+class _DashboardAttendanceAndClassListsRow extends StatelessWidget {
+  const _DashboardAttendanceAndClassListsRow({
+    required this.metrics,
+    required this.presentToday,
+    required this.absentToday,
     required this.onPresentTap,
     required this.onAbsentTap,
+    required this.onSeeAttendance,
   });
 
-  final AdminCampusPresenceDashboardSummary summary;
+  final _DashboardMetrics metrics;
+  final int presentToday;
+  final int absentToday;
   final VoidCallback onPresentTap;
   final VoidCallback onAbsentTap;
+  final VoidCallback onSeeAttendance;
+
+  static const _attendanceWidth = 360.0;
+  static const _besideBreakpoint = 720.0;
 
   @override
   Widget build(BuildContext context) {
-    final tiles = [
-      DashboardStatTile(
-        label: 'KIU admins present',
-        value: '${summary.presentToday}',
-        icon: Icons.badge_rounded,
-        color: AppTheme.success,
-        highlight: summary.presentToday > 0,
-        onTap: onPresentTap,
-      ),
-      DashboardStatTile(
-        label: 'KIU admins absent',
-        value: '${summary.absentToday}',
-        icon: Icons.badge_outlined,
-        color: AppTheme.warning,
-        highlight: summary.absentToday > 0,
-        onTap: onAbsentTap,
-      ),
-    ];
+    final attendanceCard = DashboardAttendanceOverviewCard(
+      presentToday: presentToday,
+      absentToday: absentToday,
+      embeddedInRow: true,
+      onPresentTap: onPresentTap,
+      onAbsentTap: onAbsentTap,
+    );
+    final classListsCard = _DashboardClassListsCompactCard(
+      metrics: metrics,
+      onSeeAttendance: onSeeAttendance,
+    );
+
     return LayoutBuilder(
       builder: (context, constraints) {
-        final isNarrow = constraints.maxWidth < 700;
-        if (isNarrow) {
-          return GridView.count(
-            crossAxisCount: 2,
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            mainAxisSpacing: 10,
-            crossAxisSpacing: 10,
-            childAspectRatio: constraints.maxWidth > 360 ? 1.08 : 0.92,
-            children: tiles,
+        final beside = constraints.maxWidth >= _besideBreakpoint;
+        if (!beside) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              attendanceCard,
+              const SizedBox(height: 12),
+              classListsCard,
+            ],
           );
         }
-        return SizedBox(
-          height: 132,
-          child: Row(
-            children: tiles
-                .map(
-                  (t) => Expanded(
-                    child: Padding(
-                      padding: const EdgeInsets.only(right: 10),
-                      child: t,
-                    ),
-                  ),
-                )
-                .toList(),
-          ),
+
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            SizedBox(width: _attendanceWidth, child: attendanceCard),
+            const SizedBox(width: 16),
+            Expanded(child: classListsCard),
+          ],
         );
       },
+    );
+  }
+}
+
+class _DashboardClassListsCompactCard extends StatelessWidget {
+  const _DashboardClassListsCompactCard({
+    required this.metrics,
+    required this.onSeeAttendance,
+  });
+
+  final _DashboardMetrics metrics;
+  final VoidCallback onSeeAttendance;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final cells = [
+      _ClassListMetric('Active', metrics.activeLists, AppTheme.accent),
+      _ClassListMetric('Closed', metrics.closedLists, AppTheme.textSecondary),
+      _ClassListMetric(
+        'Roster students',
+        metrics.rosterStudents,
+        AppTheme.primary,
+      ),
+      _ClassListMetric(
+        'Enrollments',
+        metrics.listEnrollments,
+        AppTheme.primary,
+      ),
+    ];
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    'Class lists',
+                    style: DashboardCardText.cardSection(theme.textTheme),
+                  ),
+                ),
+                TextButton(
+                  onPressed: onSeeAttendance,
+                  style: TextButton.styleFrom(
+                    visualDensity: VisualDensity.compact,
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                  ),
+                  child: const Text('Open'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final twoCol = constraints.maxWidth >= 260;
+                if (!twoCol) {
+                  return Column(
+                    children: [
+                      for (var i = 0; i < cells.length; i++) ...[
+                        if (i > 0) const SizedBox(height: 8),
+                        _ClassListMetricTile(metric: cells[i]),
+                      ],
+                    ],
+                  );
+                }
+                return Column(
+                  children: [
+                    for (var row = 0; row < cells.length; row += 2) ...[
+                      if (row > 0) const SizedBox(height: 8),
+                      Row(
+                        children: [
+                          Expanded(
+                            child: _ClassListMetricTile(metric: cells[row]),
+                          ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: row + 1 < cells.length
+                                ? _ClassListMetricTile(metric: cells[row + 1])
+                                : const SizedBox.shrink(),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ],
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ClassListMetric {
+  const _ClassListMetric(this.label, this.value, this.color);
+
+  final String label;
+  final int value;
+  final Color color;
+}
+
+class _ClassListMetricTile extends StatelessWidget {
+  const _ClassListMetricTile({required this.metric});
+
+  final _ClassListMetric metric;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: metric.color.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: metric.color.withValues(alpha: 0.18)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '${metric.value}',
+            style: theme.textTheme.titleLarge?.copyWith(
+              fontWeight: FontWeight.w800,
+              color: AppTheme.primary,
+              height: 1.1,
+              fontSize: DashboardCardText.metricValueSize,
+            ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+            metric.label,
+            style: DashboardCardText.captionSecondary(theme.textTheme),
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ],
+      ),
     );
   }
 }
@@ -655,80 +734,29 @@ class _OfflineHint extends StatelessWidget {
   }
 }
 
-class _StaffAdminEntryCard extends StatelessWidget {
-  const _StaffAdminEntryCard();
-
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      elevation: 0,
-      color: AppTheme.primary.withValues(alpha: 0.06),
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(12),
-        side: BorderSide(color: AppTheme.primary.withValues(alpha: 0.2)),
-      ),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(12),
-        onTap: () {
-          Navigator.of(context).push<void>(
-            MaterialPageRoute<void>(
-              builder: (_) => const StaffAdminHubScreen(),
-            ),
-          );
-        },
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-          child: Row(
-            children: [
-              const Icon(Icons.groups_rounded, color: AppTheme.primary, size: 28),
-              const SizedBox(width: 14),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Staff & accounts',
-                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                            fontWeight: FontWeight.w600,
-                          ),
-                    ),
-                    const SizedBox(height: 2),
-                    Text(
-                      'Register lecturers, QA admins, and browse staff lists.',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: AppTheme.textSecondary,
-                            height: 1.3,
-                          ),
-                    ),
-                  ],
-                ),
-              ),
-              Icon(
-                Icons.chevron_right_rounded,
-                color: AppTheme.textSecondary.withValues(alpha: 0.8),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 class _AdminStatsRow extends StatelessWidget {
   const _AdminStatsRow({
     required this.metrics,
+    required this.campusSummary,
     required this.onLive,
     required this.onPresent,
     required this.onAbsent,
     required this.onActiveLists,
+    required this.onAdminPresent,
+    required this.onAdminAbsent,
   });
 
   final _DashboardMetrics metrics;
+  final AdminCampusPresenceDashboardSummary campusSummary;
   final VoidCallback onLive;
   final VoidCallback onPresent;
   final VoidCallback onAbsent;
   final VoidCallback onActiveLists;
+  final VoidCallback onAdminPresent;
+  final VoidCallback onAdminAbsent;
+
+  static const _sixTileRowMinWidth = 980.0;
+  static const _tileHeight = 108.0;
 
   @override
   Widget build(BuildContext context) {
@@ -739,6 +767,8 @@ class _AdminStatsRow extends StatelessWidget {
         icon: Icons.sensors_rounded,
         color: AppTheme.accent,
         highlight: metrics.liveSessions.isNotEmpty,
+        fillHeight: true,
+        dense: true,
         onTap: onLive,
       ),
       DashboardStatTile(
@@ -746,6 +776,8 @@ class _AdminStatsRow extends StatelessWidget {
         value: '${metrics.presentToday}',
         icon: Icons.how_to_reg_rounded,
         color: AppTheme.success,
+        fillHeight: true,
+        dense: true,
         onTap: onPresent,
       ),
       DashboardStatTile(
@@ -753,45 +785,59 @@ class _AdminStatsRow extends StatelessWidget {
         value: '${metrics.absentToday}',
         icon: Icons.person_off_rounded,
         color: AppTheme.error,
+        fillHeight: true,
+        dense: true,
         onTap: onAbsent,
       ),
       DashboardStatTile(
-        label: 'Active class lists',
+        label: 'Active lists',
         value: '${metrics.activeLists}',
         icon: Icons.class_rounded,
         color: AppTheme.primary,
+        fillHeight: true,
+        dense: true,
         onTap: onActiveLists,
       ),
+      DashboardStatTile(
+        label: 'Admins present',
+        value: '${campusSummary.presentToday}',
+        icon: Icons.badge_rounded,
+        color: AppTheme.success,
+        fillHeight: true,
+        dense: true,
+        onTap: onAdminPresent,
+      ),
+      DashboardStatTile(
+        label: 'Admins absent',
+        value: '${campusSummary.absentToday}',
+        icon: Icons.badge_outlined,
+        color: AppTheme.primary,
+        fillHeight: true,
+        dense: true,
+        onTap: onAdminAbsent,
+      ),
     ];
+
     return LayoutBuilder(
       builder: (context, constraints) {
-        final isNarrow = constraints.maxWidth < 700;
-        if (isNarrow) {
-          return GridView.count(
-            crossAxisCount: 2,
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            mainAxisSpacing: 10,
-            crossAxisSpacing: 10,
-            // Taller cells on phones so stat labels do not overflow (was ~1.3).
-            childAspectRatio: constraints.maxWidth > 360 ? 1.08 : 0.92,
-            children: tiles,
+        final useWideRow = constraints.maxWidth >= _sixTileRowMinWidth;
+        if (useWideRow) {
+          return SizedBox(
+            height: _tileHeight,
+            child: Row(
+              children: [
+                for (var i = 0; i < tiles.length; i++) ...[
+                  if (i > 0) const SizedBox(width: 10),
+                  Expanded(child: tiles[i]),
+                ],
+              ],
+            ),
           );
         }
-        return SizedBox(
-          height: 132,
-          child: Row(
-            children: tiles
-                .map(
-                  (t) => Expanded(
-                    child: Padding(
-                      padding: const EdgeInsets.only(right: 10),
-                      child: t,
-                    ),
-                  ),
-                )
-                .toList(),
-          ),
+        return DashboardMetricTilesStrip(
+          tiles: tiles,
+          tileWidth: 128,
+          tileHeight: _tileHeight,
         );
       },
     );
@@ -837,7 +883,7 @@ class _StatCard extends StatelessWidget {
                   item.value,
                   style: Theme.of(context).textTheme.headlineMedium?.copyWith(
                         color: AppTheme.primary,
-                        fontSize: 28,
+                        fontSize: DashboardCardText.metricValueLargeSize,
                       ),
                 ),
               ],
@@ -845,10 +891,9 @@ class _StatCard extends StatelessWidget {
             const SizedBox(height: 8),
             Text(
               item.label,
-              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                    color: AppTheme.textSecondary,
-                    fontSize: 13,
-                  ),
+              style: DashboardCardText.captionSecondary(
+                Theme.of(context).textTheme,
+              ),
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
             ),
@@ -859,122 +904,50 @@ class _StatCard extends StatelessWidget {
   }
 }
 
-class _AdminDetailSection extends StatelessWidget {
-  const _AdminDetailSection({
-    required this.metrics,
-    required this.notices,
-    required this.formatNoticeTime,
-    required this.onSessionTap,
-    required this.onSeeNotices,
-    required this.onSeeAttendance,
-  });
-
-  final _DashboardMetrics metrics;
-  final List<NoticeRecord> notices;
-  final String Function(BuildContext context, NoticeRecord n) formatNoticeTime;
-  final void Function(AttendanceSession session) onSessionTap;
-  final VoidCallback onSeeNotices;
-  final VoidCallback onSeeAttendance;
-
-  @override
-  Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final useTwoColumns = constraints.maxWidth >= 900;
-        final left = Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _SectionCard(
-              title: 'Class lists',
-              trailing: TextButton(
-                onPressed: onSeeAttendance,
-                child: const Text('Open attendance'),
-              ),
-              children: [
-                _ListRow('Draft', '${metrics.draftLists}', AppTheme.textSecondary),
-                _ListRow('Active', '${metrics.activeLists}', AppTheme.accent),
-                _ListRow('Closed', '${metrics.closedLists}', AppTheme.textSecondary),
-                _ListRow('Roster students', '${metrics.rosterStudents}', AppTheme.primary),
-                _ListRow('List enrollments', '${metrics.listEnrollments}', AppTheme.primary),
-              ],
-            ),
-            if (!useTwoColumns) ...[
-              const SizedBox(height: 16),
-              _LiveSessionsCard(
-                sessions: metrics.liveSessions,
-                onSessionTap: onSessionTap,
-                onSeeAttendance: onSeeAttendance,
-              ),
-              const SizedBox(height: 16),
-              _RecentNoticesCard(
-                notices: notices,
-                formatNoticeTime: formatNoticeTime,
-                onSeeNotices: onSeeNotices,
-              ),
-            ],
-          ],
-        );
-
-        if (!useTwoColumns) return left;
-
-        return Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(flex: 2, child: left),
-            const SizedBox(width: 24),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  _LiveSessionsCard(
-                    sessions: metrics.liveSessions,
-                    onSessionTap: onSessionTap,
-                    onSeeAttendance: onSeeAttendance,
-                  ),
-                  const SizedBox(height: 16),
-                  _RecentNoticesCard(
-                    notices: notices,
-                    formatNoticeTime: formatNoticeTime,
-                    onSeeNotices: onSeeNotices,
-                  ),
-                ],
-              ),
-            ),
-          ],
-        );
-      },
-    );
-  }
-}
-
 class _LiveSessionsCard extends StatelessWidget {
   const _LiveSessionsCard({
     required this.sessions,
     this.onSessionTap,
+    this.onSeeAll,
     this.onSeeAttendance,
   });
 
   final List<AttendanceSession> sessions;
   final void Function(AttendanceSession session)? onSessionTap;
+  final VoidCallback? onSeeAll;
   final VoidCallback? onSeeAttendance;
 
   @override
   Widget build(BuildContext context) {
     return _SectionCard(
       title: 'Live check-in sessions',
-      trailing: onSeeAttendance == null
-          ? null
-          : TextButton(
-              onPressed: onSeeAttendance,
-              child: const Text('Attendance'),
+      trailing: sessions.isEmpty
+          ? (onSeeAttendance == null
+              ? null
+              : TextButton(
+                  onPressed: onSeeAttendance,
+                  child: const Text('Attendance'),
+                ))
+          : Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (onSeeAll != null)
+                  TextButton(
+                    onPressed: onSeeAll,
+                    child: const Text('View all'),
+                  ),
+                if (onSeeAttendance != null)
+                  TextButton(
+                    onPressed: onSeeAttendance,
+                    child: const Text('Attendance'),
+                  ),
+              ],
             ),
       children: [
         if (sessions.isEmpty)
           Text(
             'No open sessions right now. Start one from Attendance.',
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: AppTheme.textSecondary,
-                ),
+            style: DashboardCardText.bodySecondary(Theme.of(context).textTheme),
           )
         else
           ...sessions.take(8).map((s) {
@@ -997,7 +970,9 @@ class _LiveSessionsCard extends StatelessWidget {
               padding: const EdgeInsets.only(bottom: 8),
               child: Text(
                 '$title · Code ${normalizeSessionCodeInput(s.sessionCode)} · $ends',
-                style: Theme.of(context).textTheme.bodyMedium,
+                style: DashboardCardText.bodySecondary(
+                  Theme.of(context).textTheme,
+                ),
               ),
             );
           }),
@@ -1031,18 +1006,18 @@ class _RecentNoticesCard extends StatelessWidget {
       children: [
         if (top.isEmpty)
           Text(
-            'No notices in Firestore yet.',
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: AppTheme.textSecondary,
-                ),
+            'No notices yet.',
+            style: DashboardCardText.bodySecondary(Theme.of(context).textTheme),
           )
         else
           ...top.map((n) {
             final aud = n.audience == NoticeAudienceKind.allAppUsers
                 ? 'All users'
-                : n.audience == NoticeAudienceKind.student
-                    ? 'Individual student'
-                    : 'List: ${n.targetListTitle ?? n.targetListId ?? '—'}';
+                : n.audience == NoticeAudienceKind.kiuAdmins
+                    ? 'KIU administrators'
+                    : n.audience == NoticeAudienceKind.student
+                        ? 'Individual student'
+                        : 'List: ${n.targetListTitle ?? n.targetListId ?? '—'}';
             final title =
                 n.title.trim().isEmpty ? '(No title)' : n.title.trim();
             final subtitle =
@@ -1061,12 +1036,15 @@ class _RecentNoticesCard extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(title, style: Theme.of(context).textTheme.titleSmall),
+                  Text(
+                    title,
+                    style: DashboardCardText.itemTitle(Theme.of(context).textTheme),
+                  ),
                   Text(
                     subtitle,
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                          color: AppTheme.textSecondary,
-                        ),
+                    style: DashboardCardText.captionSecondary(
+                      Theme.of(context).textTheme,
+                    ),
                   ),
                 ],
               ),
@@ -1117,9 +1095,7 @@ class _StudentDashboardBody extends StatelessWidget {
           Text(
             'Add your registration number in Settings so the app can match you '
             'to class lists and roll data.',
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: AppTheme.textSecondary,
-                ),
+            style: DashboardCardText.bodySecondary(Theme.of(context).textTheme),
           ),
         ],
       );
@@ -1131,9 +1107,7 @@ class _StudentDashboardBody extends StatelessWidget {
           Text(
             'Your registration is saved, but no student record matches it yet. '
             'Ask your lecturer to add you, or join a class list from Attendance.',
-            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                  color: AppTheme.textSecondary,
-                ),
+            style: DashboardCardText.bodySecondary(Theme.of(context).textTheme),
           ),
         ],
       );
@@ -1281,7 +1255,7 @@ class _SectionCard extends StatelessWidget {
                 Expanded(
                   child: Text(
                     title,
-                    style: Theme.of(context).textTheme.titleLarge,
+                    style: DashboardCardText.cardTitle(Theme.of(context).textTheme),
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -1315,7 +1289,9 @@ class _ListRow extends StatelessWidget {
           Expanded(
             child: Text(
               label,
-              style: Theme.of(context).textTheme.bodyLarge,
+              style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                    fontSize: DashboardCardText.bodySize,
+                  ),
             ),
           ),
           Container(
@@ -1329,7 +1305,7 @@ class _ListRow extends StatelessWidget {
               style: TextStyle(
                 fontWeight: FontWeight.w600,
                 color: color,
-                fontSize: 14,
+                fontSize: DashboardCardText.captionSize,
               ),
             ),
           ),

@@ -4,8 +4,10 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../connectivity/app_connectivity.dart';
 import '../theme/app_theme.dart';
+import '../widgets/app_brand_logo.dart';
 import '../constants/app_constants.dart';
 import '../auth/auth_repository.dart';
+import '../errors/user_facing_errors.dart';
 import '../auth/user_role.dart';
 import '../../features/dashboard/dashboard_screen.dart';
 import '../../features/dashboard/kiu_admin_dashboard_screen.dart';
@@ -15,6 +17,8 @@ import '../../features/attendance/attendance_screen.dart';
 import '../../features/attendance/data/attendance_offline_sync.dart';
 import '../../features/attendance/data/attendance_repository.dart';
 import '../../features/attendance/data/attendance_remote_list_watch.dart';
+import '../../features/attendance/data/attendance_rtd_record_watch.dart';
+import '../../features/attendance/student_attendance_live_sync.dart';
 import '../../features/attendance/models/attendance_models.dart';
 import '../../features/notices/notices_screen.dart';
 import '../../features/notices/data/notices_repository.dart';
@@ -22,12 +26,17 @@ import '../../features/reports/reports_screen.dart';
 import '../../features/settings/settings_screen.dart';
 import '../../features/settings/lecturer_settings_screen.dart';
 import '../../features/settings/staff_admin_hub_screen.dart';
+import '../../features/campus_presence/update_campus_location_screen.dart';
+import '../../features/campus_presence/campus_presence_log_screen.dart';
+import '../../features/lesson_insights/qa_lesson_activity_screen.dart';
 import '../push/push_controller.dart';
 import '../location/student_location_priming.dart';
 import '../offline/pending_offline_coordinator.dart';
 import '../notifications/notification_maintenance_coordinator.dart';
 import '../platform/web_fast_boot.dart';
+import '../widgets/web_app_loading_screen.dart';
 import 'app_section.dart';
+import 'instant_page_transitions.dart';
 import 'screen_refresh.dart';
 
 /// Desktop: fixed left sidebar + top bar + main content.
@@ -43,11 +52,25 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   late final ValueNotifier<AppSection> _currentSection;
   final _refreshHost = ScreenRefreshHost();
   final _scaffoldKey = GlobalKey<ScaffoldState>();
+  final _shellContentNavKey = GlobalKey<NavigatorState>();
   Timer? _noticesCounterTimer;
   int _unseenNotices = 0;
   bool _wasOnline = true;
+  bool _roleRulesBannerDismissed = false;
+  bool _authProfileBannerDismissed = false;
+  String? _lastAuthProfileError;
+  bool _lastRoleRulesDenied = false;
+  String? _lastStudentAttendanceRegLoaded;
+  bool _studentAttendanceReloadInFlight = false;
+  DateTime? _lastStudentAttendanceReloadAt;
+  bool _staffAttendanceBootstrapAttempted = false;
+  Timer? _authRepoSideEffectsDebounce;
   UserRole? _sectionCacheRole;
   final Map<AppSection, Widget> _sectionWidgets = {};
+  final Set<AppSection> _builtSections = {};
+  PageController? _mobileSectionPageController;
+  int _mobileSectionPageCount = 0;
+  bool _mobilePageTransitionFromTap = false;
 
   @override
   void initState() {
@@ -57,33 +80,45 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     _currentSection = ValueNotifier(
       auth.roleCheckDone
           ? _defaultSectionForRole(auth.resolvedRole)
-          : AppSection.attendance,
+          : (auth.isStaffAuthIdentity || auth.isSyntheticStaffAuthIdentity)
+              ? AppSection.dashboard
+              : auth.isStudentAuthIdentity
+                  ? AppSection.attendance
+                  : AppSection.dashboard,
     );
+    _currentSection.addListener(_syncMobileSectionPage);
     AuthRepository.instance.addListener(_onAuthRepo);
     AppConnectivity.instance.addListener(_onConnectivityChanged);
     _wasOnline = AppConnectivity.instance.isOnline;
-    unawaited(AppConnectivity.instance.initialize());
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      _builtSections.add(_currentSection.value);
       _applyDefaultSectionForRole();
+      unawaited(AttendanceRepository.instance.warmFromLocalSnapshot());
       unawaited(_bootstrapAttendanceStore());
       WebFastBoot.afterFirstFrame(() {
         unawaited(PushController.instance.initialize());
         unawaited(PushController.instance.syncTopicsForCurrentUser());
         unawaited(AttendanceRemoteListWatch.instance.start());
         unawaited(StudentLocationPriming.instance.primeOnAppOpen());
-        PendingOfflineCoordinator.instance.start();
+        Future<void>.delayed(const Duration(seconds: 2), () {
+          if (!mounted) return;
+          PendingOfflineCoordinator.instance.start();
+        });
         unawaited(NotificationMaintenanceCoordinator.onSignedIn());
         unawaited(_refreshUnseenNotices());
       });
     });
     _noticesCounterTimer = Timer.periodic(
-        const Duration(seconds: 30), (_) => _refreshUnseenNotices());
+        const Duration(minutes: 5), (_) => _refreshUnseenNotices());
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     PendingOfflineCoordinator.instance.stop();
+    _authRepoSideEffectsDebounce?.cancel();
+    _currentSection.removeListener(_syncMobileSectionPage);
+    _mobileSectionPageController?.dispose();
     _currentSection.dispose();
     _refreshHost.dispose();
     AuthRepository.instance.removeListener(_onAuthRepo);
@@ -104,22 +139,24 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
 
   Future<void> _warmAttendanceForOffline() async {
     final auth = AuthRepository.instance;
+    await AttendanceRepository.instance.warmFromLocalSnapshot();
     for (var i = 0; i < 12 && !auth.roleCheckDone; i++) {
       await Future<void>.delayed(const Duration(milliseconds: 100));
     }
     if (!auth.roleCheckDone) return;
     if (auth.resolvedRole == UserRole.student) {
-      await AttendanceRepository.instance.loadStudentAttendanceForProfile(
-        force: false,
+      unawaited(
+        AttendanceRepository.instance.loadStudentAttendanceForProfile(
+          force: false,
+        ),
       );
       return;
     }
-    await AttendanceRepository.instance.loadAttendanceListsFirst();
-    unawaited(
-      AttendanceRepository.instance.loadAll(
-        scopeToLecturerUid: AttendanceRepository.currentLecturerLoadScopeUid(),
-      ),
-    );
+    if (AttendanceRepository.instance.hasCachedStore) {
+      unawaited(AttendanceRepository.instance.syncFromRemoteIfNeeded());
+      return;
+    }
+    await AttendanceRepository.instance.syncFromRemoteIfNeeded();
   }
 
   Future<void> _bootstrapAttendanceStore() async {
@@ -129,8 +166,10 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
       final auth = AuthRepository.instance;
       final student = auth.roleCheckDone
           ? auth.resolvedRole == UserRole.student
-          : auth.currentRegistrationNumber?.trim().isNotEmpty == true;
+          : auth.isLikelyStudent;
       if (student) {
+        unawaited(StudentAttendanceLiveSync.activate());
+        unawaited(AttendanceRtdRecordWatch.instance.start());
         unawaited(
           AttendanceRepository.instance.loadStudentAttendanceForProfile(
             force: false,
@@ -213,8 +252,12 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     final role = _resolvedRole();
     final allowed = _navSectionsForRole(role);
     final roleChanged = _sectionCacheRole != role;
+    final roleDenied = AuthRepository.instance.firestoreRoleCheckDenied;
     if (roleChanged) {
       _sectionWidgets.clear();
+      _builtSections
+        ..clear()
+        ..add(_currentSection.value);
       _sectionCacheRole = role;
     }
     if (!allowed.contains(_currentSection.value)) {
@@ -223,21 +266,101 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     if (roleChanged || AuthRepository.instance.roleCheckDone) {
       _applyDefaultSectionForRole();
     }
-    if (roleChanged) {
+    if (roleChanged || roleDenied != _lastRoleRulesDenied) {
+      _lastRoleRulesDenied = roleDenied;
       setState(() {});
       _precacheCurrentSectionWidget();
     }
-    _refreshUnseenNotices();
-    unawaited(PushController.instance.syncTopicsForCurrentUser());
-    unawaited(AttendanceRemoteListWatch.instance.start());
-    if (roleChanged) {
-      unawaited(StudentLocationPriming.instance.primeOnAppOpen());
+    final profileErr =
+        AuthRepository.instance.authFormErrorMessage?.trim();
+    if (profileErr != null &&
+        profileErr.isNotEmpty &&
+        profileErr != _lastAuthProfileError) {
+      _lastAuthProfileError = profileErr;
+      _authProfileBannerDismissed = false;
+      setState(() {});
+    } else if ((profileErr == null || profileErr.isEmpty) &&
+        _lastAuthProfileError != null) {
+      _lastAuthProfileError = null;
+      setState(() {});
     }
+    _authRepoSideEffectsDebounce?.cancel();
+    _authRepoSideEffectsDebounce = Timer(const Duration(milliseconds: 350), () {
+      if (!mounted || !AuthRepository.instance.isLoggedIn) return;
+      _refreshUnseenNotices();
+      unawaited(PushController.instance.syncTopicsForCurrentUser());
+      unawaited(AttendanceRemoteListWatch.instance.start());
+      if (roleChanged) {
+        unawaited(StudentLocationPriming.instance.primeOnAppOpen());
+      }
+      _reloadStudentAttendanceWhenRegistrationReady();
+      _reloadStaffAttendanceWhenRoleReady();
+    });
+  }
+
+  /// First bootstrap can run before profile hydration finishes — reload when reg appears.
+  void _reloadStudentAttendanceWhenRegistrationReady() {
+    final auth = AuthRepository.instance;
+    if (!auth.isLoggedIn || auth.needsEmailVerification) return;
+    final student = auth.roleCheckDone
+        ? auth.resolvedRole == UserRole.student
+        : auth.isLikelyStudent;
+    if (!student) return;
+    final reg = auth.currentRegistrationNumber?.trim();
+    if (reg == null || reg.isEmpty) return;
+    final repo = AttendanceRepository.instance;
+    final hasData = repo.studentProfileHasLocalData(reg);
+    if (reg == _lastStudentAttendanceRegLoaded && hasData) {
+      return;
+    }
+    if (_studentAttendanceReloadInFlight) return;
+    final lastAt = _lastStudentAttendanceReloadAt;
+    if (lastAt != null &&
+        DateTime.now().difference(lastAt) < const Duration(seconds: 8)) {
+      return;
+    }
+    _lastStudentAttendanceRegLoaded = reg;
+    _studentAttendanceReloadInFlight = true;
+    _lastStudentAttendanceReloadAt = DateTime.now();
+    unawaited(() async {
+      try {
+        await repo.loadStudentAttendanceForProfile(force: !hasData);
+      } finally {
+        _studentAttendanceReloadInFlight = false;
+      }
+    }());
+  }
+
+  /// Staff bootstrap can run before Firestore role reads finish on a new device.
+  void _reloadStaffAttendanceWhenRoleReady() {
+    final auth = AuthRepository.instance;
+    if (!auth.isLoggedIn || auth.needsEmailVerification) return;
+    if (!auth.roleCheckDone) return;
+    switch (auth.resolvedRole) {
+      case UserRole.student:
+        return;
+      case UserRole.admin:
+      case UserRole.qaStaff:
+      case UserRole.lecturer:
+      case UserRole.kiuAdmin:
+        break;
+    }
+    if (!AppConnectivity.instance.isOnline) return;
+    final repo = AttendanceRepository.instance;
+    if (repo.hasCachedStore || _staffAttendanceBootstrapAttempted) return;
+    _staffAttendanceBootstrapAttempted = true;
+    unawaited(repo.bootstrapLoadIfNeeded(force: true));
   }
 
   void _ensureSectionCacheForRole(UserRole role) {
     if (_sectionCacheRole == role) return;
     _sectionWidgets.clear();
+    _builtSections
+      ..clear()
+      ..add(_currentSection.value);
+    _mobileSectionPageController?.dispose();
+    _mobileSectionPageController = null;
+    _mobileSectionPageCount = 0;
     _sectionCacheRole = role;
   }
 
@@ -272,6 +395,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
         final visible = noticeVisibleToUser(
           n,
           admin: admin,
+          kiuAdmin: AuthRepository.instance.isKiuAdmin,
           lecturer: lecturer,
           lecturerListIds: lecturerListIds,
           lecturerFirebaseUid: AuthRepository.instance.currentFirebaseUid,
@@ -315,6 +439,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
       final c = await NoticesRepository.instance.unseenCountForUser(
         userKey: _noticeUserKey(),
         admin: admin,
+        kiuAdmin: AuthRepository.instance.isKiuAdmin,
         lecturer: lecturer,
         lecturerListIds: lecturerListIds,
         lecturerFirebaseUid: AuthRepository.instance.currentFirebaseUid,
@@ -325,24 +450,243 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     } catch (_) {}
   }
 
-  void _setSection(AppSection s) {
-    if (_currentSection.value == s) return;
+  void _setSection(AppSection s, {bool fromPageSwipe = false}) {
+    _popShellContentToRoot();
+    if (_currentSection.value == s) {
+      if (s == AppSection.settings) {
+        unawaited(_refreshHost.refresh(s));
+      }
+      return;
+    }
+    _builtSections.add(s);
     _currentSection.value = s;
     if (s == AppSection.notices) {
       unawaited(_markNoticesSeenNow());
     }
+    if (!fromPageSwipe && mounted && !_isDesktop) {
+      final sections = _navSectionsForRole(_resolvedRole());
+      final index = sections.indexOf(s);
+      final controller = _mobileSectionPageController;
+      if (index >= 0 &&
+          controller != null &&
+          controller.hasClients &&
+          controller.page?.round() != index) {
+        _mobilePageTransitionFromTap = true;
+        controller
+            .animateToPage(
+              index,
+              duration: const Duration(milliseconds: 280),
+              curve: Curves.easeOutCubic,
+            )
+            .whenComplete(() => _mobilePageTransitionFromTap = false);
+      }
+    }
+  }
+
+  void _onMobileSectionPageChanged(int index, List<AppSection> sections) {
+    if (index < 0 || index >= sections.length) return;
+    final section = sections[index];
+    _builtSections.add(section);
+    if (_currentSection.value == section) return;
+    _setSection(section, fromPageSwipe: true);
+  }
+
+  void _ensureMobileSectionPageController(List<AppSection> sections) {
+    final index = sections.indexOf(_currentSection.value);
+    final safeIndex = index >= 0 ? index : 0;
+    if (_mobileSectionPageController == null ||
+        _mobileSectionPageCount != sections.length) {
+      _mobileSectionPageController?.dispose();
+      _mobileSectionPageController = PageController(initialPage: safeIndex);
+      _mobileSectionPageCount = sections.length;
+    }
+  }
+
+  void _syncMobileSectionPage() {
+    if (!mounted || _isDesktop || _mobilePageTransitionFromTap) return;
+    final sections = _navSectionsForRole(_resolvedRole());
+    final index = sections.indexOf(_currentSection.value);
+    final controller = _mobileSectionPageController;
+    if (index < 0 || controller == null || !controller.hasClients) return;
+    if (controller.page?.round() == index) return;
+    controller.jumpToPage(index);
+  }
+
+  void _popShellContentToRoot() {
+    _shellContentNavKey.currentState
+        ?.popUntil((route) => route.isFirst);
+  }
+
+  bool _shouldCloseDrawer(bool closeDrawer) => closeDrawer && !_isDesktop;
+
+  Future<void> _pushShellContentRoute(Widget screen) {
+    final nav = _shellContentNavKey.currentState;
+    if (nav == null) return Future.value();
+    return nav.push<void>(
+      UPanelPageRoute<void>(builder: (_) => screen),
+    );
   }
 
   void _openStaffAdminHub(BuildContext context, {required bool closeDrawer}) {
-    final nav = Navigator.of(context);
-    if (closeDrawer) nav.pop();
-    unawaited(
-      nav.push<void>(
-        MaterialPageRoute<void>(
-          builder: (_) => const StaffAdminHubScreen(),
+    if (_shouldCloseDrawer(closeDrawer)) {
+      Navigator.of(context).pop();
+    }
+    unawaited(_pushShellContentRoute(const StaffAdminHubScreen()));
+  }
+
+  void _pushShellRoute(BuildContext context, {required bool closeDrawer, required Widget screen}) {
+    if (_shouldCloseDrawer(closeDrawer)) {
+      Navigator.of(context).pop();
+    }
+    unawaited(_pushShellContentRoute(screen));
+  }
+
+  Widget _desktopSidebarLink({
+    required IconData icon,
+    required String label,
+    required VoidCallback onTap,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 2),
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: BorderRadius.circular(10),
+        child: InkWell(
+          onTap: onTap,
+          borderRadius: BorderRadius.circular(10),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+            child: Row(
+              children: [
+                Icon(icon, size: 22, color: Colors.white70),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    label,
+                    style: const TextStyle(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w500,
+                      color: Colors.white70,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
         ),
       ),
     );
+  }
+
+  Widget _desktopSidebarAdminExtras(BuildContext context) {
+    if (!_isShellAdmin()) return const SizedBox.shrink();
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+          child: Divider(color: Colors.white.withValues(alpha: 0.2), height: 1),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+          child: Text(
+            'More',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              letterSpacing: 0.6,
+              color: Colors.white.withValues(alpha: 0.45),
+            ),
+          ),
+        ),
+        if (_isShellQaStaff())
+          _desktopSidebarLink(
+            icon: Icons.my_location_rounded,
+            label: 'Campus check-in area',
+            onTap: () => _pushShellRoute(
+              context,
+              closeDrawer: false,
+              screen: const UpdateCampusLocationScreen(),
+            ),
+          ),
+        _desktopSidebarLink(
+          icon: Icons.history_edu_rounded,
+          label: 'Lecturer lessons',
+          onTap: () => _pushShellRoute(
+            context,
+            closeDrawer: false,
+            screen: const QaLessonActivityScreen(),
+          ),
+        ),
+        _desktopSidebarLink(
+          icon: Icons.place_rounded,
+          label: 'KIU administrator presence',
+          onTap: () => _pushShellRoute(
+            context,
+            closeDrawer: false,
+            screen: const CampusPresenceLogScreen(),
+          ),
+        ),
+      ],
+    );
+  }
+
+  List<Widget> _drawerAdminExtraTiles(BuildContext context) {
+    if (!_isShellAdmin()) return const [];
+    return [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(20, 8, 20, 4),
+        child: Text(
+          'More',
+          style: TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+            letterSpacing: 0.6,
+            color: Colors.white.withValues(alpha: 0.45),
+          ),
+        ),
+      ),
+      if (_isShellQaStaff())
+        ListTile(
+          leading: const Icon(Icons.my_location_rounded,
+              color: Colors.white70, size: 22),
+          title: const Text(
+            'Campus check-in area',
+            style: TextStyle(color: Colors.white70, fontWeight: FontWeight.w500),
+          ),
+          onTap: () => _pushShellRoute(
+            context,
+            closeDrawer: true,
+            screen: const UpdateCampusLocationScreen(),
+          ),
+        ),
+      ListTile(
+        leading: const Icon(Icons.history_edu_rounded,
+            color: Colors.white70, size: 22),
+        title: const Text(
+          'Lecturer lessons',
+          style: TextStyle(color: Colors.white70, fontWeight: FontWeight.w500),
+        ),
+        onTap: () => _pushShellRoute(
+          context,
+          closeDrawer: true,
+          screen: const QaLessonActivityScreen(),
+        ),
+      ),
+      ListTile(
+        leading:
+            const Icon(Icons.place_rounded, color: Colors.white70, size: 22),
+        title: const Text(
+          'KIU administrator presence',
+          style: TextStyle(color: Colors.white70, fontWeight: FontWeight.w500),
+        ),
+        onTap: () => _pushShellRoute(
+          context,
+          closeDrawer: true,
+          screen: const CampusPresenceLogScreen(),
+        ),
+      ),
+    ];
   }
 
   Widget _desktopNoticeBadge() {
@@ -382,6 +726,9 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
 
   bool _isShellAdmin() =>
       AuthRepository.instance.adminCheckDone && AuthRepository.instance.isAdmin;
+
+  bool _isShellQaStaff() =>
+      AuthRepository.instance.adminCheckDone && AuthRepository.instance.isQaStaff;
 
   bool _isShellLecturer() {
     final auth = AuthRepository.instance;
@@ -474,7 +821,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
           case UserRole.lecturer:
             return LecturerDashboardScreen(shellSection: section);
           case UserRole.kiuAdmin:
-            return const KiuAdminDashboardScreen();
+            return KiuAdminDashboardScreen(shellSection: section);
           case UserRole.student:
             return AttendanceScreen(shellSection: section);
         }
@@ -510,15 +857,66 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     );
   }
 
-  /// Only the visible tab is built so login does not mount every screen at once.
+  /// Lazily mounts tabs, then keeps them alive so switching back does not replay
+  /// heavy [initState] / loading work. Mobile uses a [PageView] for swipe; desktop
+  /// uses an [IndexedStack].
   Widget _buildSectionStack() {
     return ValueListenableBuilder<AppSection>(
       valueListenable: _currentSection,
       builder: (context, section, _) {
         final role = _resolvedRole();
-        return RepaintBoundary(
-          key: ValueKey('tab_${role.name}_${section.name}'),
-          child: _sectionWidget(section, role),
+        _ensureSectionCacheForRole(role);
+        final sections = _navSectionsForRole(role);
+        final index = sections.indexOf(section);
+        if (index < 0) {
+          return RepaintBoundary(
+            key: ValueKey('tab_${role.name}_${section.name}'),
+            child: _sectionWidget(section, role),
+          );
+        }
+
+        _builtSections.add(section);
+
+        if (!_isDesktop) {
+          _ensureMobileSectionPageController(sections);
+          final pageController = _mobileSectionPageController!;
+          return PageView.builder(
+            controller: pageController,
+            onPageChanged: (i) => _onMobileSectionPageChanged(i, sections),
+            itemCount: sections.length,
+            itemBuilder: (context, i) {
+              final s = sections[i];
+              if ((i - index).abs() <= 1) {
+                _builtSections.add(s);
+              }
+              return RepaintBoundary(
+                key: ValueKey('tab_${role.name}_${s.name}'),
+                child: _builtSections.contains(s)
+                    ? TickerMode(
+                        enabled: s == section,
+                        child: _sectionWidget(s, role),
+                      )
+                    : const SizedBox.expand(),
+              );
+            },
+          );
+        }
+
+        return IndexedStack(
+          index: index,
+          sizing: StackFit.expand,
+          children: [
+            for (final s in sections)
+              RepaintBoundary(
+                key: ValueKey('tab_${role.name}_${s.name}'),
+                child: _builtSections.contains(s)
+                    ? TickerMode(
+                        enabled: s == section,
+                        child: _sectionWidget(s, role),
+                      )
+                    : const SizedBox.expand(),
+              ),
+          ],
         );
       },
     );
@@ -528,6 +926,20 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     return Padding(
       padding: padding,
       child: _buildSectionStack(),
+    );
+  }
+
+  /// Keeps pushed sidebar screens inside the main pane so the sidebar stays visible
+  /// on desktop (and the mobile drawer can close without popping the whole shell).
+  Widget _buildShellContentNavigator({required EdgeInsets padding}) {
+    return Navigator(
+      key: _shellContentNavKey,
+      onGenerateRoute: (settings) {
+        return UPanelPageRoute<void>(
+          settings: settings,
+          builder: (_) => _buildMainPane(padding: padding),
+        );
+      },
     );
   }
 
@@ -622,6 +1034,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
                 );
               },
             ),
+            _desktopSidebarAdminExtras(context),
             if (_isShellAdmin()) ...[
               Padding(
                 padding:
@@ -864,37 +1277,25 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     required double radius,
     required double iconSize,
   }) {
-    final logoAsset = switch (defaultTargetPlatform) {
-      TargetPlatform.iOS || TargetPlatform.macOS => 'kiu/appstore.png',
-      _ => 'kiu/playstore.png',
-    };
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(radius),
-      child: SizedBox(
-        width: size,
-        height: size,
-        child: Image.asset(
-          logoAsset,
-          fit: BoxFit.cover,
-          errorBuilder: (_, __, ___) => Container(
-            color: AppTheme.accent,
-            alignment: Alignment.center,
-            child:
-                Icon(Icons.school_rounded, color: Colors.white, size: iconSize),
-          ),
-        ),
-      ),
+    return AppBrandLogo(
+      size: size,
+      borderRadius: radius,
+      fallbackIconSize: iconSize,
     );
+  }
+
+  bool _awaitingStaffRoleHydration() {
+    final auth = AuthRepository.instance;
+    if (!auth.isLoggedIn || auth.roleCheckDone) return false;
+    return auth.isSyntheticStaffAuthIdentity || auth.isStaffAuthIdentity;
   }
 
   @override
   Widget build(BuildContext context) {
-    return ListenableBuilder(
-      listenable: AuthRepository.instance,
-      builder: (context, _) {
-        return _buildShell(context);
-      },
-    );
+    if (_awaitingStaffRoleHydration()) {
+      return const WebAppLoadingScreen(message: 'Loading your account…');
+    }
+    return _buildShell(context);
   }
 
   Widget _shellStatusBanners({required bool mobile}) {
@@ -902,6 +1303,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        _authProfileLinkBanner(),
         _roleRulesBanner(),
         ListenableBuilder(
           listenable: AppConnectivity.instance,
@@ -913,29 +1315,78 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     );
   }
 
-  Widget _roleRulesBanner() {
-    if (!AuthRepository.instance.firestoreRoleCheckDenied) {
+  Widget _authProfileLinkBanner() {
+    final msg = AuthRepository.instance.authFormErrorMessage?.trim();
+    if (msg == null || msg.isEmpty || _authProfileBannerDismissed) {
       return const SizedBox.shrink();
     }
     return Material(
-      color: AppTheme.warning,
+      color: AppTheme.error,
       child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+        padding: const EdgeInsets.fromLTRB(16, 10, 6, 10),
         child: Row(
           children: [
-            const Icon(Icons.warning_amber_rounded, color: Colors.white, size: 22),
+            const Icon(Icons.error_outline_rounded, color: Colors.white, size: 22),
             const SizedBox(width: 10),
             Expanded(
               child: Text(
-                'Could not load your staff role from Firestore (permission denied). '
-                'Deploy firestore.rules to the upanel database, then restart the app. '
-                'Until then you may only see the student menu.',
+                msg,
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
                       color: Colors.white,
                       fontWeight: FontWeight.w600,
                       height: 1.35,
                     ),
               ),
+            ),
+            IconButton(
+              tooltip: 'Dismiss',
+              onPressed: () {
+                setState(() => _authProfileBannerDismissed = true);
+                AuthRepository.instance.clearAuthFormError();
+              },
+              icon: const Icon(Icons.close_rounded, size: 22),
+              color: Colors.white,
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _roleRulesBanner() {
+    if (!AuthRepository.instance.firestoreRoleCheckDenied ||
+        _roleRulesBannerDismissed) {
+      return const SizedBox.shrink();
+    }
+    return Material(
+      color: AppTheme.warning,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 10, 6, 10),
+        child: Row(
+          children: [
+            const Icon(Icons.warning_amber_rounded, color: Colors.white, size: 22),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text(
+                UserFacingErrors.staffRoleLoadFailed,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w600,
+                      height: 1.35,
+                    ),
+              ),
+            ),
+            IconButton(
+              tooltip: 'Dismiss',
+              onPressed: () => setState(() => _roleRulesBannerDismissed = true),
+              icon: const Icon(Icons.close_rounded, size: 22),
+              color: Colors.white,
+              visualDensity: VisualDensity.compact,
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
             ),
           ],
         ),
@@ -962,7 +1413,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
                       children: [
                         _buildTopBar(),
                         Expanded(
-                          child: _buildMainPane(
+                          child: _buildShellContentNavigator(
                             padding: const EdgeInsets.all(24),
                           ),
                         ),
@@ -982,15 +1433,16 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
                     ),
                   ),
                   backgroundColor: AppTheme.primary,
-                  actions: const [
-                    ShellRefreshButton(iconColor: Colors.white),
+                  actions: [
+                    if (showToolbarRefreshButtons(context))
+                      const ShellRefreshButton(iconColor: Colors.white),
                   ],
                 ),
                 drawer: Drawer(
                   backgroundColor: AppTheme.primary,
                   child: SafeArea(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                    child: ListView(
+                      padding: EdgeInsets.zero,
                       children: [
                         const SizedBox(height: 24),
                         Padding(
@@ -1015,6 +1467,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
                           valueListenable: _currentSection,
                           builder: (context, current, _) {
                             return Column(
+                              mainAxisSize: MainAxisSize.min,
                               crossAxisAlignment: CrossAxisAlignment.stretch,
                               children: _navSections().map((s) {
                                 final selected = current == s;
@@ -1058,6 +1511,8 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
                         ),
                         if (_isShellAdmin()) ...[
                           const Divider(color: Colors.white24, height: 1),
+                          ..._drawerAdminExtraTiles(context),
+                          const Divider(color: Colors.white24, height: 1),
                           ListTile(
                             leading: const Icon(Icons.groups_rounded,
                                 color: Colors.white70, size: 22),
@@ -1079,6 +1534,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
                                 closeDrawer: true),
                           ),
                         ],
+                        const SizedBox(height: 8),
                       ],
                     ),
                   ),
@@ -1087,7 +1543,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     Expanded(
-                      child: _buildMainPane(
+                      child: _buildShellContentNavigator(
                         padding: const EdgeInsets.all(16),
                       ),
                     ),

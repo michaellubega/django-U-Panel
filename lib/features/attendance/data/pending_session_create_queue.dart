@@ -141,7 +141,7 @@ class PendingSessionCreateQueue {
     await saveAll(all);
     notifyPendingWorkEnqueued();
     if (AppConnectivity.instance.hasNetworkInterface) {
-      await PendingSessionCreateSync.drainUrgent();
+      unawaited(PendingSessionCreateSync.drainUrgent());
     }
   }
 

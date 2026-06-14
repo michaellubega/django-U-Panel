@@ -12,8 +12,8 @@ import 'pending_session_create_queue.dart';
 /// pending list creates, pending check-ins, pending session creates, pending session
 /// codes (+ side effects). Hive attendance snapshots are rewritten by the caller.
 /// Firestore child docs and server-only rows ([attendance_records],
-/// [check_in_attempts]) are removed by [AttendanceRepository.removeList] and
-/// `onAttendanceListDeleted`.
+/// [check_in_attempts], [device_session_locks]) are removed by
+/// [AttendanceRepository.removeList] and `onAttendanceListDeleted`.
 class AttendanceListPurge {
   AttendanceListPurge._();
 

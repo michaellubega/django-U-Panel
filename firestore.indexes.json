@@ -261,6 +261,20 @@
       "fields": [
         { "fieldPath": "capturedAt", "order": "DESCENDING" }
       ]
+    },
+    {
+      "collectionGroup": "student_registrations",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "uid", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "student_registrations",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "email", "order": "ASCENDING" }
+      ]
     }
   ],
   "fieldOverrides": []

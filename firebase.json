@@ -2,6 +2,9 @@
   "functions": {
     "source": "functions"
   },
+  "database": {
+    "rules": "database.rules.json"
+  },
   "firestore": [
     {
       "database": "upanel",
@@ -15,8 +18,38 @@
   "hosting": {
     "target": "live",
     "public": "build/web",
-    "ignore": ["firebase.json", "**/node_modules/**"],
+    "ignore": [
+      "firebase.json",
+      "**/node_modules/**"
+    ],
     "headers": [
+      {
+        "source": "**/*.js",
+        "headers": [
+          {
+            "key": "Content-Type",
+            "value": "application/javascript; charset=utf-8"
+          }
+        ]
+      },
+      {
+        "source": "**/*.wasm",
+        "headers": [
+          {
+            "key": "Content-Type",
+            "value": "application/wasm"
+          }
+        ]
+      },
+      {
+        "source": "**/*.json",
+        "headers": [
+          {
+            "key": "Content-Type",
+            "value": "application/json; charset=utf-8"
+          }
+        ]
+      },
       {
         "source": "/.well-known/assetlinks.json",
         "headers": [
@@ -45,11 +78,20 @@
         ]
       },
       {
+        "source": "/flutter_service_worker.js",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache"
+          }
+        ]
+      },
+      {
         "source": "/main.dart.js",
         "headers": [
           {
             "key": "Cache-Control",
-            "value": "public, max-age=86400"
+            "value": "no-cache"
           }
         ]
       },
@@ -58,7 +100,34 @@
         "headers": [
           {
             "key": "Cache-Control",
-            "value": "public, max-age=86400"
+            "value": "no-cache"
+          }
+        ]
+      },
+      {
+        "source": "/manifest.json",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache"
+          }
+        ]
+      },
+      {
+        "source": "/android_web_gate.js",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache"
+          }
+        ]
+      },
+      {
+        "source": "/upanel_brand.js",
+        "headers": [
+          {
+            "key": "Cache-Control",
+            "value": "no-cache"
           }
         ]
       },

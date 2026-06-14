@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:geolocator/geolocator.dart';
+import '../../core/constants/app_constants.dart';
 import '../../core/auth/auth_repository.dart';
 import '../../core/auth/student_registration_number.dart';
 import '../../core/auth/user_role.dart';
@@ -10,6 +12,7 @@ import '../../core/firebase/u_panel_firestore.dart';
 import '../../core/connectivity/app_connectivity.dart';
 import '../../core/device/device_identity.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/util/debounced_callback.dart';
 import '../../core/widgets/content_skeleton.dart';
 import '../../core/location/location_permission.dart';
 import '../../core/location/location_resolving_panel.dart';
@@ -21,15 +24,20 @@ import 'attendance_list_hierarchy.dart';
 import 'check_in_outcome.dart';
 import 'check_in_rejection.dart';
 import 'data/attendance_repository.dart';
+import 'data/attendance_remote_record_watch.dart';
+import 'data/attendance_rtd_record_watch.dart';
 import 'data/attendance_offline_sync.dart';
+import 'student_attendance_live_sync.dart';
 import 'data/pending_session_code_claim_upload.dart';
 import 'data/pending_session_code_queue.dart';
+import 'live_session_check_in_meter.dart';
 import 'pending_sessions_screen.dart';
 import 'student_check_in_progress_screen.dart';
 import 'offline_queue_location_screen.dart';
 import 'unknown_session_code_confirm.dart';
 import 'attendance_list_title.dart';
 import 'qa_program_session_ui.dart';
+import '../../core/navigation/app_navigator.dart';
 import '../../core/navigation/app_section.dart';
 import '../../core/navigation/screen_refresh.dart';
 
@@ -67,14 +75,29 @@ bool attendanceListAllowsMaintenance(AttendanceList list) {
   return false;
 }
 
-/// Sign-in flows: cap Firestore wait so offline / flaky Wi‑Fi still reaches queue paths.
+/// Sign-in flows: warm local cache quickly; avoid blocking on full [loadAll].
 Future<void> _loadAttendanceStoreForSignIn({bool? onlineHint}) async {
   final online = onlineHint ??
       AppConnectivity.instance.isOnline ||
       AppConnectivity.instance.hasNetworkInterface;
-  final d = online ? const Duration(seconds: 8) : const Duration(seconds: 10);
   try {
-    await AttendanceRepository.instance.loadAll().timeout(d);
+    await AttendanceRepository.instance.warmFromLocalSnapshot();
+    if (AttendanceRepository.instance.hasCachedStore) {
+      if (online) {
+        unawaited(AttendanceRepository.instance.bootstrapLoadIfNeeded());
+        unawaited(AttendanceOfflineSync.drainSessionValidationFirst());
+      }
+      return;
+    }
+    if (AttendanceRepository.isStudentScopedUser()) {
+      await AttendanceRepository.instance
+          .loadStudentAttendanceForProfile(force: false)
+          .timeout(online ? const Duration(seconds: 2) : const Duration(seconds: 4));
+      return;
+    }
+    await AttendanceRepository.instance
+        .loadAttendanceListsFirst(force: false)
+        .timeout(online ? const Duration(seconds: 2) : const Duration(seconds: 4));
   } catch (_) {}
 }
 
@@ -161,7 +184,13 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
         setState(() {});
       }),
     );
-    unawaited(_load());
+    unawaited(StudentAttendanceLiveSync.activate());
+    // AppShell bootstraps warm/load — only fetch here when the store is still empty.
+    if (_loading &&
+        !AttendanceRepository.instance.hasCachedStore &&
+        !AttendanceRepository.instance.isLoaded) {
+      unawaited(_load());
+    }
   }
 
   @override
@@ -175,7 +204,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     if (!mounted) return;
     final wasLoading = _loading;
     _syncLoadingFromStore();
-    if (wasLoading != _loading) {
+    final studentLive = AttendanceRepository.isStudentRecordWatchUser();
+    if (wasLoading != _loading || studentLive) {
       setState(() {});
     }
     final auth = AuthRepository.instance;
@@ -207,7 +237,27 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
 
   Future<void> _load({bool force = false, bool listsOnly = false}) async {
     final repo = AttendanceRepository.instance;
+    await repo.warmFromLocalSnapshot();
     final blocking = !repo.isLoaded && !repo.hasCachedStore;
+    if (mounted) {
+      _syncLoadingFromStore();
+      setState(() {
+        if (blocking) {
+          _loading = true;
+          _loadError = null;
+        } else {
+          _loading = false;
+        }
+      });
+    }
+
+    if (!force && repo.hasCachedStore) {
+      unawaited(
+        repo.syncFromRemoteIfNeeded(force: false).catchError((_) {}),
+      );
+      return;
+    }
+
     if (blocking) {
       setState(() {
         _loading = true;
@@ -215,57 +265,14 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
       });
     }
     try {
-      if (!force) {
-        await repo.warmFromLocalSnapshot();
-        if (mounted) {
-          _syncLoadingFromStore();
-          if (!_loading) setState(() {});
-        }
-        if (!repo.isLoaded && AppConnectivity.instance.isOnline) {
-          try {
-            await repo
-                .loadAttendanceListsFirst()
-                .timeout(const Duration(seconds: 8));
-          } catch (_) {}
-          if (mounted) {
-            _syncLoadingFromStore();
-            if (!_loading) setState(() {});
-          }
-        }
-      }
-
       await _waitForAuthRoleHydration();
-      final auth = AuthRepository.instance;
-      final student =
-          auth.roleCheckDone && auth.resolvedRole == UserRole.student;
-      final scope = AttendanceRepository.currentLecturerLoadScopeUid();
       final timeout = force ? _refreshTimeout : _loadTimeout;
-      if (student && !force) {
-        await repo
-            .loadStudentAttendanceForProfile(force: false)
-            .timeout(
-          timeout,
-          onTimeout: () {
-            throw TimeoutException('Load timed out', timeout);
-          },
-        );
-      } else {
-        // Lecturer/QA hub only needs list metadata on first open; full store
-        // enriches in the background for session cards and roll views.
-        final hubListsOnly = !student && (listsOnly || !force);
-        await repo
-            .loadAll(
-              force: force,
-              listsOnly: hubListsOnly,
-              scopeToLecturerUid: scope,
-            )
-            .timeout(
-          timeout,
-          onTimeout: () {
-            throw TimeoutException('Load timed out', timeout);
-          },
-        );
-      }
+      await repo.syncFromRemoteIfNeeded(force: force).timeout(
+        timeout,
+        onTimeout: () {
+          throw TimeoutException('Load timed out', timeout);
+        },
+      );
       if (mounted) {
         setState(() {
           _loading = false;
@@ -378,15 +385,36 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     bool isStudent, {
     required Future<void> Function() onRefresh,
   }) {
-    final title = isStudent ? 'Sign in' : 'Attendance';
-    final subtitle = isStudent
-        ? 'Enter your registration number and the class join code ($kSessionJoinCodeFormatHint).'
-        : 'Create lists · Start sessions · Students sign in with their account, then session code to check in';
-    final refreshButton = IconButton(
-      tooltip: 'Refresh',
-      onPressed: () => unawaited(onRefresh()),
-      icon: const Icon(Icons.refresh_rounded),
+    final refreshButton = RefreshIconButton(
+      onRefresh: onRefresh,
+      iconColor: Theme.of(context).colorScheme.primary,
     );
+
+    if (!isStudent) {
+      final isDesktop =
+          MediaQuery.sizeOf(context).width >= AppConstants.desktopBreakpoint;
+      if (!isDesktop) {
+        return const SizedBox.shrink();
+      }
+      return Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Expanded(
+            child: Text(
+              'Attendance',
+              style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.w800,
+                  ),
+            ),
+          ),
+          refreshButton,
+        ],
+      );
+    }
+
+    final title = 'Sign in';
+    final subtitle =
+        'Enter your registration number and the class join code ($kSessionJoinCodeFormatHint).';
 
     if (narrow) {
       return Column(
@@ -870,13 +898,30 @@ class _AttendanceListSummaryCard extends StatelessWidget {
 
 /// Full-page view: programs for one class day (Day / Evening; Weekend on Sat–Sun only).
 class AttendanceDayProgramsScreen extends StatelessWidget {
-  const AttendanceDayProgramsScreen({super.key, required this.weekday});
+  const AttendanceDayProgramsScreen({
+    super.key,
+    required this.weekday,
+    this.scopedLists,
+    this.hubTitle,
+  });
 
   final int weekday;
 
+  /// When set, only these lists are shown (e.g. present/absent today filter).
+  final Iterable<AttendanceList>? scopedLists;
+  final String? hubTitle;
+
+  List<AttendanceList> get _allLists {
+    if (scopedLists != null) {
+      return filterListsForHierarchy(scopedLists!).toList()
+        ..sort(compareAttendanceListsNewestFirst);
+    }
+    return attendanceListsForCurrentStaff();
+  }
+
   @override
   Widget build(BuildContext context) {
-    final allLists = attendanceListsForCurrentStaff();
+    final allLists = _allLists;
     final programs = programsWithListsForWeekday(allLists, weekday);
     final dayLabel = weekdayFullLabel(weekday);
     final total = listCountOnWeekday(allLists, weekday);
@@ -890,7 +935,7 @@ class AttendanceDayProgramsScreen extends StatelessWidget {
           onPressed: () => Navigator.of(context).pop(),
           tooltip: 'Back',
         ),
-        title: Text(dayLabel),
+        title: Text(hubTitle == null ? dayLabel : '$dayLabel · $hubTitle'),
         flexibleSpace: Container(
           decoration: BoxDecoration(
             gradient: LinearGradient(
@@ -943,6 +988,8 @@ class AttendanceDayProgramsScreen extends StatelessWidget {
                       builder: (ctx) => AttendanceProgramListsScreen(
                         weekday: weekday,
                         program: program,
+                        scopedLists: scopedLists,
+                        hubTitle: hubTitle,
                       ),
                     ),
                   );
@@ -961,10 +1008,14 @@ class AttendanceProgramListsScreen extends StatefulWidget {
     super.key,
     required this.weekday,
     required this.program,
+    this.scopedLists,
+    this.hubTitle,
   });
 
   final int weekday;
   final AttendanceProgram program;
+  final Iterable<AttendanceList>? scopedLists;
+  final String? hubTitle;
 
   @override
   State<AttendanceProgramListsScreen> createState() =>
@@ -973,6 +1024,13 @@ class AttendanceProgramListsScreen extends StatefulWidget {
 
 class _AttendanceProgramListsScreenState
     extends State<AttendanceProgramListsScreen> {
+  late final DebouncedCallback _repoRebuild = DebouncedCallback(
+    delay: const Duration(milliseconds: 180),
+    callback: () {
+      if (mounted) setState(() {});
+    },
+  );
+
   @override
   void initState() {
     super.initState();
@@ -983,36 +1041,53 @@ class _AttendanceProgramListsScreenState
   @override
   void dispose() {
     AttendanceRepository.instance.removeListener(_onRepo);
+    _repoRebuild.dispose();
     super.dispose();
   }
 
   void _onRepo() {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    _repoRebuild.schedule();
   }
 
   List<AttendanceList> _listsForScreen() {
+    final source = widget.scopedLists != null
+        ? filterListsForHierarchy(widget.scopedLists!)
+        : attendanceListsForCurrentStaff();
     return listsForWeekdayAndProgram(
-      attendanceListsForCurrentStaff(),
+      source,
       widget.weekday,
       widget.program,
     );
   }
 
   void _prefetchListDetails() {
-    AttendanceRepository.instance.prefetchListAttendanceData(
-      _listsForScreen().map((l) => l.id),
+    final lists = [..._listsForScreen()];
+    lists.sort((a, b) {
+      int score(AttendanceList l) {
+        var s = 0;
+        if (l.status == AttendanceListStatus.active) s += 100;
+        if (AttendanceStore.sessions.any(
+          (session) => session.listId == l.id && session.isActive,
+        )) {
+          s += 200;
+        }
+        return s;
+      }
+
+      return score(b).compareTo(score(a));
+    });
+    AttendanceRepository.instance.prefetchListAttendanceDataBatch(
+      lists.map((l) => l.id),
     );
   }
 
   Future<void> _reloadVisibleLists() async {
     final lists = _listsForScreen();
-    await Future.wait([
-      for (final list in lists)
-        AttendanceRepository.instance.loadListAttendanceData(
-          list.id,
-          force: true,
-        ),
-    ]);
+    await AttendanceRepository.instance.loadListAttendanceDataBatch(
+      lists.map((l) => l.id),
+      force: true,
+    );
     if (mounted) setState(() {});
   }
   Future<void> _openEditScreen(BuildContext context, String listId) async {
@@ -1031,12 +1106,11 @@ class _AttendanceProgramListsScreenState
         .toList()
       ..sort((a, b) => b.startTime.compareTo(a.startTime));
     final resume = activeSessions.isNotEmpty ? activeSessions.first : null;
-    await Navigator.of(context).push<bool>(
-      MaterialPageRoute(
-        builder: (context) => StartSessionScreen(
-          list: list,
-          resumeSession: resume,
-        ),
+    await pushAppPage<bool>(
+      context,
+      StartSessionScreen(
+        list: list,
+        resumeSession: resume,
       ),
     );
     if (mounted) setState(() {});
@@ -1086,7 +1160,7 @@ class _AttendanceProgramListsScreenState
     bool narrow,
   ) {
     final repo = AttendanceRepository.instance;
-    final detailLoading = !repo.listDetailReady(list.id);
+    final detailLoading = repo.listDetailShowsSkeleton(list.id);
     final listSessions = AttendanceStore.sessionsForListNewestFirst(list.id);
     final rosterCount =
         AttendanceStore.studentIdsSignedIntoList(list.id).length;
@@ -1140,7 +1214,11 @@ class _AttendanceProgramListsScreenState
           onPressed: () => Navigator.of(context).pop(),
           tooltip: 'Back',
         ),
-        title: Text('$dayLabel · ${widget.program.label}'),
+        title: Text(
+          widget.hubTitle == null
+              ? '$dayLabel · ${widget.program.label}'
+              : '$dayLabel · ${widget.program.label} · ${widget.hubTitle}',
+        ),
         flexibleSpace: Container(
           decoration: BoxDecoration(
             gradient: LinearGradient(
@@ -1258,6 +1336,10 @@ class _AttendanceListsContentState extends State<_AttendanceListsContent> {
                 onPressed: _openCreateScreen,
                 icon: const Icon(Icons.add_rounded, size: 20),
                 label: const Text('Create attendance list'),
+                style: FilledButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.symmetric(vertical: 10),
+                ),
               ),
             )
           else
@@ -1265,79 +1347,30 @@ class _AttendanceListsContentState extends State<_AttendanceListsContent> {
               onPressed: _openCreateScreen,
               icon: const Icon(Icons.add_rounded, size: 20),
               label: const Text('Create attendance list'),
-            ),
-          const SizedBox(height: 22),
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.fromLTRB(18, 18, 18, 16),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(18),
-              gradient: LinearGradient(
-                begin: Alignment.topLeft,
-                end: Alignment.bottomRight,
-                colors: [
-                  AppTheme.background,
-                  AppTheme.accentLight.withValues(alpha: 0.35),
-                ],
-              ),
-              border: Border.all(
-                color: AppTheme.primary.withValues(alpha: 0.12),
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: AppTheme.primary.withValues(alpha: 0.06),
-                  blurRadius: 20,
-                  offset: const Offset(0, 8),
+              style: FilledButton.styleFrom(
+                visualDensity: VisualDensity.compact,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 10,
                 ),
-              ],
+              ),
             ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.all(10),
-                      decoration: BoxDecoration(
-                        color: AppTheme.primary.withValues(alpha: 0.12),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: const Icon(
-                        Icons.layers_rounded,
-                        color: AppTheme.primary,
-                        size: 22,
-                      ),
-                    ),
-                    const SizedBox(width: 14),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            'Class days',
-                            style: theme.textTheme.titleLarge?.copyWith(
-                              fontWeight: FontWeight.w800,
-                              letterSpacing: -0.3,
-                              color: AppTheme.textPrimary,
-                            ),
-                          ),
-                          const SizedBox(height: 4),
-                          Text(
-                            'Monday through Sunday — pick a day, then Day, Evening, or Weekend program (weekend only Sat–Sun).',
-                            style: theme.textTheme.bodySmall?.copyWith(
-                              color: AppTheme.textSecondary,
-                              height: 1.4,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ],
+          const SizedBox(height: 10),
+          Text(
+            'Class days',
+            style: theme.textTheme.titleSmall?.copyWith(
+              fontWeight: FontWeight.w700,
             ),
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 2),
+          Text(
+            'Pick a day, then program — weekend only Sat–Sun.',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: AppTheme.textSecondary,
+              height: 1.3,
+            ),
+          ),
+          const SizedBox(height: 10),
           if (attendanceLists.isEmpty)
             Padding(
               padding: const EdgeInsets.only(top: 4, bottom: 8),
@@ -1386,6 +1419,13 @@ class AttendanceListSessionsScreen extends StatefulWidget {
 
 class _AttendanceListSessionsScreenState
     extends State<AttendanceListSessionsScreen> {
+  late final DebouncedCallback _repoRebuild = DebouncedCallback(
+    delay: const Duration(milliseconds: 180),
+    callback: () {
+      if (mounted) setState(() {});
+    },
+  );
+
   @override
   void initState() {
     super.initState();
@@ -1396,14 +1436,28 @@ class _AttendanceListSessionsScreenState
   @override
   void dispose() {
     AttendanceRepository.instance.removeListener(_onRepo);
+    _repoRebuild.dispose();
     super.dispose();
   }
 
   void _onRepo() {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    _repoRebuild.schedule();
   }
 
   Future<void> _reload({bool force = false}) async {
+    await AttendanceRepository.instance.warmFromLocalSnapshot();
+    if (mounted) setState(() {});
+    if (!force && AttendanceRepository.instance.hasLocalListData(widget.list.id)) {
+      unawaited(
+        AttendanceRepository.instance
+            .loadListAttendanceData(widget.list.id, force: false)
+            .then((_) {
+          if (mounted) setState(() {});
+        }),
+      );
+      return;
+    }
     await AttendanceRepository.instance.loadListAttendanceData(
       widget.list.id,
       force: force,
@@ -1414,7 +1468,7 @@ class _AttendanceListSessionsScreenState
   @override
   Widget build(BuildContext context) {
     final repo = AttendanceRepository.instance;
-    final detailLoading = !repo.listDetailReady(widget.list.id);
+    final detailLoading = repo.listDetailShowsSkeleton(widget.list.id);
     final sessions = AttendanceStore.sessionsForListNewestFirst(widget.list.id);
     return Scaffold(
       appBar: AppBar(
@@ -1604,6 +1658,11 @@ class _StartSessionScreenState extends State<StartSessionScreen> {
         _prefillCreatedByFromName(AuthRepository.instance.currentFullName);
       }
       WidgetsBinding.instance.addPostFrameCallback((_) {
+        unawaited(
+          AttendanceRepository.instance.prewarmFirestoreForSessionCreate(
+            widget.list.id,
+          ),
+        );
         if (!_remoteLearning) {
           unawaited(_getLocation());
         }
@@ -1815,7 +1874,7 @@ class _StartSessionScreenState extends State<StartSessionScreen> {
         _startedSession = session;
       });
       if (created.publishingInBackground) {
-        // Join code is shown immediately; students connect as publish completes.
+        // Join code shown immediately; banner flips to Live when upload completes.
       } else if (!created.syncedToServer) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -2054,6 +2113,12 @@ class _SessionCodeDisplayState extends State<_SessionCodeDisplay>
   bool _closing = false;
   bool _autoEndPending = false;
   bool _publishingToServer = false;
+  String _countdownLabel = '';
+  RollPendingContext _rollPending = const RollPendingContext.empty();
+  late final DebouncedCallback _pendingReload = DebouncedCallback(
+    delay: const Duration(milliseconds: 60),
+    callback: () => unawaited(_reloadRollPending()),
+  );
 
   /// Prefer store copy so countdown stays correct after [loadAll] / sync.
   AttendanceSession get _session =>
@@ -2074,6 +2139,20 @@ class _SessionCodeDisplayState extends State<_SessionCodeDisplay>
     });
   }
 
+  void _syncCountdownLabel() {
+    final session = _session;
+    final remaining = session.endTime.difference(DateTime.now());
+    final minsLeft = remaining.isNegative ? 0 : remaining.inMinutes;
+    final secsPart =
+        remaining.isNegative ? 0 : remaining.inSeconds.remainder(60);
+    final label = remaining.isNegative
+        ? 'Session ended'
+        : '${minsLeft}m ${secsPart.toString().padLeft(2, '0')}s left';
+    if (label != _countdownLabel && mounted) {
+      setState(() => _countdownLabel = label);
+    }
+  }
+
   Future<void> _refreshPublishState() async {
     final publishing = await AttendanceRepository.instance
         .isSessionAwaitingServerPublish(_session.id);
@@ -2083,28 +2162,58 @@ class _SessionCodeDisplayState extends State<_SessionCodeDisplay>
     }
   }
 
+  void _onRepo() {
+    if (mounted) setState(() {});
+    _pendingReload.schedule();
+  }
+
+  Future<void> _reloadRollPending() async {
+    final pending = await RollPendingContext.load();
+    if (!mounted) return;
+    setState(() => _rollPending = pending);
+  }
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    AttendanceRepository.instance.addListener(_onRepo);
+    AttendanceRepository.instance
+        .touchRecentListDetail(widget.list.id);
+    unawaited(
+      AttendanceRemoteRecordWatch.instance
+          .watchActiveSessionRecords(widget.session.id),
+    );
+    unawaited(
+      AttendanceRtdRecordWatch.instance
+          .watchActiveSessionRecords(widget.session.id),
+    );
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _maybeAutoEndExpired();
       _scheduleExpiryAutoClose();
+      _syncCountdownLabel();
       unawaited(_refreshPublishState());
+      unawaited(_reloadRollPending());
     });
     _ticker = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted) return;
       _maybeAutoEndExpired();
-      unawaited(_refreshPublishState());
-      setState(() {});
+      _syncCountdownLabel();
+      if (_publishingToServer) {
+        unawaited(_refreshPublishState());
+      }
     });
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    AttendanceRepository.instance.removeListener(_onRepo);
+    _pendingReload.dispose();
     _ticker?.cancel();
     _expiryTimer?.cancel();
+    unawaited(AttendanceRemoteRecordWatch.instance.clearActiveSessionWatch());
+    unawaited(AttendanceRtdRecordWatch.instance.clearActiveSessionWatch());
     super.dispose();
   }
 
@@ -2199,11 +2308,10 @@ class _SessionCodeDisplayState extends State<_SessionCodeDisplay>
   @override
   Widget build(BuildContext context) {
     final session = _session;
-    final remaining = session.endTime.difference(DateTime.now());
-    final minsLeft = remaining.isNegative ? 0 : remaining.inMinutes;
-    final secsPart =
-        remaining.isNegative ? 0 : remaining.inSeconds.remainder(60);
     final expired = session.isExpired;
+    if (_countdownLabel.isEmpty) {
+      _syncCountdownLabel();
+    }
 
     final theme = Theme.of(context);
     return Scaffold(
@@ -2398,9 +2506,11 @@ class _SessionCodeDisplayState extends State<_SessionCodeDisplay>
                   const SizedBox(width: 12),
                   Expanded(
                     child: Text(
-                      minsLeft > 0
-                          ? 'Time left: $minsLeft min ${secsPart.toString().padLeft(2, '0')} sec'
-                          : 'Ending soon (${secsPart.toString().padLeft(2, '0')}s)',
+                      _countdownLabel.isEmpty
+                          ? '…'
+                          : (_countdownLabel == 'Session ended'
+                              ? 'Session ended'
+                              : 'Time left: $_countdownLabel'),
                       style: theme.textTheme.bodyMedium?.copyWith(
                         fontWeight: FontWeight.w600,
                       ),
@@ -2465,17 +2575,12 @@ class _SessionCodeDisplayState extends State<_SessionCodeDisplay>
             else
               const SizedBox.shrink(),
             const SizedBox(height: 14),
-            Builder(
-              builder: (context) {
-                final recs = AttendanceStore.recordsForSession(session.id);
-                final present = recs.where((r) => r.present).length;
-                final absent = recs.where((r) => !r.present).length;
-                return Text(
-                  '$present present · $absent absent · ${recs.length} roll row(s)',
-                  textAlign: TextAlign.center,
-                  style: Theme.of(context).textTheme.titleSmall,
-                );
-              },
+            LiveSessionCheckInMeter(
+              snapshot: liveSessionCheckInSnapshot(
+                session: session,
+                list: widget.list,
+                pending: _rollPending,
+              ),
             ),
             const SizedBox(height: 18),
             FilledButton.icon(
@@ -2511,83 +2616,26 @@ class _SessionCodeDisplayState extends State<_SessionCodeDisplay>
   }
 }
 
-/// Full session roll: roster + present/absent rows (after session is saved).
-class SessionCheckInsScreen extends StatefulWidget {
-  const SessionCheckInsScreen({
-    super.key,
-    required this.list,
+/// Memoized roll matrix for [SessionCheckInsScreen] — avoids recomputing on every frame.
+class _ConsolidatedRollModel {
+  _ConsolidatedRollModel({
+    required this.listSessions,
+    required this.rollKeys,
+    required this.studentIdsByKey,
+    required this.rollRowsByKey,
+    required this.studentsById,
   });
-  final AttendanceList list;
 
-  @override
-  State<SessionCheckInsScreen> createState() => _SessionCheckInsScreenState();
-}
+  final List<AttendanceSession> listSessions;
+  final List<String> rollKeys;
+  final Map<String, List<String>> studentIdsByKey;
+  final Map<String, List<AttendanceRecord>> rollRowsByKey;
+  final Map<String, StudentRecord> studentsById;
 
-class _SessionCheckInsScreenState extends State<SessionCheckInsScreen>
-    with WidgetsBindingObserver {
-  RollPendingContext _rollPending = const RollPendingContext.empty();
-
-  Future<void> _reloadListDetail({bool force = false}) async {
-    _rollPending = await RollPendingContext.load();
-    await AttendanceRepository.instance.loadListAttendanceData(
-      widget.list.id,
-      force: force,
-    );
-    if (mounted) setState(() {});
-  }
-
-  Future<void> _refresh() => _reloadListDetail(force: true);
-
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addObserver(this);
-    AppConnectivity.instance.addListener(_onConnectivity);
-    AttendanceRepository.instance.addListener(_onRepo);
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      unawaited(_reloadListDetail());
-    });
-  }
-
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    AppConnectivity.instance.removeListener(_onConnectivity);
-    AttendanceRepository.instance.removeListener(_onRepo);
-    super.dispose();
-  }
-
-  void _onRepo() {
-    if (mounted) setState(() {});
-  }
-
-  void _onConnectivity() {
-    if (!AppConnectivity.instance.isOnline) return;
-    unawaited(
-      AttendanceOfflineSync.drainSessionValidationFirst().then((_) {
-        if (mounted) setState(() {});
-      }),
-    );
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) {
-      unawaited(_refresh());
-    }
-  }
-
-  String _fmtDate(DateTime d) =>
-      '${d.day.toString().padLeft(2, '0')}/${d.month.toString().padLeft(2, '0')}/${d.year}';
-
-  @override
-  Widget build(BuildContext context) {
-    final repo = AttendanceRepository.instance;
-    final detailLoading = !repo.listDetailReady(widget.list.id);
-    final studentsById =
-        AttendanceStore.rosterStudentMapForList(widget.list.id);
+  static _ConsolidatedRollModel build(String listId) {
+    final studentsById = AttendanceStore.rosterStudentMapForList(listId);
     final listSessions = AttendanceStore.sessions
-        .where((s) => s.listId == widget.list.id)
+        .where((s) => s.listId == listId)
         .toList()
       ..sort((a, b) => b.startTime.compareTo(a.startTime));
     final listSessionIds = listSessions.map((s) => s.id).toSet();
@@ -2596,7 +2644,7 @@ class _SessionCheckInsScreenState extends State<SessionCheckInsScreen>
         .toList()
       ..sort((a, b) => b.timestamp.compareTo(a.timestamp));
     final studentIds = <String>{
-      ...AttendanceStore.studentIdsSignedIntoList(widget.list.id),
+      ...AttendanceStore.studentIdsSignedIntoList(listId),
       ...listRecords.map((r) => r.studentId),
     };
     final studentIdsByKey = <String, List<String>>{};
@@ -2626,15 +2674,170 @@ class _SessionCheckInsScreenState extends State<SessionCheckInsScreen>
             .toLowerCase()
             .compareTo((studentsById[bSid]?.name ?? 'Unknown').toLowerCase());
       });
+    return _ConsolidatedRollModel(
+      listSessions: listSessions,
+      rollKeys: rollKeys,
+      studentIdsByKey: studentIdsByKey,
+      rollRowsByKey: rollRowsByKey,
+      studentsById: studentsById,
+    );
+  }
+}
+
+/// Full session roll: roster + present/absent rows (after session is saved).
+class SessionCheckInsScreen extends StatefulWidget {
+  const SessionCheckInsScreen({
+    super.key,
+    required this.list,
+  });
+  final AttendanceList list;
+
+  @override
+  State<SessionCheckInsScreen> createState() => _SessionCheckInsScreenState();
+}
+
+class _SessionCheckInsScreenState extends State<SessionCheckInsScreen>
+    with WidgetsBindingObserver {
+  RollPendingContext _rollPending = const RollPendingContext.empty();
+  _ConsolidatedRollModel? _rollModel;
+  int _rollModelRecords = -1;
+  int _rollModelSessions = -1;
+  int _rollModelSignIns = -1;
+  late final DebouncedCallback _repoRebuild = DebouncedCallback(
+    delay: const Duration(milliseconds: 180),
+    callback: () {
+      unawaited(_reloadRollPendingContext());
+    },
+  );
+
+  Future<void> _reloadRollPendingContext() async {
+    _rollPending = await RollPendingContext.load();
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _reloadListDetail({bool force = false}) async {
+    _rollPending = await RollPendingContext.load();
+    await AttendanceRepository.instance.warmFromLocalSnapshot();
+    if (mounted) setState(() {});
+    if (!force &&
+        AttendanceRepository.instance.hasLocalListData(widget.list.id)) {
+      unawaited(
+        AttendanceRepository.instance
+            .loadListAttendanceData(widget.list.id, force: false)
+            .then((_) {
+          if (mounted) setState(() {});
+        }),
+      );
+      return;
+    }
+    await AttendanceRepository.instance.loadListAttendanceData(
+      widget.list.id,
+      force: force,
+    );
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _refresh() => _reloadListDetail(
+        force: AttendanceRepository.instance.listDetailIsStale(widget.list.id),
+      );
+
+  _ConsolidatedRollModel _rollModelForList() {
+    final listId = widget.list.id;
+    final records = AttendanceStore.recordCountForList(listId);
+    final sessions =
+        AttendanceStore.sessions.where((s) => s.listId == listId).length;
+    final signIns = AttendanceStore.studentIdsSignedIntoList(listId).length;
+    if (_rollModel != null &&
+        _rollModelRecords == records &&
+        _rollModelSessions == sessions &&
+        _rollModelSignIns == signIns) {
+      return _rollModel!;
+    }
+    _rollModelRecords = records;
+    _rollModelSessions = sessions;
+    _rollModelSignIns = signIns;
+    _rollModel = _ConsolidatedRollModel.build(listId);
+    return _rollModel!;
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    AppConnectivity.instance.addListener(_onConnectivity);
+    AttendanceRepository.instance.addListener(_onRepo);
+    AttendanceRepository.instance.touchRecentListDetail(widget.list.id);
+    unawaited(AttendanceRemoteRecordWatch.instance.start());
+    unawaited(AttendanceRtdRecordWatch.instance.start());
+    final active = AttendanceStore.sessions
+        .where((s) => s.listId == widget.list.id && s.isActive)
+        .toList();
+    if (active.isNotEmpty) {
+      unawaited(
+        AttendanceRemoteRecordWatch.instance
+            .watchActiveSessionRecords(active.first.id),
+      );
+      unawaited(
+        AttendanceRtdRecordWatch.instance
+            .watchActiveSessionRecords(active.first.id),
+      );
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_reloadListDetail());
+    });
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    AppConnectivity.instance.removeListener(_onConnectivity);
+    AttendanceRepository.instance.removeListener(_onRepo);
+    _repoRebuild.dispose();
+    unawaited(AttendanceRemoteRecordWatch.instance.clearActiveSessionWatch());
+    unawaited(AttendanceRtdRecordWatch.instance.clearActiveSessionWatch());
+    super.dispose();
+  }
+
+  void _onConnectivity() {
+    if (!AppConnectivity.instance.hasNetworkInterface) return;
+    unawaited(
+      AttendanceOfflineSync.drainSessionValidationFirst().then((_) {
+        unawaited(_reloadRollPendingContext());
+      }),
+    );
+  }
+
+  void _onRepo() {
+    if (!mounted) return;
+    _rollModel = null;
+    _repoRebuild.schedule();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_reloadListDetail(force: false));
+    }
+  }
+
+  String _fmtDate(DateTime d) =>
+      '${d.day.toString().padLeft(2, '0')}/${d.month.toString().padLeft(2, '0')}/${d.year}';
+
+  @override
+  Widget build(BuildContext context) {
+    final repo = AttendanceRepository.instance;
+    final detailLoading = repo.listDetailShowsSkeleton(widget.list.id);
+    final roll = _rollModelForList();
+    final listSessions = roll.listSessions;
+    final rollKeys = roll.rollKeys;
+    final studentIdsByKey = roll.studentIdsByKey;
+    final rollRowsByKey = roll.rollRowsByKey;
+    final studentsById = roll.studentsById;
     return Scaffold(
       appBar: AppBar(
         title: const Text('Roll · consolidated'),
         actions: [
-          IconButton(
-            icon: const Icon(Icons.refresh_rounded),
-            tooltip: 'Refresh',
-            onPressed: _refresh,
-          ),
+          RefreshIconButton(onRefresh: _refresh),
         ],
       ),
       body: detailLoading
@@ -2938,6 +3141,16 @@ class _CreateAttendanceListScreenState
     if (courseList.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Add at least one course')),
+      );
+      return;
+    }
+    final programWeekdayError = attendanceListProgramWeekdayValidationError(
+      _program,
+      _listDate,
+    );
+    if (programWeekdayError != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(programWeekdayError)),
       );
       return;
     }
@@ -3452,6 +3665,16 @@ class _EditAttendanceListScreenState extends State<EditAttendanceListScreen> {
       );
       return;
     }
+    final programWeekdayError = attendanceListProgramWeekdayValidationError(
+      _program,
+      _listDate,
+    );
+    if (programWeekdayError != null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(programWeekdayError)),
+      );
+      return;
+    }
     final auth = AuthRepository.instance;
     String? lecturerUid = _list!.lecturerUid;
     if (auth.isAdmin && auth.adminCheckDone) {
@@ -3760,15 +3983,23 @@ class _SignInContentState extends State<_SignInContent> {
   /// When true, registration came from the signed-in profile and cannot be edited.
   bool _regFromProfile = false;
 
+  bool get _registrationFieldLocked =>
+      AuthRepository.instance.isStudentAuthIdentity ||
+      AttendanceRepository.isStudentScopedUser() ||
+      _regFromProfile;
+
   void _syncRegistrationFromProfile() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
-      final r = AuthRepository.instance.currentRegistrationNumber?.trim();
-      if (r != null && r.isNotEmpty) {
-        if (_regC.text != r) {
+      final auth = AuthRepository.instance;
+      final studentAccount = auth.isStudentAuthIdentity;
+      final r = auth.currentRegistrationNumber?.trim();
+      if (studentAccount || (r != null && r.isNotEmpty)) {
+        if (r != null && r.isNotEmpty && _regC.text != r) {
           _regC.text = r;
         }
-        if (!_regFromProfile) {
+        if (!_regFromProfile &&
+            (studentAccount || (r != null && r.isNotEmpty))) {
           setState(() => _regFromProfile = true);
         }
       } else {
@@ -3780,6 +4011,7 @@ class _SignInContentState extends State<_SignInContent> {
         }
         return;
       }
+      if (r == null || r.isEmpty) return;
       final student = AttendanceStore.findStudentByReg(r);
       if (_currentStudent?.id != student?.id) {
         setState(() => _currentStudent = student);
@@ -3794,6 +4026,11 @@ class _SignInContentState extends State<_SignInContent> {
     AttendanceRepository.instance.addListener(_syncRegistrationFromProfile);
     AppConnectivity.instance.addListener(_onConnectivityChanged);
     _syncRegistrationFromProfile();
+    unawaited(
+      AuthRepository.instance.ensureStudentRegistrationHydrated().then((_) {
+        if (mounted) _syncRegistrationFromProfile();
+      }),
+    );
     unawaited(AttendanceRepository.instance.loadStudentAttendanceForProfile());
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -3940,54 +4177,68 @@ class _SignInContentState extends State<_SignInContent> {
       context: context,
       isDismissible: false,
       enableDrag: false,
+      isScrollControlled: true,
       builder: (ctx) {
+        final maxHeight = MediaQuery.sizeOf(ctx).height * 0.85;
         return SafeArea(
           child: Padding(
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Join this class list',
-                  style: Theme.of(ctx).textTheme.titleMedium?.copyWith(
-                        fontWeight: FontWeight.w700,
-                      ),
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  '${list.whoTaught} · ${list.room} · ${list.time}',
-                  style: Theme.of(ctx).textTheme.bodySmall?.copyWith(
-                        color: AppTheme.textSecondary,
-                      ),
-                ),
-                const SizedBox(height: 12),
-                Text(
-                  'Choose your course',
-                  style: Theme.of(ctx).textTheme.titleSmall?.copyWith(
-                        fontWeight: FontWeight.w600,
-                      ),
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'One-time choice for this attendance list.',
-                  style: Theme.of(ctx).textTheme.bodySmall?.copyWith(
-                        color: AppTheme.textSecondary,
-                      ),
-                ),
-                const SizedBox(height: 14),
-                for (final course in courses)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 8),
-                    child: SizedBox(
-                      width: double.infinity,
-                      child: OutlinedButton(
-                        onPressed: () => Navigator.of(ctx).pop(course),
-                        child: Text(course),
-                      ),
+            child: ConstrainedBox(
+              constraints: BoxConstraints(maxHeight: maxHeight),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      'Join this class list',
+                      style: Theme.of(ctx).textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.w700,
+                          ),
                     ),
-                  ),
-              ],
+                    const SizedBox(height: 6),
+                    Text(
+                      '${list.whoTaught} · ${list.room} · ${list.time}',
+                      style: Theme.of(ctx).textTheme.bodySmall?.copyWith(
+                            color: AppTheme.textSecondary,
+                          ),
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      'Choose your course',
+                      style: Theme.of(ctx).textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'One-time choice for this attendance list.',
+                      style: Theme.of(ctx).textTheme.bodySmall?.copyWith(
+                            color: AppTheme.textSecondary,
+                          ),
+                    ),
+                    const SizedBox(height: 14),
+                    for (final course in courses)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: SizedBox(
+                          width: double.infinity,
+                          child: OutlinedButton(
+                            onPressed: () => Navigator.of(ctx).pop(course),
+                            child: Text(
+                              course,
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                              textAlign: TextAlign.center,
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
             ),
           ),
         );
@@ -3997,6 +4248,31 @@ class _SignInContentState extends State<_SignInContent> {
 
   bool get _registrationFormatOk =>
       StudentRegistrationNumber.validateFormat(_regC.text) == null;
+
+  Duration get _studentSignInReachTimeout =>
+      kIsWeb ? const Duration(seconds: 4) : const Duration(seconds: 2);
+
+  Duration get _studentSignInNetworkBudget {
+    final prefetchOnline = AppConnectivity.instance.isOnline ||
+        AppConnectivity.instance.hasNetworkInterface;
+    if (kIsWeb) {
+      return prefetchOnline
+          ? const Duration(seconds: 10)
+          : const Duration(seconds: 6);
+    }
+    return prefetchOnline
+        ? const Duration(seconds: 6)
+        : const Duration(seconds: 3);
+  }
+
+  /// Fetches list metadata when the session is known but the list row is missing.
+  Future<AttendanceList?> _resolveListForKnownSession(
+    AttendanceSession session,
+  ) async {
+    final fromStore = AttendanceStore.listById(session.listId);
+    if (fromStore != null) return fromStore;
+    return AttendanceRepository.instance.resolveListById(session.listId);
+  }
 
   void _returnToEnterNewSessionCode() {
     _sessionCodeC.clear();
@@ -4027,7 +4303,9 @@ class _SignInContentState extends State<_SignInContent> {
       AuthRepository.instance.currentRegistrationNumber?.trim() ?? '',
     );
     final requiresProfileRegistration =
-        _regFromProfile || AttendanceRepository.isStudentScopedUser();
+        AuthRepository.instance.isStudentAuthIdentity ||
+        _regFromProfile ||
+        AttendanceRepository.isStudentScopedUser();
     if (requiresProfileRegistration && profileReg.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
@@ -4087,21 +4365,24 @@ class _SignInContentState extends State<_SignInContent> {
       final localSession =
           AttendanceRepository.instance.validateSessionCode(rawCode);
       final reachFuture = AppConnectivity.instance.ensureReachable(
-        timeout: const Duration(seconds: 2),
+        timeout: _studentSignInReachTimeout,
       );
-      final studentFuture =
-          AttendanceRepository.instance.resolveStudentForRegistration(reg);
-      final resolveFuture = localSession != null && localSession.isOpenForCheckIn
-          ? Future.value((
-              session: localSession,
-              list: AttendanceStore.listById(localSession.listId),
-            ))
-          : AttendanceRepository.instance
-              .resolveSessionAndListForStudentCode(rawCode);
+      final networkBudget = _studentSignInNetworkBudget;
+      final studentFuture = AttendanceRepository.instance
+          .resolveStudentForRegistration(reg, fast: true);
+      final resolveFuture = AttendanceRepository.instance
+          .resolveSessionAndListForStudentCode(rawCode);
 
       final isOnline = await reachFuture;
       if (!mounted) return;
-      final student = await studentFuture;
+      StudentRecord? student;
+      try {
+        student = await studentFuture.timeout(networkBudget);
+      } catch (_) {
+        student = AttendanceStore.findStudentByReg(reg);
+        student ??= await AttendanceRepository.instance
+            .registerStudentFromAuthProfile(reg, fast: true);
+      }
       if (!mounted) return;
       if (student == null) {
         final blocked = await AttendanceRepository.instance
@@ -4117,9 +4398,27 @@ class _SignInContentState extends State<_SignInContent> {
         );
         return;
       }
-      final resolved = await resolveFuture;
+      final studentRecord = student;
+      ({AttendanceSession? session, AttendanceList? list}) resolved;
+      try {
+        resolved = await resolveFuture.timeout(networkBudget);
+      } catch (_) {
+        final fallbackSession =
+            localSession ?? AttendanceRepository.instance.validateSessionCode(rawCode);
+        AttendanceList? fallbackList;
+        if (fallbackSession != null) {
+          fallbackList = await _resolveListForKnownSession(fallbackSession);
+        }
+        resolved = (
+          session: fallbackSession,
+          list: fallbackList,
+        );
+      }
       var session = resolved.session;
       var list = resolved.list;
+      if (session != null && list == null) {
+        list = await _resolveListForKnownSession(session);
+      }
       if (!mounted) return;
       if (session == null) {
         if (isOnline &&
@@ -4170,10 +4469,16 @@ class _SignInContentState extends State<_SignInContent> {
         );
         return;
       }
+      if (list == null && session != null) {
+        list = await _resolveListForKnownSession(session);
+      }
       if (list == null) {
         final refetched = await AttendanceRepository.instance
             .resolveSessionAndListForStudentCode(rawCode);
-        list = refetched.list;
+        session ??= refetched.session;
+        list = refetched.list ?? (session != null
+            ? await _resolveListForKnownSession(session)
+            : null);
       }
       if (list == null) {
         await _queueOfflineSessionAttempt(
@@ -4194,7 +4499,9 @@ class _SignInContentState extends State<_SignInContent> {
         return;
       }
       final activeList = list;
-      if (AttendanceStore.isPresentForSession(session.id, student.id)) {
+      final checkInSession = session;
+      if (checkInSession == null) return;
+      if (AttendanceStore.isPresentForSession(checkInSession.id, studentRecord.id)) {
         if (!mounted) return;
         _clearSessionCodeAfterUse();
         ScaffoldMessenger.of(context).showSnackBar(
@@ -4205,13 +4512,13 @@ class _SignInContentState extends State<_SignInContent> {
         return;
       }
       var studentCourse = AttendanceStore.signedInCourseForStudentOnList(
-          activeList.id, student.id);
+          activeList.id, studentRecord.id);
       if (studentCourse == null || studentCourse.trim().isEmpty) {
         String? chosenCourse;
         if (activeList.coursesSafe.length > 1) {
           chosenCourse = await _pickCourseForFirstListSignIn(
             activeList,
-            studentId: student.id,
+            studentId: studentRecord.id,
           );
           if (!mounted) return;
           if (chosenCourse == null || chosenCourse.trim().isEmpty) {
@@ -4229,8 +4536,10 @@ class _SignInContentState extends State<_SignInContent> {
         final enroll = await AttendanceRepository.instance
             .ensureStudentEnrolledOnList(
           list: activeList,
-          student: student,
+          student: studentRecord,
           course: chosenCourse,
+          excludeSessionIdFromMetadataPromotion: checkInSession.id,
+          deferHeavyWork: true,
         );
         if (!mounted) return;
         switch (enroll) {
@@ -4265,7 +4574,7 @@ class _SignInContentState extends State<_SignInContent> {
           case StudentListEnrollOutcome.alreadyEnrolled:
           case StudentListEnrollOutcome.enrolled:
             studentCourse = AttendanceStore.signedInCourseForStudentOnList(
-                  activeList.id, student.id) ??
+                  activeList.id, studentRecord.id) ??
                 chosenCourse ??
                 (activeList.coursesSafe.length == 1
                     ? activeList.coursesSafe.first
@@ -4278,7 +4587,7 @@ class _SignInContentState extends State<_SignInContent> {
       } else {
       }
       if (!mounted) return;
-      var activeSession = session;
+      var activeSession = checkInSession;
       if (!activeSession.isOpenForCheckIn) {
         final refreshed = await AttendanceRepository.instance
             .resolveActiveSessionByCodeForSignIn(rawCode);
@@ -4309,11 +4618,11 @@ class _SignInContentState extends State<_SignInContent> {
         return;
       }
       final alreadyPresent =
-          AttendanceStore.isPresentForSession(activeSession.id, student.id);
+          AttendanceStore.isPresentForSession(activeSession.id, studentRecord.id);
       if (!alreadyPresent &&
           await AttendanceRepository.instance.isDeviceBlockedForStudentSession(
             sessionId: activeSession.id,
-            studentId: student.id,
+            studentId: studentRecord.id,
             deviceId: installDeviceId,
             sessionCodeRaw: activeSession.sessionCode,
           )) {
@@ -4331,12 +4640,13 @@ class _SignInContentState extends State<_SignInContent> {
         return;
       }
       final prefetchedPosition = StudentLocationPriming.instance.lastPosition;
+      FocusScope.of(context).unfocus();
       final result =
           await Navigator.of(context).push<StudentCheckInProgressResult>(
         MaterialPageRoute(
           builder: (ctx) => StudentCheckInProgressScreen(
             session: activeSession,
-            student: student,
+            student: studentRecord,
             list: activeList,
             selectedCourse: studentCourse,
             prefetchedPosition: prefetchedPosition,
@@ -4348,42 +4658,68 @@ class _SignInContentState extends State<_SignInContent> {
         unawaited(
           AttendanceRepository.instance.notifyAttendanceAfterCheckIn(
             sessionId: activeSession.id,
-            studentId: student.id,
+            studentId: studentRecord.id,
             listId: activeList.id,
           ),
         );
-        if (result.wasQueued) {
-          unawaited(_openOfflinePendingScreen());
-        }
         final rec = AttendanceStore.attendanceRecordForSessionStudent(
           activeSession.id,
-          student.id,
+          studentRecord.id,
         );
         var course = rec?.course ?? '';
         if (course.isEmpty) {
-          course =
-              AttendanceStore.courseForStudentOnList(activeList.id, student.id);
+          course = AttendanceStore.courseForStudentOnList(
+            activeList.id,
+            studentRecord.id,
+          );
         }
         if (course.isEmpty && activeList.coursesSafe.isNotEmpty) {
           course = activeList.coursesSafe.first;
         }
         if (course.isEmpty) course = '—';
-        try {
-          await AttendanceRepository.instance
-              .ensureSignInAndBackfillPastAbsents(
+        unawaited(
+          AttendanceRepository.instance.ensureSignInAndBackfillPastAbsents(
             listId: activeList.id,
-            studentId: student.id,
+            studentId: studentRecord.id,
             course: course,
-          );
-        } catch (_) {}
+            excludeSessionIdFromMetadataPromotion: activeSession.id,
+          ).then((_) {
+            unawaited(
+              AttendanceRtdRecordWatch.instance.primeAfterStudentCheckIn(
+                sessionId: activeSession.id,
+                studentId: studentRecord.id,
+                listId: activeList.id,
+              ),
+            );
+            AttendanceRepository.instance.notifyStoreUpdatedFromRtd();
+          }),
+        );
         if (!mounted) return;
         setState(() {
-          _currentStudent = student;
-          if (!_regFromProfile) {
+          _currentStudent = studentRecord;
+          if (!_registrationFieldLocked) {
             _regC.clear();
           }
         });
         _clearSessionCodeAfterUse();
+        final codeLabel = activeSession.sessionCode.trim();
+        final snackText = result.wasQueued
+            ? 'Session $codeLabel saved on this device — will verify when you\'re back online.'
+            : result.serverVerified
+                ? 'You are marked present for session $codeLabel.'
+                : 'Check-in for session $codeLabel recorded — syncing official attendance.';
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(snackText),
+            duration: Duration(seconds: result.wasQueued ? 7 : 5),
+            action: result.wasQueued
+                ? SnackBarAction(
+                    label: 'Pending',
+                    onPressed: () => unawaited(_openOfflinePendingScreen()),
+                  )
+                : null,
+          ),
+        );
       }
     } finally {
       _setBusy(false);
@@ -4513,14 +4849,14 @@ class _SignInContentState extends State<_SignInContent> {
                       const SizedBox(height: 20),
                       TextFormField(
                         controller: _regC,
-                        readOnly: _regFromProfile,
-                        enableInteractiveSelection: !_regFromProfile,
+                        readOnly: _registrationFieldLocked,
+                        enableInteractiveSelection: !_registrationFieldLocked,
                         decoration: InputDecoration(
                           labelText: 'Registration number',
-                          hintText: _regFromProfile
+                          hintText: _registrationFieldLocked
                               ? null
                               : StudentRegistrationNumber.example,
-                          suffixIcon: _regFromProfile
+                          suffixIcon: _registrationFieldLocked
                               ? Icon(Icons.lock_outline_rounded,
                                   color: AppTheme.textSecondary, size: 20)
                               : null,

@@ -12,13 +12,21 @@ import 'pending_check_in_queue.dart';
 import 'pending_retention.dart';
 import 'pending_session_code_queue.dart';
 
+enum PendingClaimServerState {
+  missing,
+  pending,
+  accepted,
+  rejected,
+}
+
 /// Uploads student session-code + GPS evidence to Firestore.
 /// When the lecturer session already exists, verifies presence immediately.
 /// Otherwise keeps [awaitingSession] for up to [PendingRetention.unverifiedPending].
 class PendingSessionCodeClaimUpload {
   PendingSessionCodeClaimUpload._();
 
-  static const Duration _uploadTimeout = Duration(seconds: 6);
+  static const Duration _uploadTimeout = Duration(seconds: 8);
+  static const Duration _lookupTimeout = Duration(seconds: 5);
 
   static const String deviceBlockNote = deviceAlreadyUsedUserMessage;
 
@@ -34,7 +42,7 @@ class PendingSessionCodeClaimUpload {
     if (!await _isOnlineForUpload()) return false;
 
     final student = await AttendanceRepository.instance
-        .resolveStudentForRegistration(entry.registrationNumber);
+        .resolveStudentForRegistration(entry.registrationNumber, fast: true);
     if (student == null) return false;
 
     return uploadForEntryWithStudent(entry: entry, studentId: student.id);
@@ -113,44 +121,141 @@ class PendingSessionCodeClaimUpload {
     required PendingSessionCodeEntry entry,
     required String studentId,
   }) async {
-    if (!AppConnectivity.instance.hasNetworkInterface) return false;
+    final state = await claimServerState(entry: entry, studentId: studentId);
+    return state == PendingClaimServerState.pending ||
+        state == PendingClaimServerState.accepted;
+  }
+
+  /// Reads authoritative claim status from Firestore (not cache).
+  static Future<PendingClaimServerState> claimServerState({
+    required PendingSessionCodeEntry entry,
+    required String studentId,
+  }) async {
+    if (!AppConnectivity.instance.hasNetworkInterface) {
+      return PendingClaimServerState.missing;
+    }
     final code = normalizeSessionCodeInput(entry.sessionCodeRaw);
-    if (!isValidJoinCodeFormat(code)) return false;
+    if (!isValidJoinCodeFormat(code)) return PendingClaimServerState.missing;
     final docId = claimDocId(normalizedCode: code, studentId: studentId);
     try {
       final doc = await uPanelFirestore()
           .collection(FirestoreCollections.checkInAttempts)
           .doc(docId)
-          .get()
-          .timeout(_uploadTimeout);
-      if (!doc.exists) return false;
+          .get(const GetOptions(source: Source.server))
+          .timeout(_lookupTimeout);
+      if (!doc.exists) return PendingClaimServerState.missing;
       final status = (doc.data()?['status'] as String?)?.trim().toLowerCase();
-      return status == 'pending' || status == 'accepted';
+      return switch (status) {
+        'accepted' => PendingClaimServerState.accepted,
+        'rejected' => PendingClaimServerState.rejected,
+        'pending' => PendingClaimServerState.pending,
+        _ => PendingClaimServerState.missing,
+      };
     } catch (_) {
-      return false;
+      return PendingClaimServerState.missing;
     }
   }
 
   static Future<bool> _isOnlineForUpload() async {
     if (!AppConnectivity.instance.hasNetworkInterface) return false;
     if (AppConnectivity.instance.isOnline) return true;
-    return AppConnectivity.instance.ensureReachable(
-      timeout: const Duration(seconds: 4),
-    );
+    return AppConnectivity.instance.ensureReachable(timeout: _lookupTimeout);
   }
+
+  static Future<AttendanceSession?> _resolvePublishedSession(
+    PendingSessionCodeEntry entry,
+  ) async {
+    try {
+      return await AttendanceRepository.instance
+          .resolvePublishedLecturerSessionForPendingClaim(
+        sessionCodeRaw: entry.sessionCodeRaw,
+        capturedAt: entry.capturedAt,
+        sessionIdHint: entry.sessionId,
+      )
+          .timeout(_lookupTimeout);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static Future<bool> _patchClaimWithSession({
+    required PendingSessionCodeEntry entry,
+    required String studentId,
+    required AttendanceSession session,
+  }) async {
+    final code = normalizeSessionCodeInput(entry.sessionCodeRaw);
+    if (!isValidJoinCodeFormat(code)) return false;
+    final docId = claimDocId(normalizedCode: code, studentId: studentId);
+    try {
+      await uPanelFirestore()
+          .collection(FirestoreCollections.checkInAttempts)
+          .doc(docId)
+          .set(
+            <String, dynamic>{
+              'studentId': studentId,
+              'registrationNumber': entry.registrationNumber.trim().toUpperCase(),
+              'sessionCodeRaw': code,
+              'sessionId': session.id,
+              'listId': session.listId,
+              'awaitingSession': false,
+              'pendingUntil': FieldValue.delete(),
+              'clientSubmittedAt': FieldValue.serverTimestamp(),
+            },
+            SetOptions(merge: true),
+          )
+          .timeout(_uploadTimeout);
+      return true;
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('PendingSessionCodeClaimUpload: patch $docId: $e');
+      }
+      return false;
+    }
+  }
+
+  /// Links an existing or new awaiting claim to a published lecturer session.
+  static Future<bool> linkPublishedSessionToClaim({
+    required PendingSessionCodeEntry entry,
+    required String studentId,
+    required AttendanceSession session,
+  }) async {
+    if (!await AttendanceRepository.instance.ensureStudentDocOnServer(studentId)) {
+      return false;
+    }
+    if (await isClaimOnServer(entry: entry, studentId: studentId)) {
+      final patched = await _patchClaimWithSession(
+        entry: entry,
+        studentId: studentId,
+        session: session,
+      );
+      if (patched) {
+        await awaitImmediateVerificationWhenBothEndsPresent(
+          entry: entry,
+          studentId: studentId,
+          session: session,
+        );
+      }
+      return patched;
+    }
+    return uploadForEntryWithStudent(entry: entry, studentId: studentId);
+  }
+
   static Future<bool> uploadForEntryWithStudent({
     required PendingSessionCodeEntry entry,
     required String studentId,
   }) async {
     if (!await _isOnlineForUpload()) return false;
 
+    final canonicalStudentId = AttendanceRepository.instance
+        .canonicalStudentIdForUpload(studentId);
+
     final code = normalizeSessionCodeInput(entry.sessionCodeRaw);
     if (!isValidJoinCodeFormat(code)) return false;
     if (entry.deviceId.trim().isEmpty) return false;
 
-    final blockReason = await deviceBlockReason(
-      entry: entry,
-      studentId: studentId,
+    final blockReason = await localDeviceBlockReason(
+      entry,
+      studentId: canonicalStudentId,
     );
     if (blockReason != null) {
       if (kDebugMode) {
@@ -159,26 +264,40 @@ class PendingSessionCodeClaimUpload {
       return false;
     }
 
-    var lecturerSession = await AttendanceRepository.instance
-        .resolvePublishedLecturerSessionForPendingClaim(
-      sessionCodeRaw: entry.sessionCodeRaw,
-      capturedAt: entry.capturedAt,
-      sessionIdHint: entry.sessionId,
-    );
-    if (lecturerSession != null &&
-        await isClaimOnServer(entry: entry, studentId: studentId)) {
-      await awaitImmediateVerificationWhenBothEndsPresent(
-        entry: entry,
-        studentId: studentId,
-        session: lecturerSession,
-      );
+    if (!await AttendanceRepository.instance
+        .ensureStudentDocOnServer(canonicalStudentId)) {
+      if (kDebugMode) {
+        debugPrint(
+          'PendingSessionCodeClaimUpload: student doc not on server ($canonicalStudentId)',
+        );
+      }
+      return false;
+    }
+
+    final lecturerSession = await _resolvePublishedSession(entry);
+    final bothEndsPresent = lecturerSession != null;
+
+    if (await isClaimOnServer(
+      entry: entry,
+      studentId: canonicalStudentId,
+    )) {
+      if (bothEndsPresent) {
+        await _patchClaimWithSession(
+          entry: entry,
+          studentId: canonicalStudentId,
+          session: lecturerSession,
+        );
+        await awaitImmediateVerificationWhenBothEndsPresent(
+          entry: entry,
+          studentId: canonicalStudentId,
+          session: lecturerSession,
+        );
+      }
       return true;
     }
 
-    final bothEndsPresent = lecturerSession != null;
-
     final uid = AuthRepository.instance.currentFirebaseUid?.trim();
-    final docId = claimDocId(normalizedCode: code, studentId: studentId);
+    final docId = claimDocId(normalizedCode: code, studentId: canonicalStudentId);
 
     try {
       await uPanelFirestore()
@@ -186,7 +305,7 @@ class PendingSessionCodeClaimUpload {
           .doc(docId)
           .set(
             <String, dynamic>{
-              'studentId': studentId,
+              'studentId': canonicalStudentId,
               'registrationNumber': entry.registrationNumber.trim().toUpperCase(),
               'sessionCodeRaw': code,
               'sessionId': bothEndsPresent ? lecturerSession.id : '',
@@ -205,12 +324,18 @@ class PendingSessionCodeClaimUpload {
               if (uid != null && uid.isNotEmpty) 'submittedByUid': uid,
               'clientSubmittedAt': FieldValue.serverTimestamp(),
             },
+            SetOptions(merge: true),
           )
           .timeout(_uploadTimeout);
+      final persisted = await isClaimOnServer(
+        entry: entry,
+        studentId: canonicalStudentId,
+      );
+      if (!persisted) return false;
       if (bothEndsPresent) {
         await awaitImmediateVerificationWhenBothEndsPresent(
           entry: entry,
-          studentId: studentId,
+          studentId: canonicalStudentId,
           session: lecturerSession,
         );
       }
@@ -254,8 +379,8 @@ class PendingSessionCodeClaimUpload {
       final doc = await uPanelFirestore()
           .collection(FirestoreCollections.checkInAttempts)
           .doc(docId)
-          .get()
-          .timeout(_uploadTimeout);
+          .get(const GetOptions(source: Source.server))
+          .timeout(_lookupTimeout);
       if (!doc.exists) return false;
       final data = doc.data();
       if (data == null) return false;

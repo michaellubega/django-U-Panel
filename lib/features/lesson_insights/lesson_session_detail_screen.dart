@@ -34,7 +34,19 @@ class _LessonSessionDetailScreenState extends State<LessonSessionDetailScreen> {
   @override
   void initState() {
     super.initState();
+    AttendanceRepository.instance.addListener(_onStoreChanged);
     unawaited(_reload());
+  }
+
+  @override
+  void dispose() {
+    AttendanceRepository.instance.removeListener(_onStoreChanged);
+    super.dispose();
+  }
+
+  void _onStoreChanged() {
+    if (!mounted || _loading) return;
+    setState(() {});
   }
 
   Future<void> _reload() async {

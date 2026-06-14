@@ -77,7 +77,7 @@ class _QaLessonInsightsDashboardCardState
             Expanded(
               child: Text(
                 'Lecturer lessons',
-                style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                style: DashboardCardText.itemTitle(Theme.of(context).textTheme).copyWith(
                       fontWeight: FontWeight.w700,
                     ),
               ),
@@ -179,9 +179,8 @@ class _QaLessonInsightsDashboardCardState
         children: [
           Text(
             label,
-            style: Theme.of(context).textTheme.labelMedium?.copyWith(
+            style: DashboardCardText.label(Theme.of(context).textTheme).copyWith(
                   color: color,
-                  fontWeight: FontWeight.w600,
                 ),
           ),
           Text(
@@ -189,6 +188,7 @@ class _QaLessonInsightsDashboardCardState
             style: Theme.of(context).textTheme.headlineSmall?.copyWith(
                   fontWeight: FontWeight.w800,
                   color: color,
+                  fontSize: DashboardCardText.metricValueSize,
                 ),
           ),
         ],

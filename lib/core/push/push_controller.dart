@@ -44,6 +44,7 @@ class PushController {
   Future<void> _topicSyncSerialized = Future<void>.value();
   int _lastLoggedListTopicCount = -1;
   bool _subscribedAllNotices = false;
+  bool _subscribedKiuAdmins = false;
 
   /// FCM token + topic subscribe (not available on desktop or web).
   bool get _fcmNativeSupported =>
@@ -161,6 +162,21 @@ class PushController {
     if (auth.adminCheckDone && auth.isAdmin) {
       if (kind == 'sessioncode' || kind == 'missedsession') return;
       if (!_adminShouldDisplayPushData(message.data)) return;
+    } else if (auth.isKiuAdmin) {
+      final aud = (message.data['audience'] as String? ?? '')
+          .trim()
+          .toLowerCase();
+      if (aud != 'kiuadmins' &&
+          aud != 'kiu_admins' &&
+          aud != 'allappusers') {
+        return;
+      }
+      if (kind == 'sessioncode' ||
+          kind == 'missedsession' ||
+          kind == 'lecturertakeattendance' ||
+          kind == 'qastartattendance') {
+        return;
+      }
     }
     if (auth.lecturerCheckDone && auth.isLecturer && !auth.isAdmin) {
       if (kind == 'missedsession' || kind == 'sessioncode') return;
@@ -284,8 +300,11 @@ class PushController {
       return;
     }
 
+    final auth = AuthRepository.instance;
+    if (auth.needsEmailVerification) return;
+
     await _waitForRoleReady();
-    if (!AuthRepository.instance.roleCheckDone) {
+    if (!auth.roleCheckDone) {
       if (kDebugMode) {
         debugPrint('Push sync skipped: role checks not finished yet');
       }
@@ -304,6 +323,7 @@ class PushController {
           if (kDebugMode) debugPrint('FCM subscribe all_notices: $e');
         }
       }
+      await _syncKiuAdminNoticeTopic();
       await _syncListTopicsFromStoreBody();
     }
 
@@ -333,16 +353,51 @@ class PushController {
     final copy = Set<String>.from(_subscribedListTopics);
     _subscribedListTopics.clear();
     _subscribedAllNotices = false;
+    _subscribedKiuAdmins = false;
     _lastLoggedListTopicCount = -1;
     final fm = _messaging;
     if (fm == null) return;
     await Future.wait<void>([
       fm.unsubscribeFromTopic(kFcmAllNoticesTopic).catchError((_) {}),
+      fm.unsubscribeFromTopic(kFcmKiuAdminsTopic).catchError((_) {}),
       for (final topic in copy)
         fm.unsubscribeFromTopic(topic).catchError((_) {}),
       _unsubscribeStudentTopicOnly(),
       _unsubscribeLecturerTopicOnly(),
     ]);
+  }
+
+  Future<void> _syncKiuAdminNoticeTopic() async {
+    if (!_topicMessagingSupported) return;
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      await _unsubscribeKiuAdminsTopicOnly();
+      return;
+    }
+    final want = AuthRepository.instance.isKiuAdmin;
+    if (want == _subscribedKiuAdmins) return;
+    await _unsubscribeKiuAdminsTopicOnly();
+    if (!want) return;
+    final fm = _messaging;
+    if (fm == null) return;
+    try {
+      await fm.subscribeToTopic(kFcmKiuAdminsTopic);
+      _subscribedKiuAdmins = true;
+      if (kDebugMode) debugPrint('FCM subscribed: $kFcmKiuAdminsTopic');
+    } catch (e) {
+      if (kDebugMode) debugPrint('FCM subscribe kiu_admins: $e');
+    }
+  }
+
+  Future<void> _unsubscribeKiuAdminsTopicOnly() async {
+    if (!_subscribedKiuAdmins) return;
+    final fm = _messaging;
+    if (fm != null) {
+      try {
+        await fm.unsubscribeFromTopic(kFcmKiuAdminsTopic);
+      } catch (_) {}
+    }
+    _subscribedKiuAdmins = false;
   }
 
   Future<void> _syncLecturerNoticeTopic() async {
@@ -385,7 +440,9 @@ class PushController {
         aud == 'class_list' ||
         aud == 'student' ||
         aud == 'targetstudent' ||
-        aud == 'lecturer') {
+        aud == 'lecturer' ||
+        aud == 'kiuadmins' ||
+        aud == 'kiu_admins') {
       return false;
     }
     final kind = (data['kind'] as String? ?? '').toLowerCase();
@@ -465,6 +522,8 @@ class PushController {
       _subscribedListTopics.clear();
       _subscribedStudentTopic = null;
       _subscribedLecturerTopic = null;
+      _subscribedAllNotices = false;
+      _subscribedKiuAdmins = false;
       return;
     }
     await _unsubscribeAllKnownTopics();

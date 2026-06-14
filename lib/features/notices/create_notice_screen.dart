@@ -16,6 +16,9 @@ enum NoticeAudienceKind {
 
   /// Visible only to one roster student (server-created, e.g. missed check-in).
   student,
+
+  /// Visible only to KIU administrators ([AuthRepository.isKiuAdmin]).
+  kiuAdmins,
 }
 
 class NoticeCreationResult {
@@ -63,6 +66,18 @@ class _CreateNoticeScreenState extends State<CreateNoticeScreen> {
     final auth = AuthRepository.instance;
     return auth.lecturerCheckDone && auth.isLecturer && !auth.isAdmin;
   }
+
+  bool get _staffPublisher {
+    final auth = AuthRepository.instance;
+    return auth.adminCheckDone && auth.isAdmin && !_lecturerOnly;
+  }
+
+  bool get _kiuAdminPublisher {
+    final auth = AuthRepository.instance;
+    return auth.isKiuAdmin && !_staffPublisher;
+  }
+
+  bool get _canPickAudience => !_lecturerOnly && (_staffPublisher || _kiuAdminPublisher);
 
   @override
   void initState() {
@@ -158,7 +173,7 @@ class _CreateNoticeScreenState extends State<CreateNoticeScreen> {
             content: Text(
               _lecturerOnly
                   ? 'Choose one of your class lists.'
-                  : 'Choose a class list, or switch audience to all app users.',
+                  : 'Choose a class list, or pick another audience.',
             ),
           ),
         );
@@ -228,32 +243,56 @@ class _CreateNoticeScreenState extends State<CreateNoticeScreen> {
                 _lecturerOnly
                     ? 'This notice is sent to students who have signed into the '
                         'class list you choose (your assigned or created lists only).'
-                    : 'Notices sent to all app users appear in every account. Class-list '
-                        'notices only appear for students who have signed into that list.',
+                    : _staffPublisher
+                        ? 'QA staff can broadcast to all app users, one class list, '
+                            'or KIU administrators only.'
+                        : _kiuAdminPublisher
+                            ? 'Broadcast a notice to everyone in the app, or target '
+                                'students on one class list.'
+                            : 'Notices sent to all app users appear in every account. Class-list '
+                                'notices only appear for students who have signed into that list.',
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
                       color: AppTheme.textSecondary,
                     ),
               ),
               const SizedBox(height: 12),
-              if (!_lecturerOnly)
+              if (_canPickAudience)
                 SegmentedButton<NoticeAudienceKind>(
-                  segments: const [
-                    ButtonSegment<NoticeAudienceKind>(
-                      value: NoticeAudienceKind.allAppUsers,
-                      label: Text('All users'),
-                      icon: Icon(Icons.public_outlined, size: 18),
-                    ),
-                    ButtonSegment<NoticeAudienceKind>(
-                      value: NoticeAudienceKind.classList,
-                      label: Text('Class list'),
-                      icon: Icon(Icons.groups_outlined, size: 18),
-                    ),
-                  ],
+                  segments: _kiuAdminPublisher
+                      ? const [
+                          ButtonSegment<NoticeAudienceKind>(
+                            value: NoticeAudienceKind.allAppUsers,
+                            label: Text('All users'),
+                            icon: Icon(Icons.public_outlined, size: 18),
+                          ),
+                          ButtonSegment<NoticeAudienceKind>(
+                            value: NoticeAudienceKind.classList,
+                            label: Text('Class list'),
+                            icon: Icon(Icons.groups_outlined, size: 18),
+                          ),
+                        ]
+                      : const [
+                          ButtonSegment<NoticeAudienceKind>(
+                            value: NoticeAudienceKind.allAppUsers,
+                            label: Text('All users'),
+                            icon: Icon(Icons.public_outlined, size: 18),
+                          ),
+                          ButtonSegment<NoticeAudienceKind>(
+                            value: NoticeAudienceKind.classList,
+                            label: Text('Class list'),
+                            icon: Icon(Icons.groups_outlined, size: 18),
+                          ),
+                          ButtonSegment<NoticeAudienceKind>(
+                            value: NoticeAudienceKind.kiuAdmins,
+                            label: Text('KIU admins'),
+                            icon: Icon(Icons.admin_panel_settings_outlined, size: 18),
+                          ),
+                        ],
                   selected: {_audience},
                   onSelectionChanged: (s) {
                     setState(() {
                       _audience = s.single;
-                      if (_audience == NoticeAudienceKind.allAppUsers) {
+                      if (_audience != NoticeAudienceKind.classList) {
                         _selectedList = null;
                       }
                     });
@@ -375,9 +414,16 @@ class _CreateNoticeScreenState extends State<CreateNoticeScreen> {
                       contentPadding: EdgeInsets.zero,
                       title: const Text('Push notification'),
                       subtitle: Text(
-                        _audience == NoticeAudienceKind.allAppUsers
-                            ? 'Notify all app users who receive broadcasts.'
-                            : 'Notify members on that list who use the app.',
+                        switch (_audience) {
+                          NoticeAudienceKind.allAppUsers =>
+                            'Notify all app users who receive broadcasts.',
+                          NoticeAudienceKind.classList =>
+                            'Notify members on that list who use the app.',
+                          NoticeAudienceKind.kiuAdmins =>
+                            'Notify KIU administrators only.',
+                          NoticeAudienceKind.student =>
+                            'Notify one student.',
+                        },
                         style: Theme.of(context).textTheme.bodySmall,
                       ),
                     ),

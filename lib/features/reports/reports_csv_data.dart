@@ -192,6 +192,8 @@ String _audienceLabel(NoticeAudienceKind k) {
       return 'student';
     case NoticeAudienceKind.allAppUsers:
       return 'allAppUsers';
+    case NoticeAudienceKind.kiuAdmins:
+      return 'kiuAdmins';
   }
 }
 

@@ -1,13 +1,18 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../theme/app_theme.dart';
+import 'app_brand_logo.dart';
 
 /// Branded startup loading for Flutter web (shown while auth session hydrates).
 class WebAppLoadingScreen extends StatelessWidget {
-  const WebAppLoadingScreen({super.key, this.message = 'Signing you in…'});
+  const WebAppLoadingScreen({
+    super.key,
+    this.message = 'Signing you in…',
+    this.onRetry,
+  });
 
   final String message;
+  final VoidCallback? onRetry;
 
   @override
   Widget build(BuildContext context) {
@@ -26,7 +31,7 @@ class WebAppLoadingScreen extends StatelessWidget {
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                _BootLogo(),
+                const AppBrandLogo(),
                 const SizedBox(height: 24),
                 const SizedBox(
                   width: 36,
@@ -43,92 +48,19 @@ class WebAppLoadingScreen extends StatelessWidget {
                   style: Theme.of(context).textTheme.bodyLarge?.copyWith(
                         color: const Color(0xFF425466),
                         fontWeight: FontWeight.w500,
+                        height: 1.4,
                       ),
                 ),
+                if (onRetry != null) ...[
+                  const SizedBox(height: 24),
+                  FilledButton(
+                    onPressed: onRetry,
+                    child: const Text('Retry'),
+                  ),
+                ],
               ],
             ),
           ),
-        ),
-      ),
-    );
-  }
-}
-
-class _BootLogo extends StatelessWidget {
-  static const _logoAsset = 'kiu/playstore.png';
-
-  @override
-  Widget build(BuildContext context) {
-    final decoration = BoxDecoration(
-      borderRadius: BorderRadius.circular(18),
-      boxShadow: [
-        BoxShadow(
-          color: AppTheme.primary.withValues(alpha: 0.28),
-          blurRadius: 24,
-          offset: const Offset(0, 8),
-        ),
-      ],
-    );
-
-    if (kIsWeb) {
-      // Reuse the icon already fetched by index.html — avoids asset decode on boot.
-      return Container(
-        decoration: decoration,
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(18),
-          child: Image.network(
-            'icons/Icon-192.png',
-            width: 72,
-            height: 72,
-            fit: BoxFit.cover,
-            errorBuilder: (_, __, ___) => const _BootLogoFallback(),
-          ),
-        ),
-      );
-    }
-
-    return Container(
-      decoration: decoration,
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(18),
-        child: Image.asset(
-          _logoAsset,
-          width: 72,
-          height: 72,
-          fit: BoxFit.cover,
-          errorBuilder: (_, __, ___) => const _BootLogoFallback(),
-        ),
-      ),
-    );
-  }
-}
-
-class _BootLogoFallback extends StatelessWidget {
-  const _BootLogoFallback();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: 72,
-      height: 72,
-      alignment: Alignment.center,
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(18),
-        color: AppTheme.primary,
-        boxShadow: [
-          BoxShadow(
-            color: AppTheme.primary.withValues(alpha: 0.28),
-            blurRadius: 24,
-            offset: const Offset(0, 8),
-          ),
-        ],
-      ),
-      child: const Text(
-        'U',
-        style: TextStyle(
-          color: Colors.white,
-          fontSize: 32,
-          fontWeight: FontWeight.w700,
         ),
       ),
     );

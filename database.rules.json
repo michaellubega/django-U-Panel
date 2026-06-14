@@ -1,0 +1,128 @@
+{
+  "rules": {
+    "staff_access": {
+      "$uid": {
+        ".read": "auth != null && auth.uid == $uid",
+        ".write": false
+      }
+    },
+
+    "student_rtd_index": {
+      "$uid": {
+        ".read": "auth != null && auth.uid == $uid",
+        ".write": "auth != null && auth.uid == $uid"
+      }
+    },
+
+    "check_in_confirmations": {
+      "by_student": {
+        "$studentId": {
+          ".read": "auth != null && (auth.uid == $studentId || root.child('student_rtd_index').child(auth.uid).val() == $studentId)",
+          ".write": "auth != null && (auth.uid == $studentId || root.child('student_rtd_index').child(auth.uid).val() == $studentId)",
+          "$sessionId": {
+            ".read": "auth != null && (auth.uid == $studentId || root.child('student_rtd_index').child(auth.uid).val() == $studentId)",
+            ".write": "auth != null && (auth.uid == $studentId || root.child('student_rtd_index').child(auth.uid).val() == $studentId) && (!data.exists() || data.val() == false)"
+          }
+        }
+      },
+      "by_session": {
+        "$sessionId": {
+          ".read": "auth != null && (root.child('staff_access').child(auth.uid).child('isAdmin').val() == true || root.child('attendance_sessions/by_id/' + $sessionId + '/createdByUid').val() == auth.uid || root.child('attendance_sessions/by_id/' + $sessionId + '/lecturerUid').val() == auth.uid)",
+          ".write": false,
+          "$studentId": {
+            ".read": "auth != null && (root.child('staff_access').child(auth.uid).child('isAdmin').val() == true || root.child('attendance_sessions/by_id/' + $sessionId + '/createdByUid').val() == auth.uid || root.child('attendance_sessions/by_id/' + $sessionId + '/lecturerUid').val() == auth.uid)",
+            ".write": false
+          }
+        }
+      },
+      "by_record": {
+        "$recordId": {
+          ".read": "auth != null && data.child('studentId').val() == auth.uid",
+          ".write": "auth != null && data.child('studentId').val() == auth.uid"
+        }
+      }
+    },
+
+    "attendance_records": {
+      "by_session": {
+        "$sessionId": {
+          ".read": "auth != null && (root.child('staff_access').child(auth.uid).child('isAdmin').val() == true || root.child('attendance_sessions/by_id/' + $sessionId + '/createdByUid').val() == auth.uid || root.child('attendance_sessions/by_id/' + $sessionId + '/lecturerUid').val() == auth.uid)",
+          ".write": false,
+          "$studentId": {
+            ".read": "auth != null && (root.child('staff_access').child(auth.uid).child('isAdmin').val() == true || root.child('attendance_sessions/by_id/' + $sessionId + '/createdByUid').val() == auth.uid || root.child('attendance_sessions/by_id/' + $sessionId + '/lecturerUid').val() == auth.uid || auth.uid == $studentId || root.child('student_rtd_index').child(auth.uid).val() == $studentId)",
+            ".write": false
+          }
+        }
+      },
+      "by_student": {
+        "$studentId": {
+          ".read": "auth != null && (auth.uid == $studentId || root.child('student_rtd_index').child(auth.uid).val() == $studentId)",
+          ".write": false,
+          "$sessionId": {
+            ".read": "auth != null && (auth.uid == $studentId || root.child('student_rtd_index').child(auth.uid).val() == $studentId)",
+            ".write": false
+          }
+        }
+      }
+    },
+
+    "attendance_roll_stats": {
+      "by_session": {
+        "$sessionId": {
+          ".read": "auth != null && (root.child('staff_access').child(auth.uid).child('isAdmin').val() == true || root.child('attendance_sessions/by_id/' + $sessionId + '/createdByUid').val() == auth.uid || root.child('attendance_sessions/by_id/' + $sessionId + '/lecturerUid').val() == auth.uid)",
+          ".write": false
+        }
+      },
+      "by_list": {
+        "$listId": {
+          ".read": "auth != null",
+          ".write": false,
+          "$sessionId": {
+            ".read": "auth != null",
+            ".write": false
+          }
+        }
+      },
+      "by_student": {
+        "$studentId": {
+          ".read": "auth != null && (auth.uid == $studentId || root.child('student_rtd_index').child(auth.uid).val() == $studentId)",
+          ".write": false,
+          "by_list": {
+            "$listId": {
+              ".read": "auth != null && (auth.uid == $studentId || root.child('student_rtd_index').child(auth.uid).val() == $studentId)",
+              ".write": false
+            }
+          }
+        }
+      }
+    },
+
+    "attendance_sessions": {
+      "by_id": {
+        "$sessionId": {
+          ".read": "auth != null",
+          ".write": "auth != null && ((!newData.exists() && (data.child('createdByUid').val() == auth.uid || data.child('lecturerUid').val() == auth.uid)) || ((newData.child('createdByUid').val() == auth.uid || newData.child('lecturerUid').val() == auth.uid) && (!data.exists() || data.child('createdByUid').val() == auth.uid || data.child('lecturerUid').val() == auth.uid)))",
+          ".validate": "newData.hasChildren(['sessionCode', 'listId', 'startTime', 'endTime']) && (newData.hasChild('createdByUid') || newData.hasChild('createdBy'))"
+        }
+      },
+      "by_code": {
+        "$code": {
+          ".read": "auth != null",
+          "$sessionId": {
+            ".read": "auth != null",
+            ".write": "auth != null && ((!newData.exists() && (data.child('createdByUid').val() == auth.uid || data.child('lecturerUid').val() == auth.uid)) || ((newData.child('createdByUid').val() == auth.uid || newData.child('lecturerUid').val() == auth.uid) && (!data.exists() || data.child('createdByUid').val() == auth.uid || data.child('lecturerUid').val() == auth.uid)))"
+          }
+        }
+      },
+      "by_list": {
+        "$listId": {
+          ".read": "auth != null",
+          "$sessionId": {
+            ".read": "auth != null",
+            ".write": "auth != null && ((!newData.exists() && (data.child('createdByUid').val() == auth.uid || data.child('lecturerUid').val() == auth.uid)) || ((newData.child('createdByUid').val() == auth.uid || newData.child('lecturerUid').val() == auth.uid) && (!data.exists() || data.child('createdByUid').val() == auth.uid || data.child('lecturerUid').val() == auth.uid)))"
+          }
+        }
+      }
+    }
+  }
+}

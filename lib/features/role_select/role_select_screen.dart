@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/widgets/app_brand_logo.dart';
 import '../../core/constants/app_constants.dart';
 import '../../core/role/role_scope.dart';
 import '../../core/navigation/app_shell.dart';
@@ -32,26 +33,7 @@ class RoleSelectScreen extends StatelessWidget {
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Container(
-                    width: 72,
-                    height: 72,
-                    decoration: BoxDecoration(
-                      color: AppTheme.primary,
-                      borderRadius: BorderRadius.circular(20),
-                      boxShadow: [
-                        BoxShadow(
-                          color: AppTheme.primary.withOpacity(0.3),
-                          blurRadius: 12,
-                          offset: const Offset(0, 4),
-                        ),
-                      ],
-                    ),
-                    child: const Icon(
-                      Icons.school_rounded,
-                      size: 40,
-                      color: Colors.white,
-                    ),
-                  ),
+                  const AppBrandLogo(size: 72, borderRadius: 20),
                   const SizedBox(height: 24),
                   Text(
                     AppConstants.appName,

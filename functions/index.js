@@ -8,11 +8,15 @@
  *   past endTime, plus client-closed sessions not yet finalized)
  * - After roll finalize: missed check-in notices + push to each absent student
  * - Reconcile check_in_attempts → attendance_records (server authority);
- *   session verified but wrong time/GPS → rejected + marked absent immediately
+ *   mirrors accepted/rejected outcomes and official roll rows to Realtime Database
+ *   for instant present/absent/pending counts after session close
+ *   (also runs on a lease inside sessionLifecycleScheduler)
+ * - Mirror attendance_sessions to Realtime Database (by join code, list, and id)
+ * - Session verified but wrong time/GPS → rejected + marked absent immediately
  * - Retroactive absent backfill when a student joins a list (sign_ins trigger)
  * - Cascade delete sessions, records (by sessionId and listId), attempts,
- *   sign-ins, notices (by listId, sessionId, and targetListId) when a list
- *   is removed
+ *   device_session_locks, sign-ins, notices (by listId, sessionId, and
+ *   targetListId), and Realtime Database mirrors when a list is removed
  * - Scheduled attendance reminders (lecturer at lesson time; QA after 1:30)
  *
  * Deploy: `npm install` in `functions/`, then `firebase deploy --only functions`.
@@ -26,6 +30,7 @@ const {
   onDocumentWritten,
 } = require("firebase-functions/v2/firestore");
 const {onSchedule} = require("firebase-functions/v2/scheduler");
+const {onValueWritten} = require("firebase-functions/v2/database");
 const admin = require("firebase-admin");
 const crypto = require("crypto");
 const {
@@ -35,7 +40,10 @@ const {
 } = require("firebase-admin/firestore");
 
 if (!admin.apps.length) {
-  admin.initializeApp();
+  admin.initializeApp({
+    databaseURL:
+      "https://u-panel-2026-default-rtdb.europe-west1.firebasedatabase.app",
+  });
 }
 
 const FUNCTION_REGION =
@@ -44,6 +52,11 @@ const ATTEMPTS_COL = "check_in_attempts";
 const RECORDS_COL = "attendance_records";
 const SESSIONS_COL = "attendance_sessions";
 const DEVICE_LOCKS_COL = "device_session_locks";
+const RTD_CHECK_IN_CONFIRMATIONS = "check_in_confirmations";
+const RTD_ATTENDANCE_SESSIONS = "attendance_sessions";
+const RTD_ATTENDANCE_RECORDS = "attendance_records";
+const RTD_ATTENDANCE_ROLL_STATS = "attendance_roll_stats";
+const RTD_STUDENT_RTD_INDEX = "student_rtd_index";
 const LEASE_COL = "_function_leases";
 const BATCH_WRITE_LIMIT = 400;
 const GRACE_MS = 7 * 24 * 60 * 60 * 1000;
@@ -283,6 +296,68 @@ async function loadSignInRosterForList(db, listId) {
   return {courseByStudent, earliestSignedInByStudent};
 }
 
+/**
+ * True when session counts toward roll (ended by time or closed).
+ * @param {Record<string, unknown>} sessionData
+ * @param {number} nowMs
+ * @returns {boolean}
+ */
+function sessionCountsTowardRollStats(sessionData, nowMs) {
+  const endMs = firestoreTimestampToMillis(sessionData.endTime) ?? 0;
+  if (endMs > 0 && nowMs >= endMs) return true;
+  return String(sessionData.status || "").trim().toLowerCase() === "closed";
+}
+
+/**
+ * Later session on the same list with an official **present** row for this student.
+ * @param {FirebaseFirestore.Firestore} db
+ * @param {string} listId
+ * @param {string} studentId
+ * @param {number} sessionEndMs
+ * @param {number} nowMs
+ * @return {Promise<boolean>}
+ */
+async function studentHasLaterResolvedSessionOnList(
+    db, listId, studentId, sessionEndMs, nowMs) {
+  const snap = await db.collection(SESSIONS_COL)
+      .where("listId", "==", listId)
+      .where("endTime", ">", Timestamp.fromMillis(sessionEndMs))
+      .get();
+  for (const doc of snap.docs) {
+    const s = doc.data() || {};
+    if (!sessionCountsTowardRollStats(s, nowMs)) continue;
+    const recSnap = await db.collection(RECORDS_COL)
+        .doc(`${doc.id}_${studentId}`)
+        .get();
+    if (recSnap.exists && recSnap.data()?.present === true) return true;
+  }
+  return false;
+}
+
+/**
+ * Per-student grace: 7-day cap after session end OR a later session resolved.
+ * @param {FirebaseFirestore.Firestore} db
+ * @param {string} listId
+ * @param {string} studentId
+ * @param {number} sessionEndMs
+ * @param {FirebaseFirestore.Timestamp|undefined} signedInAt
+ * @param {number} nowMs
+ * @return {Promise<boolean>}
+ */
+async function studentSessionGraceExpired(
+    db, listId, studentId, sessionEndMs, signedInAt, nowMs) {
+  const signedMs =
+    signedInAt && typeof signedInAt.toMillis === "function" ?
+      signedInAt.toMillis() :
+      0;
+  const missedBeforeJoin =
+    signedMs > 0 && sessionEndMs > 0 && sessionEndMs < signedMs;
+  if (missedBeforeJoin) return true;
+  if (sessionEndMs <= 0 || nowMs - sessionEndMs >= GRACE_MS) return true;
+  return studentHasLaterResolvedSessionOnList(
+      db, listId, studentId, sessionEndMs, nowMs);
+}
+
 async function finalizeRollForSessionInDb(db, sessionId, listId) {
   const sessionRef = db.collection(SESSIONS_COL).doc(sessionId);
   const sessSnap = await sessionRef.get();
@@ -296,10 +371,7 @@ async function finalizeRollForSessionInDb(db, sessionId, listId) {
 
   const sessionEndTs = sessData.endTime;
   const endMs = firestoreTimestampToMillis(sessionEndTs) ?? 0;
-  if (endMs > 0 && Date.now() - endMs < GRACE_MS) {
-    logInfo("finalize_roll_deferred_grace", {sessionId, listId});
-    return;
-  }
+  const nowMs = Date.now();
 
   const recSnap = await db
       .collection(RECORDS_COL)
@@ -350,7 +422,7 @@ async function finalizeRollForSessionInDb(db, sessionId, listId) {
     const st = String(ad.status || "").trim().toLowerCase();
     if (
       st === "accepted" ||
-      checkInAttemptQualifiesForPresentCorrection(ad, sessData, listId)
+      checkInAttemptShouldAcceptPresent(ad, sessionId, sessData, listId)
     ) {
       presentIds.add(sid);
       studentIds.add(sid);
@@ -376,8 +448,15 @@ async function finalizeRollForSessionInDb(db, sessionId, listId) {
 
   let batch = db.batch();
   let n = 0;
+  /** @type {{ studentId: string, course: string }[]} */
+  const actualAbsentWrites = [];
   for (const {studentId, course} of writes) {
     if (metadataMatchedSnaps.has(studentId)) continue;
+
+    const joined = earliestSignedInByStudent.get(studentId);
+    const graceExpired = await studentSessionGraceExpired(
+        db, listId, studentId, endMs, joined, nowMs);
+    if (!graceExpired) continue;
 
     const ref = db.collection(RECORDS_COL).doc(`${sessionId}_${studentId}`);
     const existing = await ref.get();
@@ -395,7 +474,7 @@ async function finalizeRollForSessionInDb(db, sessionId, listId) {
       const st = String(ad.status || "").trim().toLowerCase();
       if (
         st === "accepted" ||
-        checkInAttemptQualifiesForPresentCorrection(ad, sessData, listId)
+        checkInAttemptShouldAcceptPresent(ad, sessionId, sessData, listId)
       ) {
         await writePresentFromMetadataAttempt(
             db,
@@ -424,6 +503,7 @@ async function finalizeRollForSessionInDb(db, sessionId, listId) {
     if (!absentPatch) continue;
 
     batch.set(ref, absentPatch, {merge: true});
+    actualAbsentWrites.push({studentId, course});
     n++;
     if (n >= BATCH_WRITE_LIMIT) {
       await batch.commit();
@@ -438,19 +518,37 @@ async function finalizeRollForSessionInDb(db, sessionId, listId) {
   logInfo("finalize_roll_absents_written", {
     sessionId,
     listId,
-    absentCount: writes.length,
+    absentCount: actualAbsentWrites.length,
   });
 
-  if (writes.length > 0) {
+  if (actualAbsentWrites.length > 0) {
+    const absentTs = Date.now();
+    await publishAttendanceRecordBatchToRtd(
+        db,
+        actualAbsentWrites.map(({studentId, course}) => ({
+          sessionId,
+          studentId,
+          present: false,
+          verified: false,
+          course,
+          timestampMs: absentTs,
+          latitude: 0,
+          longitude: 0,
+          listId,
+        })),
+    );
+    await publishSessionRollStatsToRtd(db, sessionId, listId);
     await createMissedCheckInNoticesForStudents(
         db,
         sessionId,
         listId,
-        writes,
+        actualAbsentWrites,
         sessionEndTs,
         courseByStudent,
         earliestSignedInByStudent,
     );
+  } else {
+    await publishSessionRollStatsToRtd(db, sessionId, listId);
   }
 }
 
@@ -560,6 +658,51 @@ function utcDartWeekdayFromDate(d) {
 }
 
 /**
+ * True when every roster student has a roll row or their per-student grace ended.
+ * @param {FirebaseFirestore.Firestore} db
+ * @param {string} sessionId
+ * @param {string} listId
+ * @param {Record<string, unknown>} sessData
+ * @param {number} endMs
+ * @param {number} nowMs
+ * @return {Promise<boolean>}
+ */
+async function isSessionRollComplete(
+    db, sessionId, listId, sessData, endMs, nowMs) {
+  if (endMs > 0 && nowMs - endMs >= GRACE_MS) return true;
+
+  const {courseByStudent, earliestSignedInByStudent} =
+    await loadSignInRosterForList(db, listId);
+
+  const recSnap = await db.collection(RECORDS_COL)
+      .where("sessionId", "==", sessionId)
+      .get();
+  /** @type {Set<string>} */
+  const studentIds = new Set(courseByStudent.keys());
+  /** @type {Set<string>} */
+  const withRecord = new Set();
+  for (const doc of recSnap.docs) {
+    const sid = String(doc.data()?.studentId || "").trim();
+    if (!sid) continue;
+    studentIds.add(sid);
+    withRecord.add(sid);
+  }
+
+  for (const studentId of studentIds) {
+    if (withRecord.has(studentId)) continue;
+    const joined = earliestSignedInByStudent.get(studentId);
+    const graceExpired = await studentSessionGraceExpired(
+        db, listId, studentId, endMs, joined, nowMs);
+    if (!graceExpired) return false;
+    if (await shouldDeferAbsentForIncompleteMetadata(
+        db, sessionId, sessData, listId, studentId)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/**
  * Finalize roll + missed notices, then mark session finalized.
  * @param {FirebaseFirestore.Firestore} db
  * @param {FirebaseFirestore.QueryDocumentSnapshot} doc
@@ -571,15 +714,17 @@ async function finalizeOneSessionDoc(db, doc) {
   try {
     await reconcilePendingAttemptsForSession(db, doc.id, data);
     const endMs = firestoreTimestampToMillis(data.endTime) ?? 0;
-    const graceExpired = endMs <= 0 || Date.now() - endMs >= GRACE_MS;
-    if (!graceExpired) {
-      if (data.status !== "closed") {
-        await doc.ref.update({status: "closed"});
-      }
-      logInfo("session_closed_pending_grace", {sessionId: doc.id, listId});
-      return;
+    const nowMs = Date.now();
+    if (endMs > 0 && nowMs >= endMs && data.status !== "closed") {
+      await doc.ref.update({status: "closed"});
     }
     await finalizeRollForSessionInDb(db, doc.id, listId);
+    const complete = await isSessionRollComplete(
+        db, doc.id, listId, data, endMs, nowMs);
+    if (!complete) {
+      logInfo("session_closed_pending_student_grace", {sessionId: doc.id, listId});
+      return;
+    }
     await doc.ref.update({
       status: "closed",
       finalized: true,
@@ -679,6 +824,9 @@ function noticePushTopic(data) {
       return null;
     }
     return "lec_" + fcmTopicSegment(rawLec);
+  }
+  if (audience === "kiuadmins" || audience === "kiu_admins") {
+    return "kiu_admins";
   }
   return "all_notices";
 }
@@ -899,12 +1047,16 @@ exports.sessionLifecycleScheduler = onSchedule(
   async () => {
     const db = upanelDb();
     const now = Timestamp.now();
-    return runWithLease(db, "sessionLifecycleScheduler", 15 * 60 * 1000,
+    await runWithLease(db, "sessionLifecycleScheduler", 15 * 60 * 1000,
         async () => {
           await closeEndedSessionsAndFinalize(db, SESSIONS_COL, now);
           logInfo("sessionLifecycleScheduler_done", {});
-          return null;
         });
+    await runWithLease(db, "reconcilePendingCheckInAttempts", 15 * 60 * 1000,
+        async () => {
+          await reconcileAllPendingCheckInAttempts(db);
+        });
+    return null;
   },
 );
 
@@ -1330,7 +1482,7 @@ async function hasUnexpiredAwaitingStudentClaim(
 }
 
 /**
- * Defer absent writes only while check-in evidence is still incomplete.
+ * Defer absent writes while any unexpired check-in evidence is still pending.
  * @param {FirebaseFirestore.Firestore} db
  * @param {string} sessionId
  * @param {Record<string, unknown>} session
@@ -1359,8 +1511,8 @@ async function shouldDeferAbsentForIncompleteMetadata(
     if (!snap.exists) return false;
     const d = snap.data() || {};
     if (String(d.studentId || "").trim() !== studentId) return false;
-    if (String(d.status || "").trim().toLowerCase() !== "pending") return false;
-    if (!studentAttemptMissingMetadataForPending(d)) return false;
+    const st = String(d.status || "").trim().toLowerCase();
+    if (st !== "pending") return false;
     return !attemptRetentionExpired(d);
   };
 
@@ -1422,14 +1574,12 @@ function isSessionOpenForCheckIn(session) {
  * @param {FirebaseFirestore.Timestamp} capturedAt
  */
 function isTimestampWithinSessionBounds(session, capturedAt) {
-  const start = session.startTime;
-  const end = session.endTime;
-  if (!start || !end || typeof start.toMillis !== "function") return false;
-  if (typeof end.toMillis !== "function") return false;
-  if (typeof capturedAt.toMillis !== "function") return false;
-  const t = capturedAt.toMillis();
-  if (t < start.toMillis()) return false;
-  if (t <= end.toMillis()) return true;
+  const startMs = firestoreTimestampToMillis(session.startTime);
+  const endMs = firestoreTimestampToMillis(session.endTime);
+  const t = firestoreTimestampToMillis(capturedAt);
+  if (startMs == null || endMs == null || t == null) return false;
+  if (t < startMs) return false;
+  if (t <= endMs) return true;
   return isSessionOpenForCheckIn(session);
 }
 
@@ -1442,11 +1592,19 @@ function isValidCheckInCoordinates(lat, lng) {
 /** @param {Record<string, unknown>} session */
 function isSessionGeofenceConfigured(session) {
   if (session.remoteLearning === true) return true;
+  if (session.locationMetadataPending === true) return false;
   const radius = Number(session.radiusMeters);
   if (!Number.isFinite(radius) || radius <= 0) return false;
   const centerLat = Number(session.latitude);
   const centerLng = Number(session.longitude);
   return isValidCheckInCoordinates(centerLat, centerLng);
+}
+
+/** Explicit remote learning or lecturer location not set — skip GPS checks. */
+function sessionSkipsLocationCheck(session) {
+  if (session.remoteLearning === true) return true;
+  if (session.locationMetadataPending === true) return true;
+  return !isSessionGeofenceConfigured(session);
 }
 
 /**
@@ -1455,13 +1613,59 @@ function isSessionGeofenceConfigured(session) {
  * @param {number} lng
  */
 function isPositionWithinSession(session, lat, lng) {
-  if (session.remoteLearning === true) return true;
-  if (!isSessionGeofenceConfigured(session)) return false;
+  if (sessionSkipsLocationCheck(session)) return true;
   if (!isValidCheckInCoordinates(lat, lng)) return false;
   const centerLat = Number(session.latitude);
   const centerLng = Number(session.longitude);
   const radius = Number(session.radiusMeters);
   return distanceMeters(centerLat, centerLng, lat, lng) <= radius;
+}
+
+/**
+ * Offline capture trust: session link + join code + capture time are enough;
+ * do not reject for shifted geofence or lecturer metadata updates after capture.
+ * @param {Record<string, unknown>} attemptData
+ * @param {string} sessionId
+ * @param {Record<string, unknown>} session
+ */
+function checkInAttemptTrustOfflineCapture(attemptData, sessionId, session) {
+  if (!attemptData.capturedAt) return false;
+  const sid = String(sessionId || "").trim();
+  if (!sid) return false;
+  const hinted = String(attemptData.sessionId || "").trim();
+  if (hinted && hinted !== sid) return false;
+  const attemptListId = String(attemptData.listId || "").trim();
+  const sessionListId = String(session.listId || "").trim();
+  if (attemptListId && sessionListId && attemptListId !== sessionListId) {
+    return false;
+  }
+  const attemptCode = normalizeSessionCode(
+      attemptData.sessionCodeRaw || attemptData.sessionCode || "",
+  );
+  const sessionCode = normalizeSessionCode(session.sessionCode || "");
+  if (attemptCode && sessionCode && attemptCode === sessionCode) {
+    return true;
+  }
+  return hinted === sid;
+}
+
+/**
+ * Accept present when strict metadata matches OR offline-trusted evidence.
+ * @param {Record<string, unknown>} attemptData
+ * @param {string} sessionId
+ * @param {Record<string, unknown>} session
+ * @param {string} listId
+ */
+function checkInAttemptShouldAcceptPresent(
+    attemptData,
+    sessionId,
+    session,
+    listId,
+) {
+  if (checkInAttemptQualifiesForPresentCorrection(attemptData, session, listId)) {
+    return true;
+  }
+  return checkInAttemptTrustOfflineCapture(attemptData, sessionId, session);
 }
 
 /**
@@ -1494,12 +1698,15 @@ function checkInAttemptMatchesSessionMetadata(attemptData, session, listId) {
     return false;
   }
 
-  const lat = Number(attemptData.latitude);
-  const lng = Number(attemptData.longitude);
-  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return false;
   if (!isTimestampWithinSessionBounds(session, attemptData.capturedAt)) {
     return false;
   }
+  if (sessionSkipsLocationCheck(session)) {
+    return true;
+  }
+  const lat = Number(attemptData.latitude);
+  const lng = Number(attemptData.longitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lng)) return false;
   return isPositionWithinSession(session, lat, lng);
 }
 
@@ -1589,13 +1796,13 @@ async function findMetadataMatchedAttemptSnap(
     const st = String(d.status || "").trim().toLowerCase();
     if (st === "accepted") return snap;
     if (st === "rejected") {
-      return checkInAttemptQualifiesForPresentCorrection(d, session, listId) ?
+      return checkInAttemptShouldAcceptPresent(d, sessionId, session, listId) ?
         snap :
         null;
     }
     if (
       st === "pending" &&
-      checkInAttemptQualifiesForPresentCorrection(d, session, listId)
+      checkInAttemptShouldAcceptPresent(d, sessionId, session, listId)
     ) {
       return snap;
     }
@@ -1663,6 +1870,7 @@ async function writePresentFromMetadataAttempt(
 
   const claim = await claimDeviceForSessionPresent(db, {
     sessionId,
+    listId: String(session.listId || "").trim(),
     deviceId,
     studentId,
     attemptId: attemptSnap.id,
@@ -1671,12 +1879,22 @@ async function writePresentFromMetadataAttempt(
   if (!claim.allowed) {
     const st = String(data.status || "").trim().toLowerCase();
     if (st === "pending") {
+      const rejectionReason = claim.reason ||
+          "Device already used for another student this session.";
       await attemptSnap.ref.update({
         status: "rejected",
-        rejectionReason: claim.reason ||
-          "Device already used for another student this session.",
+        rejectionReason,
         sessionId,
         processedAt: FieldValue.serverTimestamp(),
+      });
+      await publishCheckInConfirmationToRtd({
+        sessionId,
+        studentId,
+        status: "rejected",
+        present: false,
+        verified: false,
+        rejectionReason,
+        recordId: attemptSnap.id,
       });
     }
     return;
@@ -1708,6 +1926,14 @@ async function writePresentFromMetadataAttempt(
         listId: String(session.listId || data.listId || "").trim(),
         processedAt: FieldValue.serverTimestamp(),
       });
+      await publishCheckInConfirmationToRtd({
+        sessionId,
+        studentId,
+        status: "accepted",
+        present: true,
+        verified: true,
+        recordId: attemptSnap.id,
+      });
     }
     return;
   }
@@ -1720,6 +1946,31 @@ async function writePresentFromMetadataAttempt(
     listId: String(session.listId || data.listId || "").trim(),
     processedAt: FieldValue.serverTimestamp(),
   });
+  await publishCheckInConfirmationToRtd({
+    sessionId,
+    studentId,
+    status: "accepted",
+    present: true,
+    verified: true,
+    recordId: attemptSnap.id,
+  });
+  await publishAttendanceRecordToRtd(db, {
+    sessionId,
+    studentId,
+    present: true,
+    verified: true,
+    course,
+    timestampMs: firestoreTimestampToMillis(capturedAt) ?? Date.now(),
+    latitude: lat,
+    longitude: lng,
+    deviceId,
+    recordId: `${sessionId}_${studentId}`,
+    listId: String(session.listId || data.listId || "").trim(),
+  });
+  const listId = String(session.listId || data.listId || "").trim();
+  if (listId) {
+    await publishSessionRollStatsToRtd(db, sessionId, listId);
+  }
 }
 
 /**
@@ -1743,14 +1994,16 @@ async function loadMetadataMatchedAttemptSnaps(
     const d = doc.data() || {};
     const status = String(d.status || "").trim().toLowerCase();
     if (status === "rejected") {
-      if (checkInAttemptQualifiesForPresentCorrection(d, session, listId)) {
+      if (checkInAttemptShouldAcceptPresent(d, sessionId, session, listId)) {
         const sid = String(d.studentId || "").trim();
         if (sid) matched.set(sid, doc);
       }
       return;
     }
     if (studentAttemptMissingMetadataForPending(d)) return;
-    if (!checkInAttemptQualifiesForPresentCorrection(d, session, listId)) return;
+    if (!checkInAttemptShouldAcceptPresent(d, sessionId, session, listId)) {
+      return;
+    }
     const sid = String(d.studentId || "").trim();
     if (sid) matched.set(sid, doc);
   };
@@ -1798,7 +2051,83 @@ function normalizeSessionCode(raw) {
 }
 
 /**
+ * @param {string} sessionId
+ * @returns {Promise<Record<string, unknown>|null>}
+ */
+async function loadRunningSessionFromRtd(sessionId) {
+  const sid = String(sessionId || "").trim();
+  if (!sid) return null;
+  try {
+    const snap = await admin.database()
+        .ref(`${RTD_ATTENDANCE_SESSIONS}/by_id/${sid}`)
+        .get();
+    const val = snap.val();
+    if (!val || typeof val !== "object") return null;
+    if (String(val.status || "").trim().toLowerCase() !== "active") return null;
+    return val;
+  } catch (e) {
+    logWarn("loadRunningSessionFromRtd_failed", {sessionId: sid, error: String(e)});
+    return null;
+  }
+}
+
+/**
+ * Resolves listId for a running session (RTD first, then Firestore archive).
+ * @param {FirebaseFirestore.Firestore} db
+ * @param {string} sessionId
+ * @returns {Promise<string>}
+ */
+async function resolveListIdForSessionId(db, sessionId) {
+  const sid = String(sessionId || "").trim();
+  if (!sid) return "";
+  const rtdSession = await loadRunningSessionFromRtd(sid);
+  if (rtdSession) {
+    const fromRtd = String(rtdSession.listId || "").trim();
+    if (fromRtd) return fromRtd;
+  }
+  try {
+    const sessSnap = await db.collection(SESSIONS_COL).doc(sid).get();
+    if (sessSnap.exists) {
+      return String(sessSnap.data()?.listId || "").trim();
+    }
+  } catch (e) {
+    logWarn("resolveListIdForSessionId_failed", {sessionId: sid, error: String(e)});
+  }
+  return "";
+}
+
+/**
+ * @param {string} code
+ * @returns {Promise<Array<{sessionId: string, session: Record<string, unknown>}>>}
+ */
+async function loadRunningSessionsByCodeFromRtd(code) {
+  const normalized = normalizeSessionCode(code);
+  if (!normalized) return [];
+  try {
+    const snap = await admin.database()
+        .ref(`${RTD_ATTENDANCE_SESSIONS}/by_code/${normalized}`)
+        .get();
+    const val = snap.val();
+    if (!val || typeof val !== "object") return [];
+    /** @type {Array<{sessionId: string, session: Record<string, unknown>}>} */
+    const out = [];
+    for (const [sessionId, session] of Object.entries(val)) {
+      if (!session || typeof session !== "object") continue;
+      if (String(session.status || "").trim().toLowerCase() !== "active") continue;
+      out.push({sessionId, session});
+    }
+    return out;
+  } catch (e) {
+    logWarn("loadRunningSessionsByCodeFromRtd_failed", {code: normalized, error: String(e)});
+    return [];
+  }
+}
+
+/**
  * Resolve session by doc id or by sessionCode / sessionCodeRaw on the attempt.
+ * Online running sessions live on RTD; offline-started sessions are uploaded to
+ * Firestore (onAttendanceSessionWritten reconciles pending check-ins from there).
+ * Closed/archived sessions are always read from Firestore.
  * @param {FirebaseFirestore.Firestore} db
  * @param {Record<string, unknown>} data
  * @returns {Promise<{sessionId: string, session: Record<string, unknown>}|null>}
@@ -1807,6 +2136,16 @@ async function resolveSessionForAttempt(db, data) {
   const capturedAt = data.capturedAt;
   const sessionIdRaw = String(data.sessionId || "").trim();
   if (sessionIdRaw) {
+    const rtdSession = await loadRunningSessionFromRtd(sessionIdRaw);
+    if (rtdSession) {
+      const attemptCode = normalizeSessionCode(
+          data.sessionCodeRaw || data.sessionCode || "",
+      );
+      const sessionCode = normalizeSessionCode(rtdSession.sessionCode || "");
+      if (!attemptCode || !sessionCode || attemptCode === sessionCode) {
+        return {sessionId: sessionIdRaw, session: rtdSession};
+      }
+    }
     const snap = await db.collection(SESSIONS_COL).doc(sessionIdRaw).get();
     if (snap.exists) {
       const session = snap.data() || {};
@@ -1830,76 +2169,58 @@ async function resolveSessionForAttempt(db, data) {
   );
   if (!code) return null;
 
-  /** @type {Map<string, FirebaseFirestore.QueryDocumentSnapshot>} */
-  const docsById = new Map();
+  /** @type {Map<string, {sessionId: string, session: Record<string, unknown>}>} */
+  const entriesById = new Map();
 
-  try {
-    const activeSnap = await db.collection(SESSIONS_COL)
-        .where("sessionCode", "==", code)
-        .where("status", "==", "active")
-        .limit(8)
-        .get();
-    for (const doc of activeSnap.docs) {
-      docsById.set(doc.id, doc);
-    }
-  } catch (e) {
-    logWarn("resolveSessionForAttempt_active_query_failed", {code, error: String(e)});
+  for (const entry of await loadRunningSessionsByCodeFromRtd(code)) {
+    entriesById.set(entry.sessionId, entry);
   }
 
-  if (docsById.size < 16) {
-    const snap = await db.collection(SESSIONS_COL)
-        .where("sessionCode", "==", code)
-        .limit(16)
-        .get();
-    for (const doc of snap.docs) {
-      if (!docsById.has(doc.id)) docsById.set(doc.id, doc);
+  if (entriesById.size < 16) {
+    try {
+      const snap = await db.collection(SESSIONS_COL)
+          .where("sessionCode", "==", code)
+          .limit(16)
+          .get();
+      for (const doc of snap.docs) {
+        if (!entriesById.has(doc.id)) {
+          entriesById.set(doc.id, {sessionId: doc.id, session: doc.data() || {}});
+        }
+      }
+    } catch (e) {
+      logWarn("resolveSessionForAttempt_firestore_query_failed", {code, error: String(e)});
     }
   }
 
-  if (docsById.size === 0) return null;
+  if (entriesById.size === 0) return null;
 
   /** @type {{sessionId: string, session: Record<string, unknown>}|null} */
   let bounded = null;
   /** @type {{sessionId: string, session: Record<string, unknown>}|null} */
   let bestActive = null;
 
-  for (const doc of docsById.values()) {
-    const session = doc.data() || {};
-    const entry = {sessionId: doc.id, session};
+  for (const entry of entriesById.values()) {
+    const session = entry.session;
 
     if (isSessionOpenForCheckIn(session)) {
       if (!bestActive) {
         bestActive = entry;
       } else {
-        const startA = session.startTime;
-        const startB = bestActive.session.startTime;
-        if (
-          startA && startB &&
-          typeof startA.toMillis === "function" &&
-          typeof startB.toMillis === "function" &&
-          startA.toMillis() > startB.toMillis()
-        ) {
+        const startA = firestoreTimestampToMillis(session.startTime) ?? 0;
+        const startB = firestoreTimestampToMillis(bestActive.session.startTime) ?? 0;
+        if (startA > startB) {
           bestActive = entry;
         }
       }
     }
 
-    if (
-      capturedAt &&
-      typeof capturedAt.toMillis === "function" &&
-      isTimestampWithinSessionBounds(session, capturedAt)
-    ) {
+    if (capturedAt && isTimestampWithinSessionBounds(session, capturedAt)) {
       if (!bounded) {
         bounded = entry;
       } else {
-        const startA = session.startTime;
-        const startB = bounded.session.startTime;
-        if (
-          startA && startB &&
-          typeof startA.toMillis === "function" &&
-          typeof startB.toMillis === "function" &&
-          startA.toMillis() > startB.toMillis()
-        ) {
+        const startA = firestoreTimestampToMillis(session.startTime) ?? 0;
+        const startB = firestoreTimestampToMillis(bounded.session.startTime) ?? 0;
+        if (startA > startB) {
           bounded = entry;
         }
       }
@@ -1926,8 +2247,9 @@ async function writeOfficialAbsentForVerifiedMismatch(
 ) {
   if (
     attemptData &&
-    checkInAttemptMatchesSessionMetadata(
+    checkInAttemptShouldAcceptPresent(
         attemptData,
+        sessionId,
         session,
         String(session.listId || "").trim(),
     )
@@ -1968,6 +2290,22 @@ async function writeOfficialAbsentForVerifiedMismatch(
   );
   if (!absentPatch) return;
   await recordRef.set(absentPatch, {merge: true});
+  await publishAttendanceRecordToRtd(db, {
+    sessionId,
+    studentId,
+    present: false,
+    verified: false,
+    course: course || "\u2014",
+    timestampMs: firestoreTimestampToMillis(timestamp) ?? Date.now(),
+    latitude: 0,
+    longitude: 0,
+    recordId: `${sessionId}_${studentId}`,
+    listId: String(session.listId || "").trim(),
+  });
+  const listId = String(session.listId || "").trim();
+  if (listId) {
+    await publishSessionRollStatsToRtd(db, sessionId, listId);
+  }
 }
 
 /**
@@ -2038,6 +2376,35 @@ function deviceSessionLockDocId(sessionId, deviceId) {
 }
 
 /**
+ * @param {object} opts
+ * @return {Record<string, unknown>}
+ */
+function deviceSessionLockPayload({
+  sessionId,
+  listId,
+  deviceId,
+  studentId,
+  attemptId,
+  capturedAt,
+  supersededStudentId,
+}) {
+  /** @type {Record<string, unknown>} */
+  const payload = {
+    sessionId: String(sessionId || "").trim(),
+    deviceId: String(deviceId || "").trim(),
+    studentId: String(studentId || "").trim(),
+    attemptId: String(attemptId || "").trim(),
+    capturedAt: capturedAt || null,
+    lockedAt: FieldValue.serverTimestamp(),
+  };
+  const lid = String(listId || "").trim();
+  if (lid) payload.listId = lid;
+  const superseded = String(supersededStudentId || "").trim();
+  if (superseded) payload.supersededStudentId = superseded;
+  return payload;
+}
+
+/**
  * @param {FirebaseFirestore.Timestamp|Date|unknown} capturedAt
  * @return {number}
  */
@@ -2056,6 +2423,7 @@ function capturedAtToMillis(capturedAt) {
  */
 async function claimDeviceForSessionPresent(db, {
   sessionId,
+  listId,
   deviceId,
   studentId,
   attemptId,
@@ -2078,14 +2446,14 @@ async function claimDeviceForSessionPresent(db, {
   const allowed = await db.runTransaction(async (tx) => {
     const lockSnap = await tx.get(lockRef);
     if (!lockSnap.exists) {
-      tx.set(lockRef, {
+      tx.set(lockRef, deviceSessionLockPayload({
         sessionId: sid,
+        listId,
         deviceId: did,
         studentId: stu,
         attemptId: att,
-        capturedAt: capturedAt || null,
-        lockedAt: FieldValue.serverTimestamp(),
-      });
+        capturedAt,
+      }));
       return true;
     }
 
@@ -2096,15 +2464,15 @@ async function claimDeviceForSessionPresent(db, {
     const winnerMs = capturedAtToMillis(lock.capturedAt);
     if (attemptMs > 0 && (winnerMs === 0 || attemptMs < winnerMs)) {
       supersededStudentId = winner;
-      tx.set(lockRef, {
+      tx.set(lockRef, deviceSessionLockPayload({
         sessionId: sid,
+        listId: listId || lock.listId,
         deviceId: did,
         studentId: stu,
         attemptId: att,
-        capturedAt: capturedAt || null,
-        lockedAt: FieldValue.serverTimestamp(),
+        capturedAt,
         supersededStudentId: winner,
-      });
+      }));
       return true;
     }
 
@@ -2231,6 +2599,582 @@ async function deviceUsedByOtherStudentOnClaim(db, attemptSnap, data) {
 }
 
 /**
+ * @param {unknown} v
+ * @returns {number|null}
+ */
+function sessionTimestampToMs(v) {
+  if (!v) return null;
+  if (typeof v.toMillis === "function") return v.toMillis();
+  if (v instanceof Date) return v.getTime();
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  return null;
+}
+
+/**
+ * @param {string} sessionId
+ * @param {Record<string, unknown>} session
+ * @returns {Record<string, unknown>}
+ */
+function buildSessionRtdPayload(sessionId, session) {
+  const code = normalizeSessionCode(session.sessionCode);
+  const startMs = sessionTimestampToMs(session.startTime);
+  const endMs = sessionTimestampToMs(session.endTime);
+  const status = String(session.status || "active").trim().toLowerCase();
+  const createdByUid = String(session.createdByUid || "").trim();
+  const lecturerUid = String(session.lecturerUid || "").trim();
+  /** @type {Record<string, unknown>} */
+  const payload = {
+    id: sessionId,
+    listId: String(session.listId || "").trim(),
+    sessionCode: code || String(session.sessionCode || "").trim(),
+    latitude: Number(session.latitude) || 0,
+    longitude: Number(session.longitude) || 0,
+    radiusMeters: Number(session.radiusMeters) || 50,
+    startTime: startMs ?? Date.now(),
+    endTime: endMs ?? Date.now(),
+    status: status === "closed" ? "closed" : "active",
+    createdBy: String(session.createdBy || "").trim(),
+    remoteLearning: session.remoteLearning === true,
+    updatedAt: Date.now(),
+  };
+  if (createdByUid) payload.createdByUid = createdByUid;
+  if (lecturerUid) payload.lecturerUid = lecturerUid;
+  if (session.locationMetadataPending === true) {
+    payload.locationMetadataPending = true;
+  }
+  return payload;
+}
+
+/**
+ * @param {unknown} v
+ * @returns {boolean}
+ */
+function isTruthyFlag(v) {
+  return v === true || v === "true" || v === 1;
+}
+
+/**
+ * Mirrors staff role flags to RTDB for security rules (admins + lecturers).
+ * @param {string} uid
+ * @param {{isAdmin?: boolean, isLecturer?: boolean}} flags
+ */
+async function publishStaffAccessToRtd(uid, flags = {}) {
+  const id = String(uid || "").trim();
+  if (!id) return;
+  /** @type {Record<string, unknown>} */
+  const payload = {
+    isAdmin: flags.isAdmin === true,
+    isLecturer: flags.isLecturer === true,
+    updatedAt: Date.now(),
+  };
+  try {
+    await admin.database().ref(`${RTD_STAFF_ACCESS}/${id}`).set(payload);
+  } catch (e) {
+    logError("publish_staff_access_rtd", e, {uid: id});
+  }
+}
+
+/**
+ * @param {string} uid
+ */
+async function removeStaffAccessFromRtd(uid) {
+  const id = String(uid || "").trim();
+  if (!id) return;
+  try {
+    await admin.database().ref(`${RTD_STAFF_ACCESS}/${id}`).set(null);
+  } catch (e) {
+    logError("remove_staff_access_rtd", e, {uid: id});
+  }
+}
+
+/**
+ * @param {Record<string, unknown>} session
+ * @returns {Promise<Record<string, unknown>>}
+ */
+async function enrichSessionForRtd(session) {
+  /** @type {Record<string, unknown>} */
+  const enriched = {...(session || {})};
+  const listId = String(enriched.listId || "").trim();
+  if (!listId) return enriched;
+  if (String(enriched.lecturerUid || "").trim()) return enriched;
+  try {
+    const listSnap = await upanelDb().collection("attendance_lists").doc(listId).get();
+    if (listSnap.exists) {
+      const lecturerUid = String(listSnap.data()?.lecturerUid || "").trim();
+      if (lecturerUid) enriched.lecturerUid = lecturerUid;
+    }
+  } catch (e) {
+    logError("enrich_session_for_rtd", e, {listId});
+  }
+  return enriched;
+}
+
+/**
+ * Mirrors an attendance session to Realtime Database for fast join-code discovery.
+ * @param {string} sessionId
+ * @param {Record<string, unknown>} session
+ * @param {{remove?: boolean}} [opts]
+ */
+async function publishSessionToRtd(sessionId, session, opts = {}) {
+  const sid = String(sessionId || "").trim();
+  if (!sid) return;
+  const remove = opts.remove === true;
+  const enriched = await enrichSessionForRtd(session || {});
+  const code = normalizeSessionCode(enriched.sessionCode);
+  const listId = String(enriched.listId || "").trim();
+  const status = String(enriched.status || "active").trim().toLowerCase();
+
+  /** @type {Record<string, unknown>} */
+  const updates = {};
+
+  if (remove) {
+    updates[`${RTD_ATTENDANCE_SESSIONS}/by_id/${sid}`] = null;
+    if (code) {
+      updates[`${RTD_ATTENDANCE_SESSIONS}/by_code/${code}/${sid}`] = null;
+    }
+    if (listId) {
+      updates[`${RTD_ATTENDANCE_SESSIONS}/by_list/${listId}/${sid}`] = null;
+    }
+  } else if (status === "closed") {
+    const payload = buildSessionRtdPayload(sid, enriched);
+    updates[`${RTD_ATTENDANCE_SESSIONS}/by_id/${sid}`] = payload;
+    if (code) {
+      updates[`${RTD_ATTENDANCE_SESSIONS}/by_code/${code}/${sid}`] = null;
+    }
+    if (listId) {
+      updates[`${RTD_ATTENDANCE_SESSIONS}/by_list/${listId}/${sid}`] = payload;
+    }
+  } else {
+    const payload = buildSessionRtdPayload(sid, enriched);
+    updates[`${RTD_ATTENDANCE_SESSIONS}/by_id/${sid}`] = payload;
+    if (code) {
+      updates[`${RTD_ATTENDANCE_SESSIONS}/by_code/${code}/${sid}`] = payload;
+    }
+    if (listId) {
+      updates[`${RTD_ATTENDANCE_SESSIONS}/by_list/${listId}/${sid}`] = payload;
+    }
+  }
+
+  try {
+    await admin.database().ref().update(updates);
+  } catch (e) {
+    logError("publish_session_rtd", e, {sessionId: sid, remove});
+  }
+}
+
+/**
+ * Publishes check-in outcome to Realtime Database for low-latency client confirmation.
+ * @param {object} params
+ * @param {string} params.sessionId
+ * @param {string} params.studentId
+ * @param {string} params.status accepted|rejected
+ * @param {boolean} [params.present]
+ * @param {boolean} [params.verified]
+ * @param {string} [params.rejectionReason]
+ * @param {string} [params.recordId]
+ */
+async function publishCheckInConfirmationToRtd({
+  sessionId,
+  studentId,
+  status,
+  present = false,
+  verified = false,
+  rejectionReason,
+  recordId,
+}) {
+  const sid = String(sessionId || "").trim();
+  const stu = String(studentId || "").trim();
+  const st = String(status || "").trim().toLowerCase();
+  if (!stu || !st) return;
+
+  /** @type {Record<string, unknown>} */
+  const payload = {
+    status: st,
+    studentId: stu,
+    present: !!present,
+    verified: !!verified,
+    updatedAt: Date.now(),
+  };
+  if (sid) payload.sessionId = sid;
+  const reason = String(rejectionReason || "").trim();
+  if (reason) payload.rejectionReason = reason;
+
+  const rid = String(recordId || "").trim() ||
+    (sid ? `${sid}_${stu}` : "");
+  /** @type {Record<string, unknown>} */
+  const updates = {};
+  if (sid) {
+    updates[
+        `${RTD_CHECK_IN_CONFIRMATIONS}/by_student/${stu}/${sid}`] = payload;
+    updates[
+        `${RTD_CHECK_IN_CONFIRMATIONS}/by_session/${sid}/${stu}`] = payload;
+  }
+  if (rid) {
+    updates[`${RTD_CHECK_IN_CONFIRMATIONS}/by_record/${rid}`] = payload;
+  }
+  if (Object.keys(updates).length === 0) return;
+
+  try {
+    await admin.database().ref().update(updates);
+  } catch (e) {
+    logError("publish_check_in_rtd", e, {sessionId: sid, studentId: stu, status: st});
+  }
+}
+
+/**
+ * @param {object} opts
+ * @return {Record<string, unknown>|null}
+ */
+function buildAttendanceRecordRtdPayload({
+  sessionId,
+  studentId,
+  present,
+  verified,
+  course,
+  timestampMs,
+  latitude,
+  longitude,
+  deviceId,
+  recordId,
+}) {
+  const sid = String(sessionId || "").trim();
+  const stu = String(studentId || "").trim();
+  if (!sid || !stu) return null;
+  const rid = String(recordId || "").trim() || `${sid}_${stu}`;
+  const now = Date.now();
+  const ts = Number.isFinite(timestampMs) && timestampMs > 0 ?
+    timestampMs :
+    now;
+  /** @type {Record<string, unknown>} */
+  const payload = {
+    recordId: rid,
+    sessionId: sid,
+    studentId: stu,
+    present: !!present,
+    verified: !!verified,
+    course: String(course || "").trim() || "\u2014",
+    timestamp: ts,
+    latitude: Number(latitude) || 0,
+    longitude: Number(longitude) || 0,
+    updatedAt: now,
+  };
+  const dev = String(deviceId || "").trim();
+  if (dev) payload.deviceId = dev;
+  return payload;
+}
+
+/**
+ * Student attendance % for one list (mirrors client rollStatsForRegistrationOnList).
+ * @param {FirebaseFirestore.Firestore} db
+ * @param {string} studentId
+ * @param {string} listId
+ * @return {Promise<Record<string, unknown>>}
+ */
+async function computeStudentListRollStats(db, studentId, listId) {
+  const stu = String(studentId || "").trim();
+  const lid = String(listId || "").trim();
+  const nowMs = Date.now();
+  if (!stu || !lid) {
+    return {
+      studentId: stu,
+      listId: lid,
+      present: 0,
+      total: 0,
+      percentRounded: 0,
+      updatedAt: nowMs,
+    };
+  }
+
+  const {earliestSignedInByStudent} = await loadSignInRosterForList(db, lid);
+  const signedInAt = earliestSignedInByStudent.get(stu);
+  const signedMs =
+    signedInAt && typeof signedInAt.toMillis === "function" ?
+      signedInAt.toMillis() :
+      0;
+
+  const sessSnap = await db.collection(SESSIONS_COL)
+      .where("listId", "==", lid)
+      .get();
+
+  let present = 0;
+  let total = 0;
+  /** @type {Set<string>} */
+  const countedSessionIds = new Set();
+
+  for (const doc of sessSnap.docs) {
+    const s = doc.data() || {};
+    if (!sessionCountsTowardRollStats(s, nowMs)) continue;
+    const endMs = firestoreTimestampToMillis(s.endTime) ?? 0;
+    const missedBeforeJoin = signedMs > 0 && endMs > 0 && endMs < signedMs;
+    const recSnap = await db.collection(RECORDS_COL).doc(`${doc.id}_${stu}`).get();
+    if (recSnap.exists) {
+      total++;
+      if (recSnap.data()?.present === true) present++;
+      countedSessionIds.add(doc.id);
+      continue;
+    }
+    if (!missedBeforeJoin) {
+      const graceExpired = await studentSessionGraceExpired(
+          db, lid, stu, endMs, signedInAt, nowMs);
+      if (!graceExpired) continue;
+    }
+    total++;
+    countedSessionIds.add(doc.id);
+  }
+
+  for (const doc of sessSnap.docs) {
+    if (countedSessionIds.has(doc.id)) continue;
+    const s = doc.data() || {};
+    if (!sessionCountsTowardRollStats(s, nowMs)) continue;
+    const recSnap = await db.collection(RECORDS_COL).doc(`${doc.id}_${stu}`).get();
+    if (!recSnap.exists) continue;
+    total++;
+    if (recSnap.data()?.present === true) present++;
+    countedSessionIds.add(doc.id);
+  }
+
+  const percentRounded = total <= 0 ?
+    0 :
+    Math.round((100 * present) / total);
+  return {
+    studentId: stu,
+    listId: lid,
+    present,
+    total,
+    percentRounded,
+    updatedAt: nowMs,
+  };
+}
+
+/**
+ * Overall student attendance % across all signed-in lists.
+ * @param {FirebaseFirestore.Firestore} db
+ * @param {string} studentId
+ * @return {Promise<Record<string, unknown>>}
+ */
+async function computeStudentOverallRollStats(db, studentId) {
+  const stu = String(studentId || "").trim();
+  const nowMs = Date.now();
+  if (!stu) {
+    return {studentId: "", present: 0, total: 0, percentRounded: 0, updatedAt: nowMs};
+  }
+  const signSnap = await db.collection("sign_ins")
+      .where("studentId", "==", stu)
+      .get();
+  /** @type {Set<string>} */
+  const listIds = new Set();
+  for (const doc of signSnap.docs) {
+    const lid = String(doc.data()?.listId || "").trim();
+    if (lid) listIds.add(lid);
+  }
+  let present = 0;
+  let total = 0;
+  for (const lid of listIds) {
+    const stats = await computeStudentListRollStats(db, stu, lid);
+    present += Number(stats.present) || 0;
+    total += Number(stats.total) || 0;
+  }
+  const percentRounded = total <= 0 ?
+    0 :
+    Math.round((100 * present) / total);
+  return {
+    studentId: stu,
+    present,
+    total,
+    percentRounded,
+    updatedAt: nowMs,
+  };
+}
+
+/**
+ * Maps Auth uid → registration so RTD rules authorize by_student reads.
+ * @param {FirebaseFirestore.Firestore} db
+ * @param {string} studentId registration number (canonical studentId in records)
+ */
+async function publishStudentRtdIndexToRtd(db, studentId) {
+  const stu = String(studentId || "").trim();
+  if (!stu || !db) return;
+  try {
+    const regSnap = await db.collection("student_registrations").doc(stu).get();
+    if (!regSnap.exists) return;
+    const uid = String(regSnap.data()?.uid || "").trim();
+    if (!uid) return;
+    await admin.database().ref().update({
+      [`${RTD_STUDENT_RTD_INDEX}/${uid}`]: stu,
+    });
+  } catch (e) {
+    logError("publish_student_rtd_index", e, {studentId: stu});
+  }
+}
+
+/**
+ * Publishes student roll stats for instant profile/dashboard refresh.
+ * @param {FirebaseFirestore.Firestore} db
+ * @param {string} studentId
+ * @param {string|null|undefined} listId
+ */
+async function publishStudentRollStatsToRtd(db, studentId, listId) {
+  const stu = String(studentId || "").trim();
+  if (!stu) return;
+  try {
+    /** @type {Record<string, unknown>} */
+    const updates = {};
+    const lid = String(listId || "").trim();
+    if (lid) {
+      const listStats = await computeStudentListRollStats(db, stu, lid);
+      updates[`${RTD_ATTENDANCE_ROLL_STATS}/by_student/${stu}/by_list/${lid}`] =
+        listStats;
+    }
+    const overall = await computeStudentOverallRollStats(db, stu);
+    updates[`${RTD_ATTENDANCE_ROLL_STATS}/by_student/${stu}`] = overall;
+    await admin.database().ref().update(updates);
+    await publishStudentRtdIndexToRtd(db, stu);
+  } catch (e) {
+    logError("publish_student_roll_stats_rtd", e, {studentId: stu, listId});
+  }
+}
+
+/**
+ * Mirrors one official attendance row to Realtime Database.
+ * @param {FirebaseFirestore.Firestore|null|undefined} db
+ * @param {object} opts
+ */
+async function publishAttendanceRecordToRtd(db, opts) {
+  const payload = buildAttendanceRecordRtdPayload(opts);
+  if (!payload) return;
+  const sid = String(payload.sessionId || "").trim();
+  const stu = String(payload.studentId || "").trim();
+  /** @type {Record<string, unknown>} */
+  const updates = {};
+  updates[`${RTD_ATTENDANCE_RECORDS}/by_session/${sid}/${stu}`] = payload;
+  updates[`${RTD_ATTENDANCE_RECORDS}/by_student/${stu}/${sid}`] = payload;
+  try {
+    await admin.database().ref().update(updates);
+  } catch (e) {
+    logError("publish_attendance_record_rtd", e, {sessionId: sid, studentId: stu});
+    return;
+  }
+  if (db && stu) {
+    let listId = String(opts.listId || "").trim();
+    if (!listId && sid) {
+      listId = await resolveListIdForSessionId(db, sid);
+    }
+    await publishStudentRollStatsToRtd(db, stu, listId || undefined);
+  }
+}
+
+/**
+ * @param {FirebaseFirestore.Firestore|null|undefined} db
+ * @param {object[]} records
+ */
+async function publishAttendanceRecordBatchToRtd(db, records) {
+  if (!records.length) return;
+  /** @type {Record<string, unknown>} */
+  const updates = {};
+  /** @type {Set<string>} */
+  const studentIds = new Set();
+  /** @type {Map<string, string>} */
+  const listIdByStudent = new Map();
+  for (const opts of records) {
+    const payload = buildAttendanceRecordRtdPayload(opts);
+    if (!payload) continue;
+    const sid = String(payload.sessionId || "").trim();
+    const stu = String(payload.studentId || "").trim();
+    if (stu) {
+      studentIds.add(stu);
+      const lid = String(opts.listId || "").trim();
+      if (lid) listIdByStudent.set(stu, lid);
+    }
+    updates[`${RTD_ATTENDANCE_RECORDS}/by_session/${sid}/${stu}`] = payload;
+    updates[`${RTD_ATTENDANCE_RECORDS}/by_student/${stu}/${sid}`] = payload;
+  }
+  if (Object.keys(updates).length === 0) return;
+  try {
+    await admin.database().ref().update(updates);
+  } catch (e) {
+    logError("publish_attendance_record_batch_rtd", e, {count: records.length});
+    return;
+  }
+  if (db) {
+    for (const stu of studentIds) {
+      await publishStudentRollStatsToRtd(db, stu, listIdByStudent.get(stu));
+    }
+  }
+}
+
+/**
+ * @param {FirebaseFirestore.Firestore} db
+ * @param {string} sessionId
+ * @param {string} listId
+ * @return {Promise<Record<string, unknown>>}
+ */
+async function computeSessionRollStats(db, sessionId, listId) {
+  const sid = String(sessionId || "").trim();
+  const recSnap = await db.collection(RECORDS_COL)
+      .where("sessionId", "==", sid)
+      .get();
+  let present = 0;
+  let absent = 0;
+  /** @type {Set<string>} */
+  const withRecord = new Set();
+  for (const doc of recSnap.docs) {
+    const d = doc.data() || {};
+    const stu = String(d.studentId || "").trim();
+    if (stu) withRecord.add(stu);
+    if (d.present === true) present++;
+    else absent++;
+  }
+  const {courseByStudent} = await loadSignInRosterForList(
+      db,
+      String(listId || "").trim(),
+  );
+  /** @type {Set<string>} */
+  const enrolledSet = new Set(courseByStudent.keys());
+  for (const stu of withRecord) enrolledSet.add(stu);
+  const enrolled = enrolledSet.size;
+  const pending = Math.max(0, enrolled - present - absent);
+  const resolved = present + absent;
+  const percentRounded = resolved <= 0 ?
+    0 :
+    Math.round((100 * present) / resolved);
+  return {
+    sessionId: sid,
+    listId: String(listId || "").trim(),
+    enrolled,
+    present,
+    absent,
+    pending,
+    percentRounded,
+    updatedAt: Date.now(),
+  };
+}
+
+/**
+ * Publishes present/absent/pending counts for instant roll UI refresh.
+ * @param {FirebaseFirestore.Firestore} db
+ * @param {string} sessionId
+ * @param {string} listId
+ */
+async function publishSessionRollStatsToRtd(db, sessionId, listId) {
+  const sid = String(sessionId || "").trim();
+  if (!sid) return;
+  const lid = String(listId || "").trim();
+  try {
+    const stats = await computeSessionRollStats(db, sid, lid);
+    /** @type {Record<string, unknown>} */
+    const updates = {
+      [`${RTD_ATTENDANCE_ROLL_STATS}/by_session/${sid}`]: stats,
+    };
+    if (lid) {
+      updates[`${RTD_ATTENDANCE_ROLL_STATS}/by_list/${lid}/${sid}`] = stats;
+    }
+    await admin.database().ref().update(updates);
+  } catch (e) {
+    logError("publish_roll_stats_rtd", e, {sessionId: sid, listId: lid});
+  }
+}
+
+/**
  * Validates a pending check-in attempt and writes the official attendance row.
  * @param {FirebaseFirestore.Firestore} db
  * @param {FirebaseFirestore.DocumentSnapshot} attemptSnap
@@ -2259,6 +3203,15 @@ async function reconcileCheckInAttempt(db, attemptSnap) {
       patch.sessionId = resolvedSessionId;
     }
     await attemptSnap.ref.update(patch);
+    await publishCheckInConfirmationToRtd({
+      sessionId: resolvedSessionId,
+      studentId,
+      status: "rejected",
+      present: false,
+      verified: false,
+      rejectionReason: reason,
+      recordId: attemptSnap.id,
+    });
     if (markAbsent && resolvedSessionId && sessionForLog) {
       await writeOfficialAbsentForVerifiedMismatch(db, {
         sessionId: resolvedSessionId,
@@ -2297,8 +3250,11 @@ async function reconcileCheckInAttempt(db, attemptSnap) {
 
   const hintedSessionId = String(data.sessionId || "").trim();
   if (hintedSessionId && data.awaitingSession !== true) {
-    const hintSnap = await db.collection(SESSIONS_COL).doc(hintedSessionId).get();
-    if (!hintSnap.exists) {
+    const rtdHint = await loadRunningSessionFromRtd(hintedSessionId);
+    const hintSnap = rtdHint ?
+      null :
+      await db.collection(SESSIONS_COL).doc(hintedSessionId).get();
+    if (!rtdHint && !hintSnap?.exists) {
       if (!attemptRetentionExpired(data)) return;
       await reject(
           "Lecturer session metadata not found within the retention window.",
@@ -2344,26 +3300,27 @@ async function reconcileCheckInAttempt(db, attemptSnap) {
   }
 
   if (listId && String(session.listId || "").trim() !== listId) {
-    await reject("Session does not match list.", sessionId, false, session);
-    return;
+    const attemptCode = normalizeSessionCode(String(data.sessionCodeRaw || ""));
+    const sessionCode = normalizeSessionCode(String(session.sessionCode || ""));
+    if (!attemptCode || attemptCode !== sessionCode) {
+      await reject("Session does not match list.", sessionId, false, session);
+      return;
+    }
   }
 
-  const withinTime = isTimestampWithinSessionBounds(session, capturedAt);
-  const withinRadius =
-    Number.isFinite(latitude) &&
-    Number.isFinite(longitude) &&
-    isPositionWithinSession(session, latitude, longitude);
-
-  if (!withinTime || !withinRadius) {
-    const reason = !withinTime ?
-      "Captured outside session time window." :
-      "Outside class location radius at capture time.";
-    await reject(reason, sessionId, true, session);
-    return;
-  }
-
-  if (!Number.isFinite(latitude) || !Number.isFinite(longitude)) {
-    await reject("Invalid GPS coordinates.", sessionId, true, session);
+  const resolvedListId = String(session.listId || listId || "").trim();
+  if (!checkInAttemptShouldAcceptPresent(
+      data,
+      sessionId,
+      session,
+      resolvedListId,
+  )) {
+    await reject(
+        "Check-in does not match session metadata.",
+        sessionId,
+        false,
+        session,
+    );
     return;
   }
 
@@ -2376,11 +3333,20 @@ async function reconcileCheckInAttempt(db, attemptSnap) {
       note: "Already present on official roll.",
       processedAt: FieldValue.serverTimestamp(),
     });
+    await publishCheckInConfirmationToRtd({
+      sessionId,
+      studentId,
+      status: "accepted",
+      present: true,
+      verified: true,
+      recordId: attemptSnap.id,
+    });
     return;
   }
 
   const claim = await claimDeviceForSessionPresent(db, {
     sessionId,
+    listId: resolvedListId,
     deviceId,
     studentId,
     attemptId: attemptSnap.id,
@@ -2429,6 +3395,30 @@ async function reconcileCheckInAttempt(db, attemptSnap) {
     sessionId,
     processedAt: FieldValue.serverTimestamp(),
   });
+  await publishCheckInConfirmationToRtd({
+    sessionId,
+    studentId,
+    status: "accepted",
+    present: true,
+    verified: true,
+    recordId: attemptSnap.id,
+  });
+  await publishAttendanceRecordToRtd(db, {
+    sessionId,
+    studentId,
+    present: true,
+    verified: true,
+    course,
+    timestampMs: firestoreTimestampToMillis(capturedAt) ?? Date.now(),
+    latitude,
+    longitude,
+    deviceId,
+    recordId: `${sessionId}_${studentId}`,
+    listId: resolvedListId,
+  });
+  if (resolvedListId) {
+    await publishSessionRollStatsToRtd(db, sessionId, resolvedListId);
+  }
 
   try {
     await db.collection(SESSIONS_COL).doc(sessionId).update({
@@ -2460,7 +3450,7 @@ async function upgradeMetadataMatchedAbsentRecordsForStudentOnList(
     if (existing.exists && existing.data()?.present === true) return;
     const ad = attemptSnap.data() || {};
     const st = String(ad.status || "").trim().toLowerCase();
-    if (checkInAttemptQualifiesForPresentCorrection(ad, session, listId)) {
+    if (checkInAttemptShouldAcceptPresent(ad, sessionId, session, listId)) {
       await writePresentFromMetadataAttempt(
           db,
           sessionId,
@@ -2584,7 +3574,8 @@ async function backfillAbsentRecordsForStudentOnList(
       if (stillOpen) continue;
 
       const missedBeforeJoin = signedMs > 0 && endMs < signedMs;
-      const graceExpired = nowMs - endMs > GRACE_MS;
+      const graceExpired = await studentSessionGraceExpired(
+          db, listId, studentId, endMs, signedInAt, nowMs);
       if (!missedBeforeJoin && !graceExpired && s.finalized !== true) {
         continue;
       }
@@ -2607,7 +3598,7 @@ async function backfillAbsentRecordsForStudentOnList(
         const st = String(ad.status || "").trim().toLowerCase();
         if (
           st === "accepted" ||
-          checkInAttemptQualifiesForPresentCorrection(ad, s, listId)
+          checkInAttemptShouldAcceptPresent(ad, sessionId, s, listId)
         ) {
           await writePresentFromMetadataAttempt(
               db,
@@ -2707,6 +3698,174 @@ async function deleteQueryInBatches(db, query) {
 }
 
 /**
+ * Applies a multi-path Realtime Database update, chunking when needed.
+ * @param {Record<string, unknown>} updates
+ */
+async function applyRtdUpdates(updates) {
+  const keys = Object.keys(updates);
+  if (keys.length === 0) return;
+  for (let i = 0; i < keys.length; i += BATCH_WRITE_LIMIT) {
+    /** @type {Record<string, unknown>} */
+    const chunk = {};
+    for (const key of keys.slice(i, i + BATCH_WRITE_LIMIT)) {
+      chunk[key] = updates[key];
+    }
+    try {
+      await admin.database().ref().update(chunk);
+    } catch (e) {
+      logError("apply_rtd_updates", e, {count: Object.keys(chunk).length});
+    }
+  }
+}
+
+/**
+ * Collects session ids (and optional join codes) tied to a list. Includes
+ * sessions still in Firestore and ids discovered from records/attempts when
+ * the client removed session docs before the list document.
+ * @param {FirebaseFirestore.Firestore} db
+ * @param {string} listId
+ * @returns {Promise<Map<string, {sessionCode?: string}>>}
+ */
+async function collectSessionsForListDelete(db, listId) {
+  /** @type {Map<string, {sessionCode?: string}>} */
+  const sessions = new Map();
+
+  const addSession = (sessionId, data = {}) => {
+    const sid = String(sessionId || "").trim();
+    if (!sid) return;
+    const prev = sessions.get(sid) || {};
+    const code = normalizeSessionCode(
+        data.sessionCode || data.sessionCodeRaw || prev.sessionCode || "",
+    );
+    sessions.set(sid, {sessionCode: code || prev.sessionCode});
+  };
+
+  await forEachQueryPage(
+      db,
+      db.collection(SESSIONS_COL).where("listId", "==", listId),
+      async (docs) => {
+        for (const doc of docs) addSession(doc.id, doc.data() || {});
+      },
+  );
+
+  const addFromRow = (data) => {
+    const sid = String(data.sessionId || "").trim();
+    if (!sid) return;
+    addSession(sid, data);
+  };
+
+  await forEachQueryPage(
+      db,
+      db.collection(RECORDS_COL).where("listId", "==", listId),
+      async (docs) => {
+        for (const doc of docs) addFromRow(doc.data() || {});
+      },
+  );
+  await forEachQueryPage(
+      db,
+      db.collection(ATTEMPTS_COL).where("listId", "==", listId),
+      async (docs) => {
+        for (const doc of docs) addFromRow(doc.data() || {});
+      },
+  );
+
+  await forEachQueryPage(
+      db,
+      db.collection(DEVICE_LOCKS_COL).where("listId", "==", listId),
+      async (docs) => {
+        for (const doc of docs) addFromRow(doc.data() || {});
+      },
+  );
+
+  return sessions;
+}
+
+/**
+ * @param {FirebaseFirestore.Firestore} db
+ * @param {string} sessionId
+ * @returns {Promise<{studentIds: string[], recordIds: string[]}>}
+ */
+async function collectSessionRtdTargets(db, sessionId) {
+  const sid = String(sessionId || "").trim();
+  /** @type {Set<string>} */
+  const studentIds = new Set();
+  /** @type {Set<string>} */
+  const recordIds = new Set();
+
+  const collectFromDocs = (docs) => {
+    for (const doc of docs) {
+      recordIds.add(doc.id);
+      const stu = String(doc.data()?.studentId || "").trim();
+      if (stu) studentIds.add(stu);
+    }
+  };
+
+  await forEachQueryPage(
+      db,
+      db.collection(RECORDS_COL).where("sessionId", "==", sid),
+      async (docs) => collectFromDocs(docs),
+  );
+  await forEachQueryPage(
+      db,
+      db.collection(ATTEMPTS_COL).where("sessionId", "==", sid),
+      async (docs) => collectFromDocs(docs),
+  );
+
+  return {
+    studentIds: [...studentIds],
+    recordIds: [...recordIds],
+  };
+}
+
+/**
+ * Removes Realtime Database mirrors for one session removed with its list.
+ * @param {string} sessionId
+ * @param {string} listId
+ * @param {{sessionCode?: string}} meta
+ * @param {string[]} studentIds
+ * @param {string[]} recordIds
+ */
+async function purgeSessionRtdForListDelete(
+    sessionId,
+    listId,
+    meta,
+    studentIds,
+    recordIds,
+) {
+  const sid = String(sessionId || "").trim();
+  if (!sid) return;
+  const lid = String(listId || "").trim();
+  const code = normalizeSessionCode(meta?.sessionCode || "");
+
+  /** @type {Record<string, unknown>} */
+  const updates = {
+    [`${RTD_ATTENDANCE_SESSIONS}/by_id/${sid}`]: null,
+    [`${RTD_ATTENDANCE_RECORDS}/by_session/${sid}`]: null,
+    [`${RTD_ATTENDANCE_ROLL_STATS}/by_session/${sid}`]: null,
+    [`${RTD_CHECK_IN_CONFIRMATIONS}/by_session/${sid}`]: null,
+  };
+  if (code) {
+    updates[`${RTD_ATTENDANCE_SESSIONS}/by_code/${code}/${sid}`] = null;
+  }
+  if (lid) {
+    updates[`${RTD_ATTENDANCE_SESSIONS}/by_list/${lid}/${sid}`] = null;
+    updates[`${RTD_ATTENDANCE_ROLL_STATS}/by_list/${lid}/${sid}`] = null;
+  }
+  for (const studentId of studentIds) {
+    const stu = String(studentId || "").trim();
+    if (!stu) continue;
+    updates[`${RTD_ATTENDANCE_RECORDS}/by_student/${stu}/${sid}`] = null;
+    updates[`${RTD_CHECK_IN_CONFIRMATIONS}/by_student/${stu}/${sid}`] = null;
+  }
+  for (const recordId of recordIds) {
+    const rid = String(recordId || "").trim();
+    if (!rid) continue;
+    updates[`${RTD_CHECK_IN_CONFIRMATIONS}/by_record/${rid}`] = null;
+  }
+  await applyRtdUpdates(updates);
+}
+
+/**
  * Server-side cascade when an attendance list document is removed.
  * @param {FirebaseFirestore.Firestore} db
  * @param {string} listId
@@ -2715,17 +3874,21 @@ async function cascadeDeleteAttendanceList(db, listId) {
   const trimmed = String(listId || "").trim();
   if (!trimmed) return;
 
-  /** @type {string[]} */
-  const sessionIds = [];
-  await forEachQueryPage(
-      db,
-      db.collection(SESSIONS_COL).where("listId", "==", trimmed),
-      async (docs) => {
-        for (const doc of docs) sessionIds.push(doc.id);
-      },
-  );
+  const sessions = await collectSessionsForListDelete(db, trimmed);
 
-  for (const sessionId of sessionIds) {
+  for (const [sessionId, meta] of sessions) {
+    const {studentIds, recordIds} = await collectSessionRtdTargets(db, sessionId);
+    await purgeSessionRtdForListDelete(
+        sessionId,
+        trimmed,
+        meta,
+        studentIds,
+        recordIds,
+    );
+    await deleteQueryInBatches(
+        db,
+        db.collection(DEVICE_LOCKS_COL).where("sessionId", "==", sessionId),
+    );
     await deleteQueryInBatches(
         db,
         db.collection(RECORDS_COL).where("sessionId", "==", sessionId),
@@ -2739,6 +3902,11 @@ async function cascadeDeleteAttendanceList(db, listId) {
         db.collection("notices").where("sessionId", "==", sessionId),
     );
   }
+
+  await applyRtdUpdates({
+    [`${RTD_ATTENDANCE_SESSIONS}/by_list/${trimmed}`]: null,
+    [`${RTD_ATTENDANCE_ROLL_STATS}/by_list/${trimmed}`]: null,
+  });
 
   await deleteQueryInBatches(
       db,
@@ -2760,9 +3928,13 @@ async function cascadeDeleteAttendanceList(db, listId) {
       db,
       db.collection("notices").where("targetListId", "==", trimmed),
   );
+  await deleteQueryInBatches(
+      db,
+      db.collection(DEVICE_LOCKS_COL).where("listId", "==", trimmed),
+  );
   logInfo("cascade_delete_attendance_list_done", {
     listId: trimmed,
-    sessionCount: sessionIds.length,
+    sessionCount: sessions.size,
   });
 }
 
@@ -2779,6 +3951,92 @@ exports.onAttendanceListDeleted = onDocumentDeleted(
       await cascadeDeleteAttendanceList(upanelDb(), listId);
     } catch (e) {
       logError("onAttendanceListDeleted_failed", e, {listId});
+    }
+    return null;
+  },
+);
+
+/** Backfill prior-session absents when an official **present** row lands. */
+exports.onAttendanceRecordWrittenBackfillAbsents = onDocumentWritten(
+  {
+    document: `${RECORDS_COL}/{recordId}`,
+    database: "upanel",
+    region: FUNCTION_REGION,
+  },
+  async (event) => {
+    const afterSnap = event.data?.after;
+    if (!afterSnap?.exists) return null;
+    const after = afterSnap.data() || {};
+    const studentId = String(after.studentId || "").trim();
+    const sessionId = String(after.sessionId || "").trim();
+    if (!studentId || !sessionId) return null;
+
+    const db = upanelDb();
+    let listId = String(after.listId || "").trim();
+    if (!listId) {
+      const sessSnap = await db.collection(SESSIONS_COL).doc(sessionId).get();
+      if (sessSnap.exists) {
+        listId = String(sessSnap.data()?.listId || "").trim();
+      }
+    }
+
+    try {
+      await publishAttendanceRecordToRtd(db, {
+        sessionId,
+        studentId,
+        present: after.present === true,
+        verified: after.verified === true,
+        course: after.course,
+        timestampMs: firestoreTimestampToMillis(after.timestamp) ?? Date.now(),
+        latitude: Number(after.latitude) || 0,
+        longitude: Number(after.longitude) || 0,
+        deviceId: after.deviceId,
+        recordId: afterSnap.id,
+        listId,
+      });
+      if (listId) {
+        await publishSessionRollStatsToRtd(db, sessionId, listId);
+      }
+    } catch (e) {
+      logError("onAttendanceRecordWritten_rtd_mirror", e, {
+        sessionId,
+        studentId,
+      });
+    }
+
+    if (after.present !== true) return null;
+    if (!listId) return null;
+
+    try {
+      await upgradeMetadataMatchedAbsentRecordsForStudentOnList(
+          db,
+          listId,
+          studentId,
+      );
+      const signSnap = await db.collection("sign_ins")
+          .where("listId", "==", listId)
+          .where("studentId", "==", studentId)
+          .limit(1)
+          .get();
+      const course = signSnap.docs.length > 0 ?
+        String(signSnap.docs[0].data()?.course || "").trim() :
+        String(after.course || "").trim();
+      const signedInAt = signSnap.docs.length > 0 ?
+        signSnap.docs[0].data()?.signedInAt :
+        undefined;
+      await backfillAbsentRecordsForStudentOnList(
+          db,
+          listId,
+          studentId,
+          course,
+          signedInAt,
+      );
+    } catch (e) {
+      logError("onAttendanceRecordWrittenBackfill_failed", e, {
+        sessionId,
+        studentId,
+        listId,
+      });
     }
     return null;
   },
@@ -2846,10 +4104,7 @@ exports.onCheckInAttemptWritten = onDocumentWritten(
     if (!listId) {
       const sessionId = String(data.sessionId || "").trim();
       if (sessionId) {
-        const sessSnap = await db.collection(SESSIONS_COL).doc(sessionId).get();
-        if (sessSnap.exists) {
-          listId = String(sessSnap.data()?.listId || "").trim();
-        }
+        listId = await resolveListIdForSessionId(db, sessionId);
       }
     }
     if (!listId) return null;
@@ -2875,11 +4130,30 @@ exports.onAttendanceSessionWritten = onDocumentWritten(
   },
   async (event) => {
     const after = event.data?.after;
-    if (!after?.exists) return null;
+    const sessionId = event.params.sessionId;
+    if (!after?.exists) {
+      const before = event.data?.before?.exists ?
+        (event.data.before.data() || {}) :
+        {};
+      await publishSessionToRtd(sessionId, before, {remove: true});
+      return null;
+    }
     const session = after.data() || {};
+    const before = event.data?.before?.exists ?
+      (event.data.before.data() || {}) :
+      null;
     const db = upanelDb();
-    const sessionId = after.id;
     try {
+      const geofenceNowReady =
+        session.remoteLearning === true ||
+        isSessionGeofenceConfigured(session);
+      const geofenceWasReady = before &&
+        (before.remoteLearning === true || isSessionGeofenceConfigured(before));
+      if (geofenceNowReady && !geofenceWasReady) {
+        try {
+          await after.ref.update({awaitingStudentMetadata: false});
+        } catch (_) {}
+      }
       await reconcilePendingAttemptsForSession(db, sessionId, session);
       const code = normalizeSessionCode(session.sessionCode);
       if (!code) return null;
@@ -2905,63 +4179,169 @@ exports.onAttendanceSessionWritten = onDocumentWritten(
     } catch (e) {
       logError("onAttendanceSessionWritten_failed", e, {sessionId});
     }
+    try {
+      await publishSessionToRtd(sessionId, session);
+    } catch (e) {
+      logError("publish_session_rtd_hook", e, {sessionId});
+    }
+    return null;
+  },
+);
+
+/** Reconcile pending check-ins when a running session appears on RTD. */
+exports.onRunningSessionRtdWritten = onValueWritten(
+  {
+    ref: `${RTD_ATTENDANCE_SESSIONS}/by_id/{sessionId}`,
+    instance: "u-panel-2026-default-rtdb",
+    region: "europe-west1",
+  },
+  async (event) => {
+    const after = event.data.after.val();
+    if (!after || typeof after !== "object") return null;
+    if (String(after.status || "").trim().toLowerCase() !== "active") return null;
+    const sessionId = event.params.sessionId;
+    const db = upanelDb();
+    try {
+      await reconcilePendingAttemptsForSession(db, sessionId, after);
+      const code = normalizeSessionCode(after.sessionCode);
+      if (!code) return null;
+      await forEachQueryPage(
+          db,
+          db.collection(ATTEMPTS_COL)
+              .where("awaitingSession", "==", true)
+              .where("sessionCodeRaw", "==", code)
+              .where("status", "==", "pending"),
+          async (docs) => {
+            for (const doc of docs) {
+              try {
+                await reconcileCheckInAttempt(db, doc);
+              } catch (e) {
+                logError("rtd_reconcile_awaiting_claim", e, {
+                  attemptId: doc.id,
+                  sessionId,
+                });
+              }
+            }
+          },
+      );
+    } catch (e) {
+      logError("onRunningSessionRtdWritten_failed", e, {sessionId});
+    }
     return null;
   },
 );
 
 /**
- * Periodically reconcile pending check-in attempts (e.g. session synced after
- * upload). Verified session + bad time/GPS → rejected immediately.
+ * Reconcile every pending check_in_attempt (backup to realtime triggers).
+ * @param {FirebaseFirestore.Firestore} db
  */
-exports.reconcilePendingCheckInAttempts = onSchedule(
+async function reconcileAllPendingCheckInAttempts(db) {
+  let processed = 0;
+  await forEachQueryPage(
+      db,
+      db.collection(ATTEMPTS_COL).where("status", "==", "pending"),
+      async (docs) => {
+        for (const doc of docs) {
+          try {
+            await reconcileCheckInAttempt(db, doc);
+            processed++;
+            const d = doc.data() || {};
+            const studentId = String(d.studentId || "").trim();
+            let listId = String(d.listId || "").trim();
+            if (!listId) {
+              const sessionId = String(d.sessionId || "").trim();
+              if (sessionId) {
+                listId = await resolveListIdForSessionId(db, sessionId);
+              }
+            }
+            if (listId && studentId) {
+              await upgradeMetadataMatchedAbsentRecordsForStudentOnList(
+                  db,
+                  listId,
+                  studentId,
+              );
+            }
+          } catch (e) {
+            logError("scheduled_reconcile_failed", e, {
+              attemptId: doc.id,
+            });
+          }
+        }
+      },
+  );
+  logInfo("reconcilePendingCheckInAttempts_done", {processed});
+}
+
+/**
+ * @param {string} uid
+ * @returns {Promise<{isAdmin: boolean, isLecturer: boolean}>}
+ */
+async function resolveStaffAccessFlags(uid) {
+  const id = String(uid || "").trim();
+  if (!id) return {isAdmin: false, isLecturer: false};
+  const db = upanelDb();
+  let isAdmin = false;
+  let isLecturer = false;
+  try {
+    const adminSnap = await db.collection("admins").doc(id).get();
+    if (adminSnap.exists) {
+      const data = adminSnap.data() || {};
+      isAdmin = isTruthyFlag(data.isAdmin) || isTruthyFlag(data.isadmin);
+    }
+    if (!isAdmin) {
+      const legacySnap = await db.collection("admin").doc(id).get();
+      if (legacySnap.exists) {
+        const data = legacySnap.data() || {};
+        isAdmin = isTruthyFlag(data.isAdmin) || isTruthyFlag(data.isadmin);
+      }
+    }
+    const lectSnap = await db.collection("lecturers").doc(id).get();
+    if (lectSnap.exists) {
+      const data = lectSnap.data() || {};
+      isLecturer = isTruthyFlag(data.isLecturer) || isTruthyFlag(data.islecturer);
+    }
+  } catch (e) {
+    logError("resolve_staff_access_flags", e, {uid: id});
+  }
+  return {isAdmin, isLecturer};
+}
+
+/** Mirror admins/{uid} to RTD staff_access for security rules. */
+exports.onAdminWrittenMirrorStaffAccess = onDocumentWritten(
   {
-    schedule: "every 15 minutes",
+    document: "admins/{uid}",
+    database: "upanel",
     region: FUNCTION_REGION,
-    timeZone: "UTC",
   },
-  async () => {
-    const db = upanelDb();
-    return runWithLease(db, "reconcilePendingCheckInAttempts", 15 * 60 * 1000,
-        async () => {
-          let processed = 0;
-          await forEachQueryPage(
-              db,
-              db.collection(ATTEMPTS_COL).where("status", "==", "pending"),
-              async (docs) => {
-                for (const doc of docs) {
-                  try {
-                    await reconcileCheckInAttempt(db, doc);
-                    processed++;
-                    const d = doc.data() || {};
-                    const studentId = String(d.studentId || "").trim();
-                    let listId = String(d.listId || "").trim();
-                    if (!listId) {
-                      const sessionId = String(d.sessionId || "").trim();
-                      if (sessionId) {
-                        const sessSnap =
-                          await db.collection(SESSIONS_COL).doc(sessionId).get();
-                        if (sessSnap.exists) {
-                          listId = String(sessSnap.data()?.listId || "").trim();
-                        }
-                      }
-                    }
-                    if (listId && studentId) {
-                      await upgradeMetadataMatchedAbsentRecordsForStudentOnList(
-                          db,
-                          listId,
-                          studentId,
-                      );
-                    }
-                  } catch (e) {
-                    logError("scheduled_reconcile_failed", e, {
-                      attemptId: doc.id,
-                    });
-                  }
-                }
-              },
-          );
-          logInfo("reconcilePendingCheckInAttempts_done", {processed});
-          return null;
-        });
+  async (event) => {
+    const uid = String(event.params.uid || "").trim();
+    if (!uid) return null;
+    const flags = await resolveStaffAccessFlags(uid);
+    if (flags.isAdmin || flags.isLecturer) {
+      await publishStaffAccessToRtd(uid, flags);
+    } else {
+      await removeStaffAccessFromRtd(uid);
+    }
+    return null;
+  },
+);
+
+/** Mirror lecturers/{uid} to RTD staff_access for security rules. */
+exports.onLecturerWrittenMirrorStaffAccess = onDocumentWritten(
+  {
+    document: "lecturers/{uid}",
+    database: "upanel",
+    region: FUNCTION_REGION,
+  },
+  async (event) => {
+    const uid = String(event.params.uid || "").trim();
+    if (!uid) return null;
+    const flags = await resolveStaffAccessFlags(uid);
+    if (flags.isAdmin || flags.isLecturer) {
+      await publishStaffAccessToRtd(uid, flags);
+    } else {
+      await removeStaffAccessFromRtd(uid);
+    }
+    return null;
   },
 );

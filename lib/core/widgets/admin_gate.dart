@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../auth/auth_repository.dart';
+import '../errors/user_facing_errors.dart';
 import '../theme/app_theme.dart';
 
 /// Shows [child] only when the signed-in user is a QA admin.
@@ -9,9 +10,7 @@ class AdminGate extends StatelessWidget {
     super.key,
     required this.child,
     this.title = 'Admin only',
-    this.message =
-        'Only signed-in QA staff or administrators can access this area. Your '
-        'account needs admins/{uid} with isAdmin: true in Firestore.',
+    this.message = UserFacingErrors.adminOnly,
   });
 
   final Widget child;

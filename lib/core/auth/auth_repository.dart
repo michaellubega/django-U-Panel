@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 import '../../firebase_options.dart';
+import '../../features/notices/data/notices_repository.dart';
 import '../platform/web_fast_boot.dart';
 import 'auth_action_result.dart';
 import 'auth_session_cache.dart';
@@ -20,6 +21,8 @@ import 'kiu_admin_job_title.dart';
 import 'login_email.dart';
 import 'user_role.dart';
 import '../connectivity/app_connectivity.dart';
+import '../errors/user_facing_errors.dart';
+import '../firebase/student_rtd_index.dart';
 import '../storage/attendance_local_queues.dart';
 import '../firebase/firestore_collections.dart';
 import '../firebase/u_panel_firestore.dart';
@@ -126,12 +129,15 @@ String _formatStaffWriteFailure({
       ? currentUid.trim()
       : 'unknown uid';
   if (_isFirestorePermissionDenied(error)) {
-    return 'Access denied at $stage (Firestore db: $databaseId, uid: $uidPart). '
-        'Ensure rules are deployed to this database and this uid has admins/$uidPart '
-        'with isAdmin: true. Raw error: $detail';
+    return UserFacingErrors.forPermissionDenied();
   }
-  return 'Failed at $stage (Firestore db: $databaseId, uid: $uidPart). '
-      'Raw error: $detail';
+  if (kDebugMode) {
+    debugPrint(
+      'AuthRepository staff write failed at $stage '
+      '(db=$databaseId, uid=$uidPart): $detail',
+    );
+  }
+  return UserFacingErrors.genericTryAgain;
 }
 
 /// Firebase Auth (email + password) with optional profile fields in [app_users/{uid}].
@@ -156,10 +162,29 @@ class AuthRepository extends ChangeNotifier {
   static const staffAccountRoleStaff = 'staff';
   static const lecturerIsLecturerField = 'isLecturer';
 
+  /// Student role on [FirestoreCollections.appUsers] — used for UI routing.
+  static const appUserIsStudentField = 'isStudent';
+
+  static const pendingRegistrationNumberField = 'pendingRegistrationNumber';
+  /// Set on [student_registrations] only after Firebase Auth email is verified.
+  static const studentRegEmailVerifiedLinkField = 'emailVerifiedAtLink';
+
+  static bool _studentRegistrationLockIsFinal(Map<String, dynamic>? data) {
+    if (data == null) return false;
+    return data[studentRegEmailVerifiedLinkField] == true;
+  }
+
   static bool _adminFlagFromData(Map<String, dynamic>? data) {
     if (data == null) return false;
     bool truthy(dynamic v) => v == true || v == 'true' || v == 1;
-    return truthy(data[adminIsAdminField]) || truthy(data[adminIsAdminLegacyField]);
+    if (truthy(data[adminIsAdminField]) || truthy(data[adminIsAdminLegacyField])) {
+      return true;
+    }
+    final role = (data[adminRoleField] as String?)?.trim().toLowerCase();
+    if (role == adminRoleQaStaff || role == adminRoleAdministrator) {
+      return true;
+    }
+    return _adminDocIsQaStaff(data);
   }
 
   static bool _kiuAdminFlagFromData(Map<String, dynamic>? data) {
@@ -209,7 +234,8 @@ class AuthRepository extends ChangeNotifier {
   bool _initialized = false;
   bool get initialized => _initialized;
 
-  /// Web: cached session exists but Firebase Auth is not ready yet.
+  /// Cached session exists but Firebase Auth has not confirmed the user yet
+  /// (web fast boot, native cold start, or auth persistence still loading).
   bool _pendingWebSessionRestore = false;
   bool get pendingWebSessionRestore => _pendingWebSessionRestore;
   bool _forceSignedOut = false;
@@ -228,6 +254,9 @@ class AuthRepository extends ChangeNotifier {
   int get sessionEpoch => _sessionEpoch;
 
   String? _cachedReg;
+
+  /// `true` / `false` from [app_users]; `null` = legacy doc without [appUserIsStudentField].
+  bool? _cachedIsStudentProfile;
   String? _cachedName;
   String? _cachedKiuAdminJobTitle;
   String? _cachedEmail;
@@ -250,6 +279,11 @@ class AuthRepository extends ChangeNotifier {
   int _hydrateGeneration = 0;
   Future<void>? _activeHydrate;
   String? _activeHydrateUid;
+  String? _lastAuthStateUid;
+
+  Future<void>? _registrationHydrateInFlight;
+  DateTime? _lastRegistrationHydrateAttemptAt;
+  static const Duration _registrationHydrateCooldown = Duration(minutes: 5);
 
   static bool _loggedRoleRulesDeployHint = false;
 
@@ -266,27 +300,390 @@ class AuthRepository extends ChangeNotifier {
   bool get isQaStaff => _isQaStaff;
 
   /// Full administrator (not QA staff).
-  bool get isFullAdministrator => _isAdmin && !_isQaStaff;
+  bool get isFullAdministrator => isAdmin && !isQaStaff;
 
   bool get adminCheckDone => _adminCheckDone;
 
   bool get isLecturer => _isLecturer;
   bool get lecturerCheckDone => _lecturerCheckDone;
 
-  /// Resolved role for navigation: staff access wins over lecturer when both apply.
+  /// Signed in with a KIU staff mailbox (@kiu.ac.ug etc.), not a student domain.
+  bool get isStaffAuthIdentity {
+    if (!isLoggedIn) return false;
+    final email =
+        FirebaseAuth.instance.currentUser?.email ?? _cachedEmail ?? '';
+    return KiuStaffAuthEmail.isStaffMailbox(email);
+  }
+
+  /// Signed in with synthetic `KIU-####` staff ID (QA staff / administrators).
+  bool get isSyntheticStaffAuthIdentity {
+    if (!isLoggedIn) return false;
+    final email =
+        FirebaseAuth.instance.currentUser?.email ?? _cachedEmail ?? '';
+    return StaffAuthEmail.syntheticEmailToStaffNumber(email) != null;
+  }
+
+  /// Signed in with a student mailbox (@studmc.kiu.ac.ug or @studwc.kiu.ac.ug).
+  bool get isStudentAuthIdentity {
+    if (!isLoggedIn) return false;
+    if (isStaffAuthIdentity) return false;
+    if (isSyntheticStaffAuthIdentity) return false;
+    final email =
+        FirebaseAuth.instance.currentUser?.email ?? _cachedEmail ?? '';
+    return StudentAuthEmail.isStudentMailbox(email);
+  }
+
+  /// Before role hydration: KIU student mailbox and not staff / explicitly non-student.
+  bool get isLikelyStudent {
+    if (isSyntheticStaffAuthIdentity) return false;
+    if (!isStudentAuthIdentity) return false;
+    if (_cachedIsStudentProfile == false) return false;
+    if (adminCheckDone && (_isAdmin || _isKiuAdmin)) return false;
+    if (lecturerCheckDone && _isLecturer) return false;
+    return true;
+  }
+
+  /// True when student UI and student-scoped attendance loads should run.
+  bool get isStudentProfile {
+    if (!isLoggedIn) return false;
+    if (isSyntheticStaffAuthIdentity || isStaffAuthIdentity) return false;
+    if (_isAdmin || _isQaStaff || _isKiuAdmin || _isLecturer) return false;
+    if (_adminCheckDone && (_isAdmin || _isKiuAdmin)) return false;
+    if (_lecturerCheckDone && _isLecturer) return false;
+    if (!isStudentAuthIdentity) return false;
+    if (_cachedIsStudentProfile == false) return false;
+    return _cachedIsStudentProfile ?? true;
+  }
+
+  /// Resolved role for navigation: Firestore grants (admins / lecturers) win.
   UserRole get resolvedRole {
     if (_adminCheckDone && _isAdmin) {
       return _isQaStaff ? UserRole.qaStaff : UserRole.admin;
     }
     if (_adminCheckDone && _isKiuAdmin) return UserRole.kiuAdmin;
-    if (_lecturerCheckDone && _isLecturer) return UserRole.lecturer;
-    return UserRole.student;
+    // Trust cached/hydrated flags before role reads finish (session restore).
+    if (_isQaStaff) return UserRole.qaStaff;
+    if (_isAdmin) return UserRole.admin;
+    if (_isKiuAdmin) return UserRole.kiuAdmin;
+    if (_isLecturer) return UserRole.lecturer;
+    if (isStaffAuthIdentity || isSyntheticStaffAuthIdentity) {
+      return UserRole.lecturer;
+    }
+    if (isStudentAuthIdentity || isStudentProfile) return UserRole.student;
+    return UserRole.lecturer;
+  }
+
+  static bool? parseIsStudentFromProfileData(Map<String, dynamic>? data) {
+    if (data == null || !data.containsKey(appUserIsStudentField)) return null;
+    return data[appUserIsStudentField] == true;
+  }
+
+  /// Prefer [app_users.email], but fall back to Firebase Auth when the doc field
+  /// is missing or blank (legacy rows often omit it).
+  String _profileEmailFromData(Map<String, dynamic> data, User user) {
+    final fromDoc = (data['email'] as String?)?.trim().toLowerCase() ?? '';
+    if (fromDoc.isNotEmpty) return fromDoc;
+    return (user.email ?? _cachedEmail ?? '').trim().toLowerCase();
+  }
+
+  String _authMailboxEmail(User user) =>
+      (user.email ?? _cachedEmail ?? '').trim().toLowerCase();
+
+  bool _isStudentAccountProfile(Map<String, dynamic> data, User user) {
+    if (parseIsStudentFromProfileData(data) == true) return true;
+    if (parseIsStudentFromProfileData(data) == false) {
+      return StudentAuthEmail.isStudentMailbox(_authMailboxEmail(user));
+    }
+    if (StudentAuthEmail.isStudentMailbox(_profileEmailFromData(data, user))) {
+      return true;
+    }
+    return StudentAuthEmail.isStudentMailbox(_authMailboxEmail(user));
+  }
+
+  void _applyIsStudentFromProfileData(
+    Map<String, dynamic>? data,
+    User user,
+  ) {
+    final authEmail = _authMailboxEmail(user);
+    if (StaffAuthEmail.syntheticEmailToStaffNumber(authEmail) != null ||
+        KiuStaffAuthEmail.isStaffMailbox(authEmail)) {
+      _cachedIsStudentProfile = false;
+      return;
+    }
+    if (data != null && _isStudentAccountProfile(data, user)) {
+      final explicit = parseIsStudentFromProfileData(data);
+      _cachedIsStudentProfile = explicit ?? true;
+      return;
+    }
+    final explicit = parseIsStudentFromProfileData(data);
+    if (explicit != null) {
+      _cachedIsStudentProfile = explicit;
+      return;
+    }
+    final profileEmail = data == null
+        ? _authMailboxEmail(user)
+        : _profileEmailFromData(data, user);
+    _cachedIsStudentProfile =
+        StudentAuthEmail.isStudentMailbox(profileEmail) ? null : false;
+  }
+
+  void _applyStudentRegistrationFromProfileData(
+    Map<String, dynamic> data,
+    User user,
+  ) {
+    final pending =
+        (data[pendingRegistrationNumberField] as String?)?.trim();
+    if (user.emailVerified) {
+      final regToLink = _studentRegistrationFromProfile(data);
+      _cachedReg = regToLink != null && regToLink.isNotEmpty
+          ? StudentRegistrationNumber.normalize(regToLink)
+          : null;
+      return;
+    }
+    _cachedReg = (pending != null && pending.isNotEmpty)
+        ? StudentRegistrationNumber.normalize(pending)
+        : null;
+  }
+
+  void _recoverStudentRegistrationIfNeeded(
+    User user, {
+    Map<String, dynamic>? profileData,
+  }) {
+    if (!_isStudentAccountProfile(profileData ?? {}, user) &&
+        !StudentAuthEmail.isStudentMailbox(_authMailboxEmail(user))) {
+      return;
+    }
+    if (_cachedReg?.trim().isNotEmpty == true) return;
+    if (profileData != null) {
+      final reg = _studentRegistrationFromProfile(profileData);
+      if (reg != null && reg.isNotEmpty) {
+        _cachedReg = StudentRegistrationNumber.normalize(reg);
+      }
+    }
+    if (_cachedIsStudentProfile == false &&
+        (_cachedReg?.trim().isNotEmpty == true ||
+            parseIsStudentFromProfileData(profileData) == true)) {
+      _cachedIsStudentProfile = true;
+    }
+  }
+
+  String? _registrationFromStudentRegDoc(
+    DocumentSnapshot<Map<String, dynamic>> doc,
+  ) {
+    final data = doc.data();
+    final fromField = (data?['registrationNumber'] as String?)?.trim();
+    if (fromField != null && fromField.isNotEmpty) {
+      return StudentRegistrationNumber.normalize(fromField);
+    }
+    final id = doc.id.trim();
+    if (StudentRegistrationNumber.isCanonicalFormat(id)) {
+      return StudentRegistrationNumber.normalize(id);
+    }
+    return null;
+  }
+
+  String? _registrationFromOwnedStudentRegDoc(
+    DocumentSnapshot<Map<String, dynamic>> doc,
+    User user,
+  ) {
+    if (!doc.exists) return null;
+    final data = doc.data();
+    if (data == null) return null;
+    final ownerUid = (data['uid'] as String?)?.trim() ?? '';
+    if (ownerUid.isNotEmpty && ownerUid != user.uid.trim()) return null;
+    final em = StudentAuthEmail.normalizeStudentEmail(user.email ?? '');
+    final docEmail =
+        StudentAuthEmail.normalizeStudentEmail((data['email'] as String?) ?? '');
+    if (docEmail.isNotEmpty && em.isNotEmpty && docEmail != em) return null;
+    return _registrationFromStudentRegDoc(doc);
+  }
+
+  /// Authoritative link: [student_registrations] rows keyed by uid + school email.
+  Future<String?> _lookupStudentRegistrationFromEmailLink(
+    User user, {
+    String? registrationHint,
+  }) async {
+    if (!StudentAuthEmail.isStudentMailbox(user.email ?? '')) return null;
+    final uid = user.uid.trim();
+    if (uid.isEmpty) return null;
+    final em = StudentAuthEmail.normalizeStudentEmail(user.email ?? '');
+
+    try {
+      final db = uPanelFirestore();
+      final hinted = registrationHint?.trim();
+      if (hinted != null && hinted.isNotEmpty) {
+        final reg = StudentRegistrationNumber.normalize(hinted);
+        if (reg.isNotEmpty) {
+          final direct = await db
+              .collection(FirestoreCollections.studentRegistrations)
+              .doc(reg)
+              .get();
+          final owned = _registrationFromOwnedStudentRegDoc(direct, user);
+          if (owned != null && owned.isNotEmpty) {
+            return owned;
+          }
+        }
+      }
+
+      String? pending;
+
+      final byUid = await db
+          .collection(FirestoreCollections.studentRegistrations)
+          .where('uid', isEqualTo: uid)
+          .limit(10)
+          .get();
+      for (final doc in byUid.docs) {
+        final reg = _registrationFromStudentRegDoc(doc);
+        if (reg == null) continue;
+        final data = doc.data();
+        final docEmail = StudentAuthEmail.normalizeStudentEmail(
+          (data['email'] as String?) ?? '',
+        );
+        if (em.isNotEmpty && docEmail.isNotEmpty && docEmail != em) continue;
+        if (_studentRegistrationLockIsFinal(data) || user.emailVerified) {
+          return reg;
+        }
+        pending ??= reg;
+      }
+      if (pending != null) return pending;
+
+      if (em.isEmpty) return null;
+      final byEmail = await db
+          .collection(FirestoreCollections.studentRegistrations)
+          .where('email', isEqualTo: em)
+          .limit(10)
+          .get();
+      for (final doc in byEmail.docs) {
+        final data = doc.data();
+        final ownerUid = (data['uid'] as String?)?.trim() ?? '';
+        if (ownerUid.isNotEmpty && ownerUid != uid) continue;
+        final reg = _registrationFromStudentRegDoc(doc);
+        if (reg == null) continue;
+        if (_studentRegistrationLockIsFinal(data) || user.emailVerified) {
+          return reg;
+        }
+        pending ??= reg;
+      }
+      return pending;
+    } catch (e, st) {
+      if (kDebugMode) {
+        debugPrint('AuthRepository._lookupStudentRegistrationFromEmailLink: $e');
+        debugPrint('$st');
+      }
+      return null;
+    }
+  }
+
+  Future<void> _backfillAppUserRegistrationFromEmailLink(
+    User user,
+    String reg, {
+    Map<String, dynamic>? profileData,
+  }) async {
+    final normalized = StudentRegistrationNumber.normalize(reg);
+    if (normalized.isEmpty) return;
+    final existing = profileData != null
+        ? _studentRegistrationFromProfile(profileData)
+        : _cachedReg;
+    if (existing != null &&
+        StudentRegistrationNumber.normalize(existing) == normalized) {
+      return;
+    }
+    try {
+      await uPanelFirestore()
+          .collection(FirestoreCollections.appUsers)
+          .doc(user.uid)
+          .set(
+        <String, dynamic>{
+          'email': StudentAuthEmail.normalizeStudentEmail(user.email ?? ''),
+          'registrationNumber': normalized,
+          pendingRegistrationNumberField: FieldValue.delete(),
+          appUserIsStudentField: true,
+          'updatedAt': FieldValue.serverTimestamp(),
+        },
+        SetOptions(merge: true),
+      );
+    } catch (e, st) {
+      if (kDebugMode) {
+        debugPrint('AuthRepository._backfillAppUserRegistrationFromEmailLink: $e');
+        debugPrint('$st');
+      }
+    }
+  }
+
+  /// Profile fields first, then [student_registrations] by uid / attached school email.
+  Future<void> _recoverStudentRegistrationFromAttachedEmail(
+    User user, {
+    Map<String, dynamic>? profileData,
+    required int hydrateGeneration,
+  }) async {
+    _recoverStudentRegistrationIfNeeded(user, profileData: profileData);
+    if (_cachedReg?.trim().isNotEmpty == true) return;
+    if (!StudentAuthEmail.isStudentMailbox(_authMailboxEmail(user))) return;
+
+    final hint = profileData != null
+        ? _studentRegistrationFromProfile(profileData)
+        : _cachedReg;
+    final fromLink = await _lookupStudentRegistrationFromEmailLink(
+      user,
+      registrationHint: hint,
+    );
+    if (fromLink == null || fromLink.isEmpty) return;
+    if (hydrateGeneration != _hydrateGeneration) return;
+
+    _cachedReg = StudentRegistrationNumber.normalize(fromLink);
+    _cachedIsStudentProfile = true;
+    await _backfillAppUserRegistrationFromEmailLink(
+      user,
+      fromLink,
+      profileData: profileData,
+    );
+    if (hydrateGeneration == _hydrateGeneration) {
+      unawaited(_persistSessionCache(user.uid));
+      notifyListeners();
+    }
+  }
+
+  Future<void> _backfillAppUserIsStudentFlag(String uid) async {
+    if (!isStudentAuthIdentity) return;
+    if (_cachedIsStudentProfile == true) return;
+    try {
+      await uPanelFirestore().collection(FirestoreCollections.appUsers).doc(uid).set(
+        <String, dynamic>{
+          appUserIsStudentField: true,
+          'updatedAt': FieldValue.serverTimestamp(),
+        },
+        SetOptions(merge: true),
+      );
+      _cachedIsStudentProfile = true;
+    } catch (e, st) {
+      if (kDebugMode) {
+        debugPrint('AuthRepository._backfillAppUserIsStudentFlag: $e');
+        debugPrint('$st');
+      }
+    }
   }
 
   /// Lecturer attendance tools (lists / sessions) for lecturers and KIU administrators.
   bool get hasLecturerAttendanceAccess =>
-      (_lecturerCheckDone && _isLecturer && !_isAdmin) ||
-      (_adminCheckDone && _isKiuAdmin);
+      !isStudentAuthIdentity &&
+      ((_lecturerCheckDone && _isLecturer && !_isAdmin) ||
+          (_adminCheckDone && _isKiuAdmin));
+
+  /// Student mailboxes must never retain staff role flags (device cache or Firestore).
+  void _stripStaffRolesForStudentMailbox() {
+    if (!isStudentAuthIdentity) return;
+    // Firestore-granted staff access always wins over a student-domain mailbox.
+    if (_isAdmin || _isQaStaff || _isKiuAdmin || _isLecturer) {
+      _cachedIsStudentProfile = false;
+      return;
+    }
+    _isAdmin = false;
+    _isQaStaff = false;
+    _isKiuAdmin = false;
+    _isLecturer = false;
+    _cachedStaffNumber = null;
+    _cachedIsStudentProfile = true;
+  }
 
   static bool _adminDocIsQaStaff(Map<String, dynamic>? data) {
     if (data == null) return false;
@@ -316,40 +713,123 @@ class AuthRepository extends ChangeNotifier {
   /// Set when Firestore denied role profile reads (often rules missing on database [upanel]).
   bool get firestoreRoleCheckDenied => _firestoreRoleCheckDenied;
 
-  String? _studentRegistrationConflictMessage;
-  Timer? _studentRegConflictSnackTimer;
+  String? _authFormErrorMessage;
 
-  static const Duration _studentRegConflictSnackDuration =
-      Duration(seconds: 7);
+  /// Draft sign-up fields retained until success or explicit sign-out.
+  String _draftEmail = '';
+  String _draftFullName = '';
+  String _draftRegistrationNumber = '';
+  bool _draftRegisterMode = false;
+
+  void updateAuthFormDraft({
+    required String email,
+    required String fullName,
+    required String registrationNumber,
+    required bool registering,
+  }) {
+    _draftEmail = email;
+    _draftFullName = fullName;
+    _draftRegistrationNumber = registrationNumber;
+    _draftRegisterMode = registering;
+  }
+
+  void clearAuthFormDraft() {
+    _draftEmail = '';
+    _draftFullName = '';
+    _draftRegistrationNumber = '';
+    _draftRegisterMode = false;
+  }
+
+  ({String email, String fullName, String registrationNumber, bool registering})
+      get authFormDraft => (
+        email: _draftEmail,
+        fullName: _draftFullName,
+        registrationNumber: _draftRegistrationNumber,
+        registering: _draftRegisterMode,
+      );
+
+  /// Persistent login / registration error for [AuthScreen] (survives widget rebuilds).
+  String? get authFormErrorMessage => _authFormErrorMessage;
 
   /// Set when [app_users] registration number conflicts with [student_registrations].
-  String? get studentRegistrationConflictMessage =>
-      _studentRegistrationConflictMessage;
+  String? get studentRegistrationConflictMessage => _authFormErrorMessage;
 
-  /// Bottom snackbar for 30s, then clears (registration / reg-link errors).
-  void _presentStudentRegistrationConflict(String message) {
+  void presentAuthFormError(String message) {
     final text = message.trim();
     if (text.isEmpty) return;
-    _studentRegConflictSnackTimer?.cancel();
-    _studentRegistrationConflictMessage = text;
-    showRootSnackBar(
-      text,
-      duration: _studentRegConflictSnackDuration,
-      isError: true,
-    );
-    _studentRegConflictSnackTimer = Timer(_studentRegConflictSnackDuration, () {
-      clearStudentRegistrationConflictMessage();
-    });
+    if (_authFormErrorMessage == text) {
+      if (isLoggedIn && !isAuthenticating) {
+        showRootSnackBar(text, isError: true, duration: const Duration(seconds: 6));
+      }
+      return;
+    }
+    _authFormErrorMessage = text;
+    notifyListeners();
+    if (isLoggedIn && !isAuthenticating) {
+      showRootSnackBar(text, isError: true, duration: const Duration(seconds: 6));
+    }
+  }
+
+  void _presentStudentRegistrationConflict(String message) {
+    presentAuthFormError(message);
+  }
+
+  void clearAuthFormError() {
+    if (_authFormErrorMessage == null) return;
+    _authFormErrorMessage = null;
     notifyListeners();
   }
 
-  void clearStudentRegistrationConflictMessage() {
-    _studentRegConflictSnackTimer?.cancel();
-    _studentRegConflictSnackTimer = null;
-    if (_studentRegistrationConflictMessage == null) return;
-    _studentRegistrationConflictMessage = null;
-    hideRootSnackBar();
-    notifyListeners();
+  void clearStudentRegistrationConflictMessage() => clearAuthFormError();
+
+  AuthActionResult _authActionError(String message) {
+    presentAuthFormError(message);
+    return AuthActionResult(error: message);
+  }
+
+  void _applyStaffNumberFromData(Map<String, dynamic>? data) {
+    if (data == null) return;
+    final sn = (data['staffNumber'] as String?)?.trim().toUpperCase();
+    if (sn != null && sn.isNotEmpty) {
+      _cachedStaffNumber = sn;
+      return;
+    }
+    final reg = (data['registrationNumber'] as String?)?.trim().toUpperCase();
+    if (reg != null && reg.isNotEmpty) {
+      _cachedStaffNumber = reg;
+    }
+  }
+
+  /// KIU-#### logins use a synthetic Firebase email — derive the display id when
+  /// Firestore profile rows omit [staffNumber].
+  void _ensureCachedStaffNumberFromAuthEmail(String? email) {
+    if (_cachedStaffNumber?.trim().isNotEmpty == true) return;
+    final fromEmail = StaffAuthEmail.syntheticEmailToStaffNumber(email ?? '');
+    if (fromEmail != null) {
+      _cachedStaffNumber = fromEmail.toUpperCase();
+    }
+  }
+
+  bool _hasCachedStaffIdentity() =>
+      _cachedStaffNumber != null && _cachedStaffNumber!.trim().isNotEmpty;
+
+  /// True when cached profile has the ids needed for attendance routing.
+  bool _identityHydrationComplete(User user) {
+    final email = user.email ?? _cachedEmail ?? '';
+    if (StudentAuthEmail.isStudentMailbox(email)) {
+      return _cachedReg != null && _cachedReg!.trim().isNotEmpty;
+    }
+    if (!_adminCheckDone || !_lecturerCheckDone) return false;
+    if (_isAdmin || _isQaStaff || _isKiuAdmin || _isLecturer) {
+      return _hasCachedStaffIdentity();
+    }
+    if (KiuStaffAuthEmail.isStaffMailbox(email)) {
+      return false;
+    }
+    if (StaffAuthEmail.syntheticEmailToStaffNumber(email) != null) {
+      return false;
+    }
+    return true;
   }
 
   /// KIU-#### for signed-in lecturer; null for other users.
@@ -373,13 +853,12 @@ class AuthRepository extends ChangeNotifier {
         case TargetPlatform.windows:
         case TargetPlatform.linux:
         case TargetPlatform.macOS:
-          return 'Firebase is not configured for this desktop platform. '
-              'Run flutterfire configure with desktop platforms enabled, then rebuild the app.';
+          return UserFacingErrors.backendNotReadyDesktop;
         default:
           break;
       }
     }
-    return 'Firebase is not ready. Check your connection and restart the app.';
+    return UserFacingErrors.backendNotReady;
   }
 
   static String _normalizeReg(String reg) => reg.trim().toUpperCase();
@@ -393,7 +872,7 @@ class AuthRepository extends ChangeNotifier {
   }
 
   static const String networkUnavailableMessage =
-      'No internet connection. Turn on mobile data or Wi‑Fi, then try again.';
+      UserFacingErrors.networkUnavailable;
 
   static const String signOutRequiresInternetMessage =
       'Sign out requires an internet connection. Turn on Wi‑Fi or mobile data, then try again.';
@@ -438,10 +917,7 @@ class AuthRepository extends ChangeNotifier {
     if (raw.contains('FirebaseAuthHostApi') ||
         raw.contains('firebase_auth_platform_interface') ||
         raw.contains('pigeon')) {
-      return 'The device could not complete sign-up with Google/Firebase. Try: '
-          'fully stop the app and open it again (hot reload is not enough), update '
-          '"Google Play services", or reinstall. In Firebase Console enable Authentication → '
-          'Email/Password. Check your email field for an accidental character before the address.';
+      return UserFacingErrors.signInChannelFailure;
     }
     return null;
   }
@@ -516,16 +992,51 @@ class AuthRepository extends ChangeNotifier {
   }
 
   Future<void> _finishWebInitialSession() async {
+    final hint = WebFastBoot.cachedSessionHint;
+    if (hint == false) {
+      unawaited(_bindAuthStateWhenFirebaseReady());
+      return;
+    }
     try {
       await AttendanceLocalQueues.ensureInitialized();
     } catch (_) {}
-    final hint = WebFastBoot.cachedSessionHint;
+
+    const deadline = Duration(seconds: 15);
+    final end = DateTime.now().add(deadline);
+    while (!_firebaseReady && DateTime.now().isBefore(end)) {
+      await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+
     final hasCached = hint == true
         ? true
-        : hint == false
-            ? false
-            : await AuthSessionCache.hasAnyCachedSession();
-    if (hasCached) {
+        : await AuthSessionCache.hasAnyCachedSession();
+    if (hasCached && _firebaseReady) {
+      try {
+        final current = FirebaseAuth.instance.currentUser;
+        if (current != null) {
+          final cached = await AuthSessionCache.load(current.uid);
+          if (cached != null) {
+            _applySessionSnapshot(cached);
+            _pendingWebSessionRestore = false;
+            _initialized = true;
+            notifyListeners();
+          } else {
+            _pendingWebSessionRestore = true;
+            _initialized = false;
+          }
+        } else {
+          _pendingWebSessionRestore = true;
+          _initialized = false;
+        }
+      } catch (e, st) {
+        if (kDebugMode) {
+          debugPrint('AuthRepository._finishWebInitialSession: $e');
+          debugPrint('$st');
+        }
+        _pendingWebSessionRestore = true;
+        _initialized = false;
+      }
+    } else if (hasCached) {
       _pendingWebSessionRestore = true;
       _initialized = false;
     } else {
@@ -535,6 +1046,20 @@ class AuthRepository extends ChangeNotifier {
     }
     notifyListeners();
     unawaited(_bindAuthStateWhenFirebaseReady());
+    unawaited(_authRestoreSafetyTimeout());
+  }
+
+  /// Never leave the login screen blocked behind "Signing you in…" forever.
+  Future<void> _authRestoreSafetyTimeout() async {
+    await Future<void>.delayed(const Duration(seconds: 12));
+    if (isLoggedIn) return;
+    if (!_pendingWebSessionRestore) return;
+    _pendingWebSessionRestore = false;
+    _initialized = true;
+    if (FirebaseAuth.instance.currentUser == null) {
+      await AuthSessionCache.clear();
+    }
+    notifyListeners();
   }
 
   Future<void> loadInitialSession() async {
@@ -549,16 +1074,35 @@ class AuthRepository extends ChangeNotifier {
     }
 
     if (!_firebaseReady) {
-      _forceSignedOut = true;
-      _clearCaches();
-      _initialized = true;
-      _adminCheckDone = true;
-      _lecturerCheckDone = true;
+      // Firebase still starting — check local session cache without forcing sign-out.
       notifyListeners();
+      unawaited(_prepareBootBeforeFirebase());
       return;
     }
 
     await _bindAuthStateListener();
+  }
+
+  /// Opens local storage, then either shows login immediately (no cache) or waits
+  /// for Firebase Auth to restore a persisted session.
+  Future<void> _prepareBootBeforeFirebase() async {
+    try {
+      await AttendanceLocalQueues.ensureInitialized();
+    } catch (_) {}
+
+    final hasCached = await AuthSessionCache.hasAnyCachedSession();
+    if (hasCached) {
+      _pendingWebSessionRestore = true;
+      _initialized = false;
+    } else {
+      _pendingWebSessionRestore = false;
+      _initialized = true;
+    }
+    notifyListeners();
+    unawaited(_bindAuthStateWhenFirebaseReady());
+    if (hasCached) {
+      unawaited(_authRestoreSafetyTimeout());
+    }
   }
 
   Future<void> _bindAuthStateWhenFirebaseReady() async {
@@ -579,13 +1123,19 @@ class AuthRepository extends ChangeNotifier {
   Future<void> _bindAuthStateListener() async {
     _authSub = FirebaseAuth.instance.authStateChanges().listen(
       (user) async {
+        var activeUser = user;
+        final uid = activeUser?.uid;
+        final forceRoleRefresh =
+            uid != null && uid != _lastAuthStateUid;
+        _lastAuthStateUid = uid;
         await _hydrateUser(
-          user,
+          activeUser,
           deferHeavyWork: true,
-          forceRoleRefresh: user != null,
+          forceRoleRefresh: forceRoleRefresh,
         );
-        if (user != null) {
-          await _persistSessionCache(user.uid);
+        if (activeUser != null) {
+          unawaited(_persistSessionCache(activeUser.uid));
+          unawaited(_refreshStudentAuthIfNeeded(activeUser));
         }
         notifyListeners();
       },
@@ -599,18 +1149,61 @@ class AuthRepository extends ChangeNotifier {
 
     final current = FirebaseAuth.instance.currentUser;
     if (current != null) {
+      _forceSignedOut = false;
+      _pendingWebSessionRestore = false;
       final cached = await AuthSessionCache.load(current.uid);
       if (cached != null) {
         _applySessionSnapshot(cached);
       }
+      _initialized = true;
+      notifyListeners();
+      unawaited(
+        _hydrateUser(
+          current,
+          deferHeavyWork: true,
+          forceRoleRefresh: true,
+        ).then((_) => notifyListeners()),
+      );
+      return;
     }
+
+    final hasCached = await AuthSessionCache.hasAnyCachedSession();
+    if (hasCached) {
+      _pendingWebSessionRestore = true;
+      _initialized = false;
+      notifyListeners();
+      unawaited(_authRestoreSafetyTimeout());
+      return;
+    }
+
     _pendingWebSessionRestore = false;
     _initialized = true;
     notifyListeners();
   }
 
+  /// Network refresh for student mailboxes — must not block first frame / shell paint.
+  Future<void> _refreshStudentAuthIfNeeded(User user) async {
+    if (!StudentAuthEmail.isStudentMailbox(user.email ?? '')) return;
+    var studentUser = user;
+    if (!studentUser.emailVerified && !WebFastBoot.enabled) {
+      try {
+        await studentUser.reload();
+        await studentUser.getIdToken(true);
+        studentUser = FirebaseAuth.instance.currentUser ?? studentUser;
+      } catch (_) {}
+    }
+    if (studentUser.emailVerified) {
+      await _linkStudentRegistrationAfterEmailVerified(studentUser);
+    }
+    await _hydrateUser(
+      studentUser,
+      deferHeavyWork: true,
+      forceRoleRefresh: false,
+    );
+    notifyListeners();
+  }
+
   void _applySessionSnapshot(AuthSessionSnapshot snapshot) {
-    _cachedReg = snapshot.registrationNumber;
     _cachedName = snapshot.fullName;
     _cachedKiuAdminJobTitle = snapshot.kiuAdminJobTitle;
     _kiuAdminOnboardingComplete = snapshot.kiuAdminOnboardingComplete;
@@ -622,6 +1215,79 @@ class AuthRepository extends ChangeNotifier {
     _cachedStaffNumber = snapshot.staffNumber;
     _lecturerCheckDone = true;
     _firestoreRoleCheckDenied = false;
+    _stripStaffRolesForStudentMailbox();
+    if (isStudentAuthIdentity) {
+      _cachedReg = snapshot.registrationNumber;
+      _cachedIsStudentProfile = snapshot.isStudent ?? true;
+      return;
+    }
+    final staffCached =
+        _isAdmin || _isQaStaff || _isKiuAdmin || _isLecturer;
+    _cachedReg = staffCached ? null : snapshot.registrationNumber;
+    if (staffCached) {
+      _cachedIsStudentProfile = false;
+    } else if (snapshot.isStudent != null) {
+      _cachedIsStudentProfile = snapshot.isStudent;
+    } else if (snapshot.registrationNumber != null) {
+      _cachedIsStudentProfile = null;
+    } else {
+      _cachedIsStudentProfile = false;
+    }
+    if (staffCached) {
+      _ensureCachedStaffNumberFromAuthEmail(
+        FirebaseAuth.instance.currentUser?.email ?? _cachedEmail,
+      );
+    }
+  }
+
+  /// Loads registration from [app_users] / [student_registrations] when cache is empty.
+  Future<void> ensureStudentRegistrationHydrated({bool force = false}) async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null || !StudentAuthEmail.isStudentMailbox(user.email ?? '')) {
+      return;
+    }
+    if (!force && _cachedReg?.trim().isNotEmpty == true) return;
+
+    if (_registrationHydrateInFlight != null) {
+      await _registrationHydrateInFlight;
+      return;
+    }
+
+    if (!force &&
+        _lastRegistrationHydrateAttemptAt != null &&
+        DateTime.now().difference(_lastRegistrationHydrateAttemptAt!) <
+            _registrationHydrateCooldown) {
+      return;
+    }
+
+    _registrationHydrateInFlight = _doEnsureStudentRegistrationHydrated(user);
+    try {
+      await _registrationHydrateInFlight;
+    } finally {
+      _registrationHydrateInFlight = null;
+    }
+  }
+
+  Future<void> _doEnsureStudentRegistrationHydrated(User user) async {
+    _lastRegistrationHydrateAttemptAt = DateTime.now();
+    if (_cachedReg?.trim().isNotEmpty == true) return;
+
+    if (await _ensureEmailVerifiedOnToken(user)) {
+      final active = FirebaseAuth.instance.currentUser ?? user;
+      await _linkStudentRegistrationAfterEmailVerified(active);
+    }
+    if (_cachedReg?.trim().isNotEmpty == true) {
+      unawaited(StudentRtdIndex.publishCurrentStudentRegistration());
+      return;
+    }
+
+    await _recoverStudentRegistrationFromAttachedEmail(
+      user,
+      hydrateGeneration: _hydrateGeneration,
+    );
+    if (_cachedReg?.trim().isNotEmpty == true) {
+      unawaited(StudentRtdIndex.publishCurrentStudentRegistration());
+    }
   }
 
   Future<void> _persistSessionCache(String uid) async {
@@ -640,6 +1306,8 @@ class AuthRepository extends ChangeNotifier {
           isKiuAdmin: _isKiuAdmin,
           isLecturer: _isLecturer,
           staffNumber: _cachedStaffNumber,
+          isStudent: isStudentAuthIdentity && isStudentProfile,
+          cachedAt: DateTime.now().toUtc(),
         ),
       );
     } catch (e, st) {
@@ -652,6 +1320,8 @@ class AuthRepository extends ChangeNotifier {
 
   void _clearCaches() {
     _cachedReg = null;
+    _registrationHydrateInFlight = null;
+    _lastRegistrationHydrateAttemptAt = null;
     _cachedName = null;
     _cachedKiuAdminJobTitle = null;
     _cachedEmail = null;
@@ -663,10 +1333,170 @@ class AuthRepository extends ChangeNotifier {
     _isLecturer = false;
     _lecturerCheckDone = true;
     _cachedStaffNumber = null;
+    _cachedIsStudentProfile = null;
     _firestoreRoleCheckDenied = false;
     _lastRoleHydrateUid = null;
-    clearStudentRegistrationConflictMessage();
     unawaited(AuthSessionCache.clear());
+  }
+
+  Future<void> _rollbackIncompleteRegistration(
+    User? user, {
+    String? registrationNumber,
+  }) async {
+    if (user == null) return;
+    if (registrationNumber != null && registrationNumber.trim().isNotEmpty) {
+      await _deleteOwnPendingRegistrationLock(
+        uid: user.uid,
+        registrationNumber: registrationNumber,
+      );
+    }
+    _forceSignedOut = true;
+    notifyListeners();
+    try {
+      await user.delete();
+    } catch (_) {}
+    try {
+      if (FirebaseAuth.instance.currentUser != null) {
+        await FirebaseAuth.instance.signOut();
+      }
+    } catch (_) {}
+    _clearCaches();
+    _forceSignedOut = true;
+  }
+
+  /// Android sometimes attaches Firestore auth a beat after [createUserWithEmailAndPassword].
+  Future<bool> _ensureFirestoreAuthReady(User user, {int attempts = 4}) async {
+    for (var i = 0; i < attempts; i++) {
+      try {
+        if (FirebaseAuth.instance.currentUser?.uid != user.uid) {
+          await Future<void>.delayed(Duration(milliseconds: 150 * (i + 1)));
+          continue;
+        }
+        await user.getIdToken(true);
+        return true;
+      } catch (_) {}
+      await Future<void>.delayed(Duration(milliseconds: 200 * (i + 1)));
+    }
+    return FirebaseAuth.instance.currentUser?.uid == user.uid;
+  }
+
+  /// Reloads Auth profile and refreshes ID token so Firestore sees email_verified.
+  Future<bool> _ensureEmailVerifiedOnToken(User user, {int attempts = 4}) async {
+    for (var i = 0; i < attempts; i++) {
+      try {
+        await user.reload();
+      } catch (_) {}
+      try {
+        await user.getIdToken(true);
+      } catch (_) {}
+      final current = FirebaseAuth.instance.currentUser;
+      if (current?.emailVerified == true) return true;
+      await Future<void>.delayed(Duration(milliseconds: 250 * (i + 1)));
+    }
+    return FirebaseAuth.instance.currentUser?.emailVerified ?? user.emailVerified;
+  }
+
+  Future<void> _deleteOwnPendingRegistrationLock({
+    required String uid,
+    required String registrationNumber,
+  }) async {
+    final reg = StudentRegistrationNumber.normalize(registrationNumber);
+    try {
+      final ref = uPanelFirestore()
+          .collection(FirestoreCollections.studentRegistrations)
+          .doc(reg);
+      final snap = await ref.get();
+      if (!snap.exists) return;
+      final d = snap.data();
+      if (d == null) return;
+      if ((d['uid'] as String?)?.trim() != uid) return;
+      if (_studentRegistrationLockIsFinal(d)) return;
+      await ref.delete();
+    } catch (_) {}
+  }
+
+  /// Reserves [student_registrations/{reg}] as pending before email verification.
+  Future<String?> _reserveStudentRegistrationPendingAtSignup({
+    required String uid,
+    required String email,
+    required String registrationNumber,
+    String? fullName,
+  }) async {
+    final reg = StudentRegistrationNumber.normalize(registrationNumber);
+    final em = StudentAuthEmail.normalizeStudentEmail(email);
+    final name = fullName?.trim();
+    final db = uPanelFirestore();
+    final regRef = db
+        .collection(FirestoreCollections.studentRegistrations)
+        .doc(reg);
+    try {
+      String? conflictCode;
+      await db.runTransaction<void>((transaction) async {
+        final existing = await transaction.get(regRef);
+        if (existing.exists) {
+          final d = existing.data();
+          final lockFinal = _studentRegistrationLockIsFinal(d);
+          final ownerUid = (d?['uid'] as String?)?.trim() ?? '';
+          final ownerEmail =
+              StudentAuthEmail.normalizeStudentEmail((d?['email'] as String?) ?? '');
+          if (lockFinal) {
+            if (ownerEmail.isNotEmpty && ownerEmail != em) {
+              conflictCode = 'email_mismatch';
+              return;
+            }
+            if (ownerUid.isNotEmpty && ownerUid != uid) {
+              conflictCode = 'taken';
+              return;
+            }
+            if (ownerUid == uid && ownerEmail == em) {
+              return;
+            }
+          } else {
+            if (ownerUid.isNotEmpty && ownerUid != uid) {
+              conflictCode = 'taken';
+              return;
+            }
+            if (ownerUid == uid && ownerEmail == em) {
+              return;
+            }
+            if (ownerUid.isNotEmpty && ownerEmail.isNotEmpty && ownerEmail != em) {
+              conflictCode = 'email_mismatch';
+              return;
+            }
+          }
+        }
+        transaction.set(regRef, <String, dynamic>{
+          'uid': uid,
+          'email': em,
+          'registrationNumber': reg,
+          studentRegEmailVerifiedLinkField: false,
+          'createdAt': FieldValue.serverTimestamp(),
+          if (name != null && name.isNotEmpty) 'fullName': name,
+        });
+      });
+      if (conflictCode != null) {
+        return _studentRegConflictMessage(_StudentRegConflict(conflictCode!), reg);
+      }
+      return null;
+    } on FirebaseException catch (fe) {
+      if (fe.code == 'permission-denied') {
+        if (kDebugMode) {
+          debugPrint(
+            'AuthRepository._reserveStudentRegistrationPendingAtSignup permission-denied '
+            '(db=$uPanelFirestoreDatabaseId, reg=$reg, uid=$uid): ${fe.message}',
+          );
+        }
+        return UserFacingErrors.registrationVerifyFailed;
+      }
+      return UserFacingErrors.registrationVerifyGeneric;
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint(
+          'AuthRepository._reserveStudentRegistrationPendingAtSignup: $e',
+        );
+      }
+      return 'Could not verify your registration number. Please try again.';
+    }
   }
 
   void _logRoleRulesDeployHintOnce() {
@@ -684,6 +1514,7 @@ class AuthRepository extends ChangeNotifier {
     User? user, {
     bool deferHeavyWork = false,
     bool forceRoleRefresh = false,
+    bool allowDuringAuth = false,
   }) async {
     if (_signingOut) {
       if (user == null) {
@@ -697,13 +1528,22 @@ class AuthRepository extends ChangeNotifier {
       return;
     }
 
+    if (_authenticatingCount > 0 && !allowDuringAuth) {
+      return;
+    }
+
     if (user == null) {
       // authStateChanges can emit null while currentUser is still set — ignore.
       if (FirebaseAuth.instance.currentUser != null) return;
+      // Native/web cold start: Firebase may emit null before persisted auth loads.
+      if (_pendingWebSessionRestore || !_initialized) return;
       _forceSignedOut = true;
       _clearCaches();
       return;
     }
+
+    _pendingWebSessionRestore = false;
+    _initialized = true;
 
     if (_forceSignedOut) {
       if (FirebaseAuth.instance.currentUser != null) {
@@ -743,16 +1583,81 @@ class AuthRepository extends ChangeNotifier {
   }) async {
     final gen = ++_hydrateGeneration;
     final uid = user.uid;
+    final studentMailbox =
+        StudentAuthEmail.isStudentMailbox(_authMailboxEmail(user));
 
     _forceSignedOut = false;
     _cachedEmail = _uiVisibleEmail(user.email);
+    _ensureCachedStaffNumberFromAuthEmail(user.email ?? _cachedEmail);
 
     if (gen != _hydrateGeneration) return;
+
+    final pendingVerification =
+        _needsStudentEmailVerification(user) ||
+        _needsKiuStaffEmailVerification(user);
+
+    if (pendingVerification) {
+      _adminCheckDone = true;
+      _lecturerCheckDone = true;
+      _isAdmin = false;
+      _isQaStaff = false;
+      _isKiuAdmin = false;
+      _isLecturer = false;
+      _firestoreRoleCheckDenied = false;
+      try {
+        final doc = await uPanelFirestore()
+            .collection(FirestoreCollections.appUsers)
+            .doc(uid)
+            .get();
+        if (gen != _hydrateGeneration) return;
+        if (doc.exists && doc.data() != null) {
+          final d = doc.data()!;
+          final pending =
+              (d[pendingRegistrationNumberField] as String?)?.trim();
+          final n = (d['fullName'] as String?)?.trim();
+          _cachedName = (n != null && n.isNotEmpty) ? n : null;
+          _cachedReg = (pending != null && pending.isNotEmpty)
+              ? StudentRegistrationNumber.normalize(pending)
+              : null;
+          _applyIsStudentFromProfileData(d, user);
+          if (_cachedReg == null || _cachedReg!.isEmpty) {
+            final hint = _studentRegistrationFromProfile(d);
+            final fromLink = await _lookupStudentRegistrationFromEmailLink(
+              user,
+              registrationHint: hint,
+            );
+            if (gen != _hydrateGeneration) return;
+            if (fromLink != null && fromLink.isNotEmpty) {
+              _cachedReg = fromLink;
+            }
+          }
+          clearStudentRegistrationConflictMessage();
+        } else {
+          _applyIsStudentFromProfileData(null, user);
+        }
+      } catch (e, st) {
+        if (kDebugMode) {
+          debugPrint('AuthRepository._hydrateUser pending verify: $e');
+          debugPrint('$st');
+        }
+      }
+      if (gen == _hydrateGeneration) {
+        unawaited(_persistSessionCache(uid));
+      }
+      return;
+    }
+
+    final cachedSession = await AuthSessionCache.load(uid);
+    if (cachedSession != null) {
+      _applySessionSnapshot(cachedSession);
+      _ensureCachedStaffNumberFromAuthEmail(user.email ?? _cachedEmail);
+    }
 
     final skipRoleReads = !forceRoleRefresh &&
         _lastRoleHydrateUid == uid &&
         _adminCheckDone &&
-        _lecturerCheckDone;
+        _lecturerCheckDone &&
+        _identityHydrationComplete(user);
     final profileFuture = uPanelFirestore()
         .collection(FirestoreCollections.appUsers)
         .doc(uid)
@@ -783,8 +1688,6 @@ class AuthRepository extends ChangeNotifier {
       if (doc.exists && doc.data() != null) {
         profileData = doc.data()!;
         final d = profileData;
-        final r = (d['registrationNumber'] as String?)?.trim();
-        _cachedReg = (r != null && r.isNotEmpty) ? r : null;
         final n = (d['fullName'] as String?)?.trim();
         _cachedName = (n != null && n.isNotEmpty) ? n : null;
         _cachedKiuAdminJobTitle = KiuAdminJobTitle.normalize(
@@ -792,38 +1695,30 @@ class AuthRepository extends ChangeNotifier {
         );
         _kiuAdminOnboardingComplete =
             d[kiuAdminOnboardingCompleteField] == true;
-        final profileEmail =
-            (d['email'] as String?)?.trim().toLowerCase() ?? user.email ?? '';
-        if (_cachedReg != null &&
-            profileEmail.isNotEmpty &&
-            StudentAuthEmail.isStudentMailbox(profileEmail)) {
-          final linkFuture = _reserveStudentRegistration(
-            uid: uid,
-            email: StudentAuthEmail.normalizeStudentEmail(profileEmail),
-            registrationNumber: _cachedReg!,
-            fullName: _cachedName,
-          ).then((linkErr) {
-            if (linkErr != null) {
-              if (_studentRegistrationConflictMessage != linkErr) {
-                _presentStudentRegistrationConflict(linkErr);
-              }
-            } else {
-              clearStudentRegistrationConflictMessage();
-            }
-          });
-          if (deferHeavyWork) {
-            unawaited(linkFuture);
-          } else {
-            await linkFuture;
-          }
+        _applyIsStudentFromProfileData(d, user);
+        if (_isStudentAccountProfile(d, user)) {
+          _applyStudentRegistrationFromProfileData(d, user);
+          clearStudentRegistrationConflictMessage();
         } else {
+          // Staff: KIU ID lives on app_users / admins / lecturers — not student reg.
+          _cachedReg = null;
+          _applyStaffNumberFromData(d);
           clearStudentRegistrationConflictMessage();
         }
+        _ensureCachedStaffNumberFromAuthEmail(user.email ?? _cachedEmail);
+        if (gen == _hydrateGeneration) {
+          unawaited(_backfillAppUserIsStudentFlag(uid));
+        }
       } else {
-        _cachedReg = null;
-        _cachedName = null;
-        _cachedKiuAdminJobTitle = null;
-        _kiuAdminOnboardingComplete = false;
+        if (studentMailbox) {
+          _applyIsStudentFromProfileData(null, user);
+        } else {
+          _cachedReg = null;
+          _cachedName = null;
+          _cachedKiuAdminJobTitle = null;
+          _kiuAdminOnboardingComplete = false;
+          _applyIsStudentFromProfileData(null, user);
+        }
       }
     } catch (e, st) {
       if (kDebugMode) {
@@ -834,6 +1729,49 @@ class AuthRepository extends ChangeNotifier {
     }
 
     if (gen != _hydrateGeneration) return;
+    if (studentMailbox) {
+      await _recoverStudentRegistrationFromAttachedEmail(
+        user,
+        profileData: profileData,
+        hydrateGeneration: gen,
+      );
+      if (gen == _hydrateGeneration && user.emailVerified) {
+        Future<void> linkFuture() => _linkStudentRegistrationAfterEmailVerified(user)
+            .then((linkErr) {
+          if (linkErr != null) {
+            if (_authFormErrorMessage != linkErr) {
+              _presentStudentRegistrationConflict(linkErr);
+            }
+          } else {
+            clearStudentRegistrationConflictMessage();
+          }
+          if (gen == _hydrateGeneration) {
+            unawaited(_persistSessionCache(uid));
+            notifyListeners();
+          }
+        });
+        if (deferHeavyWork) {
+          unawaited(linkFuture());
+        } else {
+          await linkFuture();
+        }
+      }
+    } else if (deferHeavyWork) {
+      unawaited(
+        _recoverStudentRegistrationFromAttachedEmail(
+          user,
+          profileData: profileData,
+          hydrateGeneration: gen,
+        ),
+      );
+    } else {
+      await _recoverStudentRegistrationFromAttachedEmail(
+        user,
+        profileData: profileData,
+        hydrateGeneration: gen,
+      );
+    }
+    _lastRoleHydrateUid = uid;
     if (deferHeavyWork) {
       unawaited(
         _maybeApplyPendingKiuStaffAccountRole(
@@ -850,6 +1788,7 @@ class AuthRepository extends ChangeNotifier {
 
     if (gen == _hydrateGeneration) {
       unawaited(_persistSessionCache(uid));
+      notifyListeners();
     }
   }
 
@@ -871,6 +1810,7 @@ class AuthRepository extends ChangeNotifier {
               .data();
       if (data == null) return;
       if (data[kiuAdminOnboardingCompleteField] == true) return;
+      _applyStaffNumberFromData(data);
       final role = data[staffAccountRoleField] as String?;
       if (role == null || role.isEmpty) return;
 
@@ -979,7 +1919,10 @@ class AuthRepository extends ChangeNotifier {
       _firestoreRoleCheckDenied = false;
       _isKiuAdmin = snap.exists && _kiuAdminFlagFromData(data);
       _isAdmin = snap.exists && _adminFlagFromData(data);
-      _isQaStaff = _isAdmin && _adminDocIsQaStaff(data);
+      _isQaStaff = snap.exists && _adminDocIsQaStaff(data);
+      if (_isQaStaff && !_isAdmin) {
+        _isAdmin = true;
+      }
       if (_isKiuAdmin && data != null) {
         final title =
             KiuAdminJobTitle.normalize(data[kiuAdminJobTitleField] as String?);
@@ -988,6 +1931,7 @@ class AuthRepository extends ChangeNotifier {
         }
       }
       if (_isAdmin && snap.exists && data != null) {
+        _applyStaffNumberFromData(data);
         final canonical = data[adminIsAdminField];
         if (canonical != true) {
           unawaited(
@@ -1010,14 +1954,18 @@ class AuthRepository extends ChangeNotifier {
       if (_isFirestorePermissionDenied(e)) {
         _firestoreRoleCheckDenied = true;
         _logRoleRulesDeployHintOnce();
-      } else if (kDebugMode) {
-        debugPrint('AuthRepository._refreshIsAdmin: $e');
-        debugPrint('$st');
+        // Keep cached staff flags when rules block re-read (avoid student UI flash).
+      } else {
+        if (kDebugMode) {
+          debugPrint('AuthRepository._refreshIsAdmin: $e');
+          debugPrint('$st');
+        }
+        _isAdmin = false;
+        _isQaStaff = false;
+        _isKiuAdmin = false;
       }
-      _isAdmin = false;
-      _isQaStaff = false;
-      _isKiuAdmin = false;
     }
+    _stripStaffRolesForStudentMailbox();
     _adminCheckDone = true;
   }
 
@@ -1037,10 +1985,13 @@ class AuthRepository extends ChangeNotifier {
       _isLecturer = snap.exists &&
           data != null &&
           data[lecturerIsLecturerField] == true;
-      final sn = (data?['staffNumber'] as String?)?.trim().toUpperCase();
-      _cachedStaffNumber =
-          (sn != null && sn.isNotEmpty) ? sn : null;
-      if (_isLecturer && _cachedStaffNumber != null) {
+      if (_isLecturer && data != null) {
+        _applyStaffNumberFromData(data);
+      }
+      _ensureCachedStaffNumberFromAuthEmail(
+        FirebaseAuth.instance.currentUser?.email ?? _cachedEmail,
+      );
+      if (_isLecturer && _hasCachedStaffIdentity()) {
         unawaited(
           StaffNumberDirectoryCache.remember(_cachedStaffNumber!, uid),
         );
@@ -1049,13 +2000,17 @@ class AuthRepository extends ChangeNotifier {
       if (_isFirestorePermissionDenied(e)) {
         _firestoreRoleCheckDenied = true;
         _logRoleRulesDeployHintOnce();
-      } else if (kDebugMode) {
-        debugPrint('AuthRepository._refreshIsLecturer: $e');
-        debugPrint('$st');
+        // Keep cached lecturer flag when rules block re-read.
+      } else {
+        if (kDebugMode) {
+          debugPrint('AuthRepository._refreshIsLecturer: $e');
+          debugPrint('$st');
+        }
+        _isLecturer = false;
+        _cachedStaffNumber = null;
       }
-      _isLecturer = false;
-      _cachedStaffNumber = null;
     }
+    _stripStaffRolesForStudentMailbox();
     _lecturerCheckDone = true;
   }
 
@@ -1116,13 +2071,13 @@ class AuthRepository extends ChangeNotifier {
       if (ex.code == 'too-many-requests') {
         return 'Please wait a few minutes before requesting another email.';
       }
-      return ex.message ?? ex.code;
+      return UserFacingErrors.sanitize(ex.message);
     } on PlatformException catch (ex) {
       return _describeAuthChannelFailure(ex) ??
-          'Could not send verification email: ${ex.message ?? ex.code}';
+          UserFacingErrors.genericTryAgain;
     } catch (ex) {
       return _describeAuthChannelFailure(ex) ??
-          'Could not send verification email: $ex';
+          UserFacingErrors.genericTryAgain;
     }
   }
 
@@ -1164,13 +2119,13 @@ class AuthRepository extends ChangeNotifier {
       if (ex.code == 'too-many-requests') {
         return 'Too many requests. Wait a few minutes, then try again.';
       }
-      return ex.message ?? ex.code;
+      return UserFacingErrors.sanitize(ex.message);
     } on PlatformException catch (ex) {
       return _describeAuthChannelFailure(ex) ??
-          'Could not send reset email: ${ex.message ?? ex.code}';
+          UserFacingErrors.genericTryAgain;
     } catch (ex) {
       return _describeAuthChannelFailure(ex) ??
-          'Could not send reset email: $ex';
+          UserFacingErrors.genericTryAgain;
     }
   }
 
@@ -1193,6 +2148,13 @@ class AuthRepository extends ChangeNotifier {
         'AuthRepository emailVerified=$verified email=${user.email}',
       );
     }
+    if (verified) {
+      final current = FirebaseAuth.instance.currentUser;
+      if (current != null) {
+        await _linkStudentRegistrationAfterEmailVerified(current);
+        await _hydrateUser(current, deferHeavyWork: true);
+      }
+    }
     notifyListeners();
     return verified;
   }
@@ -1203,33 +2165,35 @@ class AuthRepository extends ChangeNotifier {
     required String password,
   }) async {
     if (!_firebaseReady) {
-      return AuthActionResult(error: _firebaseNotReadyMessage());
+      return _authActionError(_firebaseNotReadyMessage());
     }
     final resolved = StaffAuthEmail.resolveLoginEmail(email) ?? '';
     final e = _loginEmailForFirebase(resolved);
-    if (e.isEmpty) return const AuthActionResult(error: 'Enter your email or staff ID (KIU-####).');
+    if (e.isEmpty) {
+      return _authActionError('Enter your email or staff ID (KIU-####).');
+    }
     if (!e.contains('@')) {
       if (StaffAuthEmail.looksLikeStaffNumberOnly(email)) {
-        return const AuthActionResult(
-          error: 'Invalid staff ID. Use format KIU-#### (e.g. KIU-0001).',
+        return _authActionError(
+          'Invalid staff ID. Use format KIU-#### (e.g. KIU-0001).',
         );
       }
-      return const AuthActionResult(error: 'Enter a valid email address.');
+      return _authActionError('Enter a valid email address.');
     }
     if (password.isEmpty) {
-      return const AuthActionResult(error: 'Enter your password.');
+      return _authActionError('Enter your password.');
     }
     final isStaffLogin = StaffAuthEmail.syntheticEmailToStaffNumber(e) != null ||
         StaffAuthEmail.looksLikeStaffNumberOnly(email);
     if (e.contains('@') && !isStaffLogin) {
       final schoolErr = validateLoginEmailFormat(email);
       if (schoolErr != null) {
-        return AuthActionResult(error: schoolErr);
+        return _authActionError(schoolErr);
       }
     }
     if (AppConnectivity.instance.initialized &&
         !AppConnectivity.instance.isOnline) {
-      return AuthActionResult(error: networkUnavailableMessage);
+      return _authActionError(networkUnavailableMessage);
     }
     _beginAuthenticating();
     notifyListeners();
@@ -1244,29 +2208,37 @@ class AuthRepository extends ChangeNotifier {
         final cached = await AuthSessionCache.load(signedIn.uid);
         if (cached != null) {
           _applySessionSnapshot(cached);
-          notifyListeners();
-        } else {
-          await _hydrateUser(signedIn, deferHeavyWork: true);
-          await _persistSessionCache(signedIn.uid);
+          _ensureCachedStaffNumberFromAuthEmail(signedIn.email);
           notifyListeners();
         }
+        await _hydrateUser(
+          signedIn,
+          deferHeavyWork: true,
+          allowDuringAuth: true,
+        );
+        if (StudentAuthEmail.isStudentMailbox(signedIn.email ?? '') &&
+            signedIn.emailVerified) {
+          await _linkStudentRegistrationAfterEmailVerified(signedIn);
+        }
+        await _persistSessionCache(signedIn.uid);
+        notifyListeners();
       }
       final signedInUser = FirebaseAuth.instance.currentUser;
+      clearAuthFormError();
       if (_needsStudentEmailVerification(signedInUser) ||
           _needsKiuStaffEmailVerification(signedInUser)) {
         return const AuthActionResult(needsEmailVerification: true);
       }
       return const AuthActionResult();
     } on FirebaseAuthException catch (ex) {
-      return AuthActionResult(error: _mapAuthError(ex));
+      return _authActionError(_mapAuthError(ex));
     } on PlatformException catch (ex) {
-      return AuthActionResult(
-        error: _describeAuthChannelFailure(ex) ??
-            'Could not sign in: ${ex.message ?? ex.code}',
+      return _authActionError(
+        _describeAuthChannelFailure(ex) ?? UserFacingErrors.genericTryAgain,
       );
     } catch (ex) {
-      return AuthActionResult(
-        error: _describeAuthChannelFailure(ex) ?? 'Could not sign in: $ex',
+      return _authActionError(
+        _describeAuthChannelFailure(ex) ?? UserFacingErrors.genericTryAgain,
       );
     } finally {
       _endAuthenticating();
@@ -1286,6 +2258,110 @@ class AuthRepository extends ChangeNotifier {
   }
 
   /// Reserves [student_registrations/{reg}] for this uid + email (one reg per account).
+  /// Only call after the student mailbox is verified in Firebase Auth.
+  Future<String?> _checkStudentRegistrationAvailable({
+    required String registrationNumber,
+    required String email,
+    required String uid,
+  }) async {
+    final reg = StudentRegistrationNumber.normalize(registrationNumber);
+    final em = StudentAuthEmail.normalizeStudentEmail(email);
+    try {
+      final existing = await uPanelFirestore()
+          .collection(FirestoreCollections.studentRegistrations)
+          .doc(reg)
+          .get();
+      if (!existing.exists) return null;
+      final d = existing.data();
+      // Legacy / unverified locks must not block a different mailbox from signing up.
+      if (!_studentRegistrationLockIsFinal(d)) return null;
+      final ownerUid = (d?['uid'] as String?)?.trim() ?? '';
+      final ownerEmail =
+          StudentAuthEmail.normalizeStudentEmail((d?['email'] as String?) ?? '');
+      if (ownerUid == uid) return null;
+      if (ownerEmail.isNotEmpty && ownerEmail != em) {
+        return _studentRegConflictMessage(
+          _StudentRegConflict('email_mismatch'),
+          reg,
+        );
+      }
+      if (ownerUid.isNotEmpty && ownerUid != uid) {
+        return _studentRegConflictMessage(_StudentRegConflict('taken'), reg);
+      }
+      return null;
+    } on FirebaseException catch (fe) {
+      if (fe.code == 'permission-denied') {
+        return UserFacingErrors.registrationVerifyFailed;
+      }
+      return UserFacingErrors.registrationVerifyGeneric;
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint(
+          'AuthRepository._checkStudentRegistrationAvailable: $e',
+        );
+      }
+      return 'Could not verify your registration number. Please try again.';
+    }
+  }
+
+  String? _studentRegistrationFromProfile(Map<String, dynamic> data) {
+    final linked = (data['registrationNumber'] as String?)?.trim();
+    if (linked != null && linked.isNotEmpty) return linked;
+    final pending =
+        (data[pendingRegistrationNumberField] as String?)?.trim();
+    if (pending != null && pending.isNotEmpty) return pending;
+    return null;
+  }
+
+  Future<String?> _linkStudentRegistrationAfterEmailVerified(User user) async {
+    if (!StudentAuthEmail.isStudentMailbox(user.email ?? '')) return null;
+    if (!await _ensureEmailVerifiedOnToken(user)) return null;
+    user = FirebaseAuth.instance.currentUser ?? user;
+
+    final uid = user.uid;
+    final doc = await uPanelFirestore()
+        .collection(FirestoreCollections.appUsers)
+        .doc(uid)
+        .get();
+
+    Map<String, dynamic>? data = doc.data();
+    var reg = data != null ? _studentRegistrationFromProfile(data) : null;
+    reg ??= await _lookupStudentRegistrationFromEmailLink(
+      user,
+      registrationHint: reg,
+    );
+    if (reg == null || reg.isEmpty) return null;
+
+    final email = StudentAuthEmail.normalizeStudentEmail(user.email ?? '');
+    final name = (data?['fullName'] as String?)?.trim();
+
+    final linkErr = await _reserveStudentRegistration(
+      uid: uid,
+      email: email,
+      registrationNumber: reg,
+      fullName: name,
+    );
+    if (linkErr != null) {
+      _presentStudentRegistrationConflict(linkErr);
+      return linkErr;
+    }
+    clearStudentRegistrationConflictMessage();
+
+    await uPanelFirestore().collection(FirestoreCollections.appUsers).doc(uid).set(
+      <String, dynamic>{
+        'registrationNumber': StudentRegistrationNumber.normalize(reg),
+        pendingRegistrationNumberField: FieldValue.delete(),
+        appUserIsStudentField: true,
+        'updatedAt': FieldValue.serverTimestamp(),
+      },
+      SetOptions(merge: true),
+    );
+    _cachedReg = StudentRegistrationNumber.normalize(reg);
+    _cachedIsStudentProfile = true;
+    unawaited(StudentRtdIndex.publishCurrentStudentRegistration());
+    return null;
+  }
+
   Future<String?> _reserveStudentRegistration({
     required String uid,
     required String email,
@@ -1299,77 +2375,100 @@ class AuthRepository extends ChangeNotifier {
     final regRef = db
         .collection(FirestoreCollections.studentRegistrations)
         .doc(reg);
-    try {
-      // Do not throw inside the transaction callback — on web, JS interop wraps
-      // Dart exceptions so `on _StudentRegConflict` never runs.
-      String? conflictCode;
-      await db.runTransaction<void>((transaction) async {
-        final existing = await transaction.get(regRef);
-        if (existing.exists) {
-          final d = existing.data();
-          final ownerUid = (d?['uid'] as String?)?.trim() ?? '';
-          final ownerEmail =
-              StudentAuthEmail.normalizeStudentEmail((d?['email'] as String?) ?? '');
-          // Prefer email mismatch when the reg is tied to a different mailbox.
-          if (ownerEmail.isNotEmpty && ownerEmail != em) {
-            conflictCode = 'email_mismatch';
-            return;
-          }
-          if (ownerUid.isNotEmpty && ownerUid != uid) {
-            conflictCode = 'taken';
-            return;
-          }
-          if (ownerUid == uid && ownerEmail == em) {
-            if (name != null && name.isNotEmpty) {
-              transaction.set(
-                regRef,
-                <String, dynamic>{'fullName': name},
-                SetOptions(merge: true),
-              );
-            }
-            return;
-          }
+
+    for (var attempt = 0; attempt < 3; attempt++) {
+      if (attempt > 0) {
+        final current = FirebaseAuth.instance.currentUser;
+        if (current != null) {
+          await _ensureEmailVerifiedOnToken(current, attempts: 2);
         }
-        transaction.set(regRef, <String, dynamic>{
-          'uid': uid,
-          'email': em,
-          'registrationNumber': reg,
-          'createdAt': FieldValue.serverTimestamp(),
-          if (name != null && name.isNotEmpty) 'fullName': name,
-        });
-      });
-      if (conflictCode != null) {
-        return _studentRegConflictMessage(_StudentRegConflict(conflictCode!), reg);
+        await Future<void>.delayed(Duration(milliseconds: 350 * attempt));
       }
-      return null;
-    } on _StudentRegConflict catch (c) {
-      return _studentRegConflictMessage(c, reg);
-    } on FirebaseException catch (fe) {
-      if (fe.code == 'permission-denied') {
+      try {
+        // Do not throw inside the transaction callback — on web, JS interop wraps
+        // Dart exceptions so `on _StudentRegConflict` never runs.
+        String? conflictCode;
+        await db.runTransaction<void>((transaction) async {
+          final existing = await transaction.get(regRef);
+          if (existing.exists) {
+            final d = existing.data();
+            final lockFinal = _studentRegistrationLockIsFinal(d);
+            final ownerUid = (d?['uid'] as String?)?.trim() ?? '';
+            final ownerEmail =
+                StudentAuthEmail.normalizeStudentEmail((d?['email'] as String?) ?? '');
+            if (lockFinal) {
+              if (ownerEmail.isNotEmpty && ownerEmail != em) {
+                conflictCode = 'email_mismatch';
+                return;
+              }
+              if (ownerUid.isNotEmpty && ownerUid != uid) {
+                conflictCode = 'taken';
+                return;
+              }
+              final patch = <String, dynamic>{
+                studentRegEmailVerifiedLinkField: true,
+              };
+              if (name != null && name.isNotEmpty) {
+                patch['fullName'] = name;
+              }
+              transaction.set(regRef, patch, SetOptions(merge: true));
+              return;
+            } else {
+              // Replace an unverified / legacy lock with this verified account.
+              transaction.set(regRef, <String, dynamic>{
+                'uid': uid,
+                'email': em,
+                'registrationNumber': reg,
+                studentRegEmailVerifiedLinkField: true,
+                'createdAt': FieldValue.serverTimestamp(),
+                if (name != null && name.isNotEmpty) 'fullName': name,
+              });
+              return;
+            }
+          }
+          transaction.set(regRef, <String, dynamic>{
+            'uid': uid,
+            'email': em,
+            'registrationNumber': reg,
+            studentRegEmailVerifiedLinkField: true,
+            'createdAt': FieldValue.serverTimestamp(),
+            if (name != null && name.isNotEmpty) 'fullName': name,
+          });
+        });
+        if (conflictCode != null) {
+          return _studentRegConflictMessage(_StudentRegConflict(conflictCode!), reg);
+        }
+        return null;
+      } on _StudentRegConflict catch (c) {
+        return _studentRegConflictMessage(c, reg);
+      } on FirebaseException catch (fe) {
+        if (fe.code == 'permission-denied' && attempt < 2) {
+          continue;
+        }
+        if (fe.code == 'permission-denied') {
+          if (kDebugMode) {
+            debugPrint(
+              'AuthRepository._reserveStudentRegistration permission-denied '
+              '(db=$uPanelFirestoreDatabaseId, reg=$reg, uid=$uid): ${fe.message}',
+            );
+          }
+          return UserFacingErrors.registrationLinkFailed;
+        }
+        return UserFacingErrors.registrationVerifyGeneric;
+      } catch (e) {
+        final conflict = _studentRegConflictFromError(e);
+        if (conflict != null) {
+          return _studentRegConflictMessage(conflict, reg);
+        }
         if (kDebugMode) {
           debugPrint(
-            'AuthRepository._reserveStudentRegistration permission-denied '
-            '(db=$uPanelFirestoreDatabaseId, reg=$reg, uid=$uid): ${fe.message}',
+            'AuthRepository._reserveStudentRegistration: ${_formatFirestoreFailure(e)}',
           );
         }
-        return 'Could not link your registration number (Firestore access denied). '
-            'Ask ICT to deploy the latest firestore.rules to the '
-            '"$uPanelFirestoreDatabaseId" database, then try again in a few minutes. '
-            'If you already registered this number, sign in with the same school email instead.';
+        return 'Could not verify your registration number. Please try again.';
       }
-      return 'Could not verify your registration number: ${fe.message ?? fe.code}';
-    } catch (e) {
-      final conflict = _studentRegConflictFromError(e);
-      if (conflict != null) {
-        return _studentRegConflictMessage(conflict, reg);
-      }
-      if (kDebugMode) {
-        debugPrint(
-          'AuthRepository._reserveStudentRegistration: ${_formatFirestoreFailure(e)}',
-        );
-      }
-      return 'Could not verify your registration number. Please try again.';
     }
+    return UserFacingErrors.registrationLinkFailed;
   }
 
   /// Creates [app_users/{uid}] and sends a verification link to @studmc.kiu.ac.ug mailboxes.
@@ -1380,30 +2479,28 @@ class AuthRepository extends ChangeNotifier {
     required String registrationNumber,
   }) async {
     if (!_firebaseReady) {
-      return AuthActionResult(error: _firebaseNotReadyMessage());
+      return _authActionError(_firebaseNotReadyMessage());
     }
     final formatErr = StudentAuthEmail.validateFormat(email);
     if (formatErr != null) {
-      return AuthActionResult(error: formatErr);
+      return _authActionError(formatErr);
     }
     final em = StudentAuthEmail.normalizeStudentEmail(email);
     final regErr = StudentRegistrationNumber.validateFormat(registrationNumber);
     if (regErr != null) {
-      return AuthActionResult(error: regErr);
+      return _authActionError(regErr);
     }
     final reg = StudentRegistrationNumber.normalize(registrationNumber);
     final name = fullName.trim();
     if (name.isEmpty) {
-      return const AuthActionResult(error: 'Enter your full name.');
+      return _authActionError('Enter your full name.');
     }
     if (password.length < 6) {
-      return const AuthActionResult(
-        error: 'Password must be at least 6 characters.',
-      );
+      return _authActionError('Password must be at least 6 characters.');
     }
     if (AppConnectivity.instance.initialized &&
         !AppConnectivity.instance.isOnline) {
-      return AuthActionResult(error: networkUnavailableMessage);
+      return _authActionError(networkUnavailableMessage);
     }
     UserCredential? cred;
     _beginAuthenticating();
@@ -1415,37 +2512,37 @@ class AuthRepository extends ChangeNotifier {
       );
       final user = cred.user;
       if (user == null) {
-        return const AuthActionResult(
-          error: 'Account created but user id is missing. Try signing in.',
+        return _authActionError(
+          'Account created but user id is missing. Try signing in.',
         );
       }
       final uid = user.uid;
 
-      try {
-        await user.getIdToken(true);
-      } catch (_) {}
+      if (!await _ensureFirestoreAuthReady(user)) {
+        await _rollbackIncompleteRegistration(user);
+        return _authActionError(UserFacingErrors.saveAccountFailed);
+      }
 
-      final linkErr = await _reserveStudentRegistration(
+      final lockErr = await _reserveStudentRegistrationPendingAtSignup(
         uid: uid,
         email: em,
         registrationNumber: reg,
         fullName: name,
       );
-      if (linkErr != null) {
-        try {
-          await user.delete();
-        } catch (_) {}
-        _presentStudentRegistrationConflict(linkErr);
-        return AuthActionResult(error: linkErr);
+      if (lockErr != null) {
+        await _rollbackIncompleteRegistration(user, registrationNumber: reg);
+        return _authActionError(lockErr);
       }
-      clearStudentRegistrationConflictMessage();
+      clearAuthFormError();
 
       await uPanelFirestore().collection(FirestoreCollections.appUsers).doc(uid).set({
         'email': em,
         'fullName': name,
-        'registrationNumber': reg,
+        pendingRegistrationNumberField: reg,
+        appUserIsStudentField: true,
         'createdAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
+      _cachedIsStudentProfile = true;
 
       try {
         await user.updateDisplayName(name);
@@ -1454,55 +2551,39 @@ class AuthRepository extends ChangeNotifier {
       try {
         await user.sendEmailVerification();
       } on FirebaseAuthException catch (ex) {
-        try {
-          await user.delete();
-        } catch (_) {}
+        await _rollbackIncompleteRegistration(user, registrationNumber: reg);
         if (ex.code == 'too-many-requests') {
-          return const AuthActionResult(
-            error:
-                'Could not send verification email (too many requests). Try again shortly.',
+          return _authActionError(
+            'Could not send verification email (too many requests). Try again shortly.',
           );
         }
-        return AuthActionResult(
-          error: ex.message ?? 'Could not send verification email.',
+        return _authActionError(
+          ex.message ?? 'Could not send verification email.',
         );
       }
 
       _forceSignedOut = false;
-      await _hydrateUser(user);
+      clearAuthFormError();
+      clearAuthFormDraft();
+      await _hydrateUser(user, allowDuringAuth: true);
       notifyListeners();
       return const AuthActionResult(needsEmailVerification: true);
     } on FirebaseAuthException catch (ex) {
-      return AuthActionResult(error: _mapAuthError(ex));
+      return _authActionError(_mapAuthError(ex));
     } on PlatformException catch (ex) {
-      return AuthActionResult(
-        error: _describeAuthChannelFailure(ex) ??
-            'Could not create account: ${ex.message ?? ex.code}',
+      return _authActionError(
+        _describeAuthChannelFailure(ex) ?? UserFacingErrors.saveAccountFailed,
       );
     } on FirebaseException catch (fe) {
-      try {
-        await cred?.user?.delete();
-      } catch (_) {
-        /* cleanup best-effort */
-      }
+      await _rollbackIncompleteRegistration(cred?.user, registrationNumber: reg);
       if (fe.code == 'permission-denied') {
-        return const AuthActionResult(
-          error:
-              'Could not save your profile (access denied). Deploy Firestore rules to the '
-              'same database the app uses (upanel), and ensure Authentication → Email/Password is enabled.',
-        );
+        return _authActionError(UserFacingErrors.saveProfileFailed);
       }
-      return AuthActionResult(
-        error: 'Could not save your profile: ${fe.message ?? fe.code}',
-      );
+      return _authActionError(UserFacingErrors.saveProfileFailed);
     } catch (ex) {
-      try {
-        await cred?.user?.delete();
-      } catch (_) {
-        /* cleanup best-effort */
-      }
-      return AuthActionResult(
-        error: _describeAuthChannelFailure(ex) ?? 'Could not create account: $ex',
+      await _rollbackIncompleteRegistration(cred?.user, registrationNumber: reg);
+      return _authActionError(
+        _describeAuthChannelFailure(ex) ?? UserFacingErrors.saveAccountFailed,
       );
     } finally {
       _endAuthenticating();
@@ -1528,7 +2609,10 @@ class AuthRepository extends ChangeNotifier {
       case 'unavailable':
         return networkUnavailableMessage;
       default:
-        return ex.message ?? ex.code;
+        return UserFacingErrors.sanitize(
+          ex.message,
+          fallback: UserFacingErrors.genericTryAgain,
+        );
     }
   }
 
@@ -1571,15 +2655,9 @@ class AuthRepository extends ChangeNotifier {
     }
     if (!_isAdmin) {
       if (_firestoreRoleCheckDenied) {
-        return 'Firestore denied reading your admin profile (permission-denied). '
-            'Deploy security rules to the "$uPanelFirestoreDatabaseId" database '
-            '(run `firebase deploy --only firestore` from the project root, '
-            'or paste firestore.rules in Firebase Console → Firestore → Rules). '
-            'Then reload the app.';
+        return UserFacingErrors.adminProfileUnavailable;
       }
-      return 'Only admins can create staff accounts or grant admin access. '
-          'Your account needs admins/${u.uid} with isAdmin: true in Firestore '
-          '(or ask another admin to grant access in Settings).';
+      return UserFacingErrors.notAdminForStaffCreation;
     }
     return null;
   }
@@ -1609,6 +2687,12 @@ class AuthRepository extends ChangeNotifier {
     popToRootRoute();
     _sessionEpoch++;
     _forceSignedOut = true;
+    clearAuthFormError();
+    clearAuthFormDraft();
+    final noticesDiskCacheUserKey = NoticesRepository.diskCacheUserKeyFrom(
+      firebaseUid: currentFirebaseUid,
+      registrationNumber: _cachedReg ?? currentRegistrationNumber,
+    );
     _clearCaches();
     AppSessionReset.onSignOutImmediate();
     notifyListeners();
@@ -1629,7 +2713,11 @@ class AuthRepository extends ChangeNotifier {
           return 'Could not sign out. Check your connection and try again.';
         }
       }
-      unawaited(AppSessionReset.onSignOutDeferred());
+      unawaited(
+        AppSessionReset.onSignOutDeferred(
+          noticesDiskCacheUserKey: noticesDiskCacheUserKey,
+        ),
+      );
       return null;
     } finally {
       _signingOut = false;
@@ -1698,10 +2786,10 @@ class AuthRepository extends ChangeNotifier {
       return _mapChangePasswordError(ex);
     } on PlatformException catch (ex) {
       return _describeAuthChannelFailure(ex) ??
-          'Could not change password: ${ex.message ?? ex.code}';
+          UserFacingErrors.genericTryAgain;
     } catch (ex) {
       return _describeAuthChannelFailure(ex) ??
-          'Could not change password: $ex';
+          UserFacingErrors.genericTryAgain;
     } finally {
       if (_changingPassword) {
         _changingPassword = false;
@@ -1727,7 +2815,10 @@ class AuthRepository extends ChangeNotifier {
       case 'user-disabled':
         return 'This account has been disabled.';
       default:
-        return ex.message ?? ex.code;
+        return UserFacingErrors.sanitize(
+          ex.message,
+          fallback: UserFacingErrors.genericTryAgain,
+        );
     }
   }
 
@@ -1739,7 +2830,7 @@ class AuthRepository extends ChangeNotifier {
     final gate = await _requireFullAdministrator();
     if (gate != null) return gate;
     final uid = targetUid.trim();
-    if (uid.isEmpty) return 'Enter the other user’s Firebase user id (UID).';
+    if (uid.isEmpty) return UserFacingErrors.invalidUserId;
     if (uid.contains('/') || uid.contains('..')) {
       return 'Invalid user id.';
     }
@@ -1759,11 +2850,11 @@ class AuthRepository extends ChangeNotifier {
       return null;
     } on FirebaseException catch (fe) {
       if (fe.code == 'permission-denied') {
-        return 'Access denied. Deploy updated Firestore rules for the admins collection.';
+        return UserFacingErrors.accessDenied;
       }
-      return fe.message ?? fe.code;
+      return UserFacingErrors.sanitize(fe.message);
     } catch (ex) {
-      return '$ex';
+      return UserFacingErrors.genericTryAgain;
     }
   }
 
@@ -1809,6 +2900,7 @@ class AuthRepository extends ChangeNotifier {
       await uPanelFirestore().collection(FirestoreCollections.appUsers).doc(newUid).set({
         'email': em,
         'registrationNumber': _normalizeReg(reg),
+        appUserIsStudentField: false,
         'createdAt': FieldValue.serverTimestamp(),
       }, SetOptions(merge: true));
 
@@ -1839,7 +2931,7 @@ class AuthRepository extends ChangeNotifier {
         await regAuth.signOut();
       } catch (_) {}
       return _describeAuthChannelFailure(ex) ??
-          'Could not create account: ${ex.message ?? ex.code}';
+          UserFacingErrors.saveAccountFailed;
     } on FirebaseException catch (fe) {
       try {
         await cred?.user?.delete();
@@ -1848,9 +2940,9 @@ class AuthRepository extends ChangeNotifier {
         await regAuth.signOut();
       } catch (_) {}
       if (fe.code == 'permission-denied') {
-        return 'Could not save profile or admin record (access denied). Deploy Firestore rules.';
+        return UserFacingErrors.saveAccountFailed;
       }
-      return 'Could not save: ${fe.message ?? fe.code}';
+      return UserFacingErrors.saveAccountFailed;
     } catch (ex) {
       try {
         await cred?.user?.delete();
@@ -1858,7 +2950,8 @@ class AuthRepository extends ChangeNotifier {
       try {
         await regAuth.signOut();
       } catch (_) {}
-      return _describeAuthChannelFailure(ex) ?? 'Could not create account: $ex';
+      return _describeAuthChannelFailure(ex) ??
+          UserFacingErrors.saveAccountFailed;
     }
   }
 
@@ -1967,9 +3060,7 @@ class AuthRepository extends ChangeNotifier {
       staffNumber = alloc.staffNumber;
       if (staffNumber == null) {
         return (
-          error: alloc.errorMessage ??
-              'Could not allocate a staff number. Check Firestore rules for '
-              'meta/lecturer_staff_counter and staff_numbers, then deploy rules.',
+          error: alloc.errorMessage ?? UserFacingErrors.staffNumberAllocateFailed,
           staffNumber: null,
         );
       }
@@ -2039,6 +3130,7 @@ class AuthRepository extends ChangeNotifier {
             'registrationNumber': staffNumber,
             'staffNumber': staffNumber,
             'fullName': name,
+            appUserIsStudentField: false,
             'createdAt': FieldValue.serverTimestamp(),
           },
           SetOptions(merge: true),
@@ -2104,7 +3196,7 @@ class AuthRepository extends ChangeNotifier {
       } catch (_) {}
       return (
         error: _describeAuthChannelFailure(ex) ??
-            'Could not create lecturer: ${ex.message ?? ex.code}',
+            UserFacingErrors.saveAccountFailed,
         staffNumber: null,
       );
     } on FirebaseException catch (fe) {
@@ -2121,12 +3213,12 @@ class AuthRepository extends ChangeNotifier {
       } catch (_) {}
       if (fe.code == 'permission-denied') {
         return (
-          error: 'Could not save lecturer (access denied). Deploy Firestore rules.',
+          error: UserFacingErrors.saveAccountFailed,
           staffNumber: null,
         );
       }
       return (
-        error: 'Could not save lecturer: ${fe.message ?? fe.code}',
+        error: UserFacingErrors.saveAccountFailed,
         staffNumber: null,
       );
     } catch (ex) {
@@ -2143,7 +3235,7 @@ class AuthRepository extends ChangeNotifier {
       } catch (_) {}
       return (
         error: _describeAuthChannelFailure(ex) ??
-            'Could not create lecturer: ${ex.toString().replaceFirst('Bad state: ', '')}',
+            UserFacingErrors.saveAccountFailed,
         staffNumber: null,
       );
     }
@@ -2216,9 +3308,7 @@ class AuthRepository extends ChangeNotifier {
       staffNumber = alloc.staffNumber;
       if (staffNumber == null) {
         return (
-          error: alloc.errorMessage ??
-              'Could not allocate a staff number. Check Firestore rules for '
-              'meta/lecturer_staff_counter and staff_numbers, then deploy rules.',
+          error: alloc.errorMessage ?? UserFacingErrors.staffNumberAllocateFailed,
           staffNumber: null,
         );
       }
@@ -2288,6 +3378,7 @@ class AuthRepository extends ChangeNotifier {
             'registrationNumber': _normalizeReg(staffNumber),
             'staffNumber': staffNumber,
             'fullName': name,
+            appUserIsStudentField: false,
             'createdAt': FieldValue.serverTimestamp(),
           },
           SetOptions(merge: true),
@@ -2378,7 +3469,7 @@ class AuthRepository extends ChangeNotifier {
       } catch (_) {}
       return (
         error: _describeAuthChannelFailure(ex) ??
-            'Could not create $roleLabel: ${ex.message ?? ex.code}',
+            UserFacingErrors.saveAccountFailed,
         staffNumber: null,
       );
     } on FirebaseException catch (fe) {
@@ -2396,12 +3487,12 @@ class AuthRepository extends ChangeNotifier {
       if (fe.code == 'permission-denied') {
         return (
           error:
-              'Could not save $roleLabel (access denied). Deploy Firestore rules.',
+              UserFacingErrors.saveAccountFailed,
           staffNumber: null,
         );
       }
       return (
-        error: 'Could not save $roleLabel: ${fe.message ?? fe.code}',
+        error: UserFacingErrors.saveAccountFailed,
         staffNumber: null,
       );
     } catch (ex) {
@@ -2418,7 +3509,7 @@ class AuthRepository extends ChangeNotifier {
       } catch (_) {}
       return (
         error: _describeAuthChannelFailure(ex) ??
-            'Could not create $roleLabel: ${ex.toString().replaceFirst('Bad state: ', '')}',
+            UserFacingErrors.saveAccountFailed,
         staffNumber: null,
       );
     }
@@ -2487,6 +3578,7 @@ class AuthRepository extends ChangeNotifier {
           'email': em,
           'registrationNumber': reg,
           'fullName': name,
+          appUserIsStudentField: false,
           staffAccountRoleField: isKiuAdministrator
               ? staffAccountRoleKiuAdministrator
               : staffAccountRoleStaff,
@@ -2666,13 +3758,11 @@ class AuthRepository extends ChangeNotifier {
       } catch (_) {}
       if (fe.code == 'permission-denied') {
         return (
-          error: 'Firestore denied creating this account (permission-denied). '
-              'Deploy the latest firestore.rules from the project root '
-              '(firebase deploy --only firestore:rules), then try again.',
+          error: UserFacingErrors.saveAccountFailed,
           registrationNumber: null,
         );
       }
-      return (error: fe.message ?? fe.code, registrationNumber: null);
+      return (error: UserFacingErrors.saveAccountFailed, registrationNumber: null);
     } catch (ex) {
       try {
         await cred?.user?.delete();
@@ -2680,7 +3770,7 @@ class AuthRepository extends ChangeNotifier {
       try {
         await regAuth.signOut();
       } catch (_) {}
-      return (error: '$ex', registrationNumber: null);
+      return (error: UserFacingErrors.saveAccountFailed, registrationNumber: null);
     }
   }
 
@@ -2712,11 +3802,11 @@ class AuthRepository extends ChangeNotifier {
       return null;
     } on FirebaseException catch (fe) {
       if (fe.code == 'permission-denied') {
-        return 'Access denied. Deploy updated Firestore rules, then try again.';
+        return UserFacingErrors.accessDenied;
       }
-      return fe.message ?? fe.code;
+      return UserFacingErrors.sanitize(fe.message);
     } catch (e) {
-      return '$e';
+      return UserFacingErrors.genericTryAgain;
     }
   }
 
@@ -2791,7 +3881,16 @@ class AuthRepository extends ChangeNotifier {
         if (studentRegErr != null) return studentRegErr;
         reg = StudentRegistrationNumber.normalize(registrationNumber);
         final email = StudentAuthEmail.normalizeStudentEmail(user.email ?? '');
-        if (reg != (_cachedReg ?? '')) {
+        if (!user.emailVerified) {
+          if (reg != (_cachedReg ?? '')) {
+            final availErr = await _checkStudentRegistrationAvailable(
+              registrationNumber: reg,
+              email: email,
+              uid: uid,
+            );
+            if (availErr != null) return availErr;
+          }
+        } else if (reg != (_cachedReg ?? '')) {
           final linkErr = await _reserveStudentRegistration(
             uid: uid,
             email: email,
@@ -2825,8 +3924,20 @@ class AuthRepository extends ChangeNotifier {
         'fullName': name,
         'updatedAt': FieldValue.serverTimestamp(),
       };
+      if (kind == SelfServiceProfileKind.student) {
+        data[appUserIsStudentField] = true;
+        _cachedIsStudentProfile = true;
+      }
       if (reg != null) {
-        data['registrationNumber'] = reg;
+        if (kind == SelfServiceProfileKind.student && !user.emailVerified) {
+          data[pendingRegistrationNumberField] = reg;
+          data['registrationNumber'] = FieldValue.delete();
+        } else {
+          data['registrationNumber'] = reg;
+          if (kind == SelfServiceProfileKind.student) {
+            data[pendingRegistrationNumberField] = FieldValue.delete();
+          }
+        }
       }
       if (isKiuAdmin) {
         if (normalizedTitle != null) {
@@ -2874,16 +3985,17 @@ class AuthRepository extends ChangeNotifier {
         await user.updateDisplayName(name);
       } catch (_) {}
 
+      unawaited(_persistSessionCache(uid));
       notifyListeners();
       return null;
     } on FirebaseException catch (fe) {
       if (fe.code == 'permission-denied') {
-        return 'Could not save your profile (access denied). Try again later.';
+        return UserFacingErrors.saveProfileFailed;
       }
-      return 'Could not save your profile: ${fe.message ?? fe.code}';
+      return UserFacingErrors.saveProfileFailed;
     } catch (ex) {
       return _describeAuthChannelFailure(ex) ??
-          'Could not save your profile: $ex';
+          UserFacingErrors.saveProfileFailed;
     }
   }
 
@@ -2904,10 +4016,10 @@ class AuthRepository extends ChangeNotifier {
       if (ex.code == 'too-many-requests') {
         return 'Please wait a few minutes before requesting another email.';
       }
-      return ex.message ?? ex.code;
+      return UserFacingErrors.sanitize(ex.message);
     } catch (ex) {
       return _describeAuthChannelFailure(ex) ??
-          'Could not send verification email: $ex';
+          UserFacingErrors.genericTryAgain;
     }
   }
 
@@ -2921,16 +4033,62 @@ class AuthRepository extends ChangeNotifier {
           .get();
       final email = _uiVisibleEmail(user.email) ?? '—';
       if (!doc.exists || doc.data() == null) {
+        var reg = _cachedReg ?? '—';
+        if (reg == '—' &&
+            StudentAuthEmail.isStudentMailbox(user.email ?? '')) {
+          final fromLink = await _lookupStudentRegistrationFromEmailLink(
+            user,
+            registrationHint: _cachedReg,
+          );
+          if (fromLink != null && fromLink.isNotEmpty) {
+            reg = fromLink.toUpperCase();
+            _cachedReg = fromLink;
+          }
+        }
         return {
           'email': email,
-          'registrationNumber': _cachedReg ?? '—',
+          'registrationNumber': reg,
           if (_cachedName != null && _cachedName!.isNotEmpty)
             'fullName': _cachedName!,
         };
       }
       final d = doc.data()!;
-      final reg =
-          (d['registrationNumber'] as String?)?.trim().toUpperCase() ?? '—';
+      final linked = (d['registrationNumber'] as String?)?.trim();
+      final pending =
+          (d[pendingRegistrationNumberField] as String?)?.trim();
+      String reg;
+      if (_isStudentAccountProfile(d, user)) {
+        reg = (linked != null && linked.isNotEmpty ? linked : pending)
+                ?.toUpperCase() ??
+            _cachedReg?.toUpperCase() ??
+            '—';
+        if (reg == '—') {
+          final fromLink = await _lookupStudentRegistrationFromEmailLink(
+            user,
+            registrationHint: linked ?? pending ?? _cachedReg,
+          );
+          if (fromLink != null && fromLink.isNotEmpty) {
+            reg = fromLink.toUpperCase();
+            _cachedReg = fromLink;
+            _cachedIsStudentProfile = true;
+            unawaited(
+              _backfillAppUserRegistrationFromEmailLink(
+                user,
+                fromLink,
+                profileData: d,
+              ),
+            );
+          }
+        }
+      } else {
+        final staffSn = (_cachedStaffNumber ??
+                (d['staffNumber'] as String?) ??
+                linked ??
+                pending)
+            ?.trim()
+            .toUpperCase();
+        reg = (staffSn != null && staffSn.isNotEmpty) ? staffSn : '—';
+      }
       final name = (d['fullName'] as String?)?.trim();
       String? memberSince;
       final created = d['createdAt'];
@@ -2950,9 +4108,12 @@ class AuthRepository extends ChangeNotifier {
           )!,
       };
     } catch (_) {
+      final email = _uiVisibleEmail(user.email) ?? '—';
+      final staffSn = _cachedStaffNumber?.trim().toUpperCase();
       return {
-        'email': _uiVisibleEmail(user.email) ?? '—',
-        'registrationNumber': _cachedReg ?? '—',
+        'email': email,
+        'registrationNumber':
+            _cachedReg?.toUpperCase() ?? staffSn ?? '—',
         if (_cachedName != null && _cachedName!.isNotEmpty) 'fullName': _cachedName!,
       };
     }

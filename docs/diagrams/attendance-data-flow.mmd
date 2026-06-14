@@ -1,0 +1,17 @@
+flowchart TB
+  UI[Attendance screens] --> Repo[attendance_repository]
+  Repo --> Store[AttendanceStore in-memory]
+  Repo --> FS[Firestore]
+  Repo --> RTD[Realtime Database]
+
+  UI --> Queues[Pending *Queue files]
+  Queues --> Hive[AttendanceLocalQueues storage]
+
+  Conn[Connectivity / app resume] --> Orch[attendance_offline_sync]
+  Orch --> SyncWorkers[Pending *Sync files]
+  SyncWorkers --> Queues
+  SyncWorkers --> Repo
+
+  Watchers[Remote / RTD watches] --> Store
+  Watchers --> FS
+  Watchers --> RTD

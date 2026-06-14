@@ -2,6 +2,9 @@
 /// ([functions/index.js]) that send to these topics.
 const String kFcmAllNoticesTopic = 'all_notices';
 
+/// KIU administrator-only notice pushes. Sync with [functions/index.js].
+const String kFcmKiuAdminsTopic = 'kiu_admins';
+
 /// Topics are restricted to `[a-zA-Z0-9-_.~%]+`; Firestore ids are usually safe,
 /// but we sanitize so subscribe/send never fail on odd ids.
 String sanitizeFcmTopicSegment(String raw) {

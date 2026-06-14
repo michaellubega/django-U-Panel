@@ -155,6 +155,8 @@ There is **no Provider/Riverpod**; dependencies are accessed via `.instance` sin
 
 **Drain orchestrator:** `AttendanceOfflineSync` (`lib/features/attendance/data/attendance_offline_sync.dart`)
 
+See also: [Attendance data flow diagram](ATTENDANCE_DATA_FLOW.md) (PNG + component reference).
+
 Ordered pipeline (sessions before check-ins, then `loadAll`, then slower queues):
 
 1. `purgeExpiredPendingOnly`

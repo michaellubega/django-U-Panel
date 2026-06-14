@@ -28,6 +28,8 @@ There are **two offline mechanisms**:
 
 **Trust model:** Time and GPS checks run on the **client device**. Queued rows are **re-validated at sync** using the **original capture timestamp and coordinates**, not the sync time — so a student who checked in during class can still be credited after a delayed upload.
 
+See also: [Student check-in flow diagram](STUDENT_CHECK_IN_FLOW.md) (PNG overview of online vs offline paths).
+
 ---
 
 ## 2. Online vs offline at a glance

@@ -23,12 +23,13 @@ class NoticesScreen extends StatefulWidget {
 
 class _NoticesScreenState extends State<NoticesScreen>
     with WidgetsBindingObserver {
-  static const Duration _autoRefreshInterval = Duration(seconds: 30);
+  static const Duration _autoRefreshInterval = Duration(minutes: 5);
   Timer? _autoRefreshTimer;
 
   List<NoticeRecord> _notices = [];
   bool _loadingNotices = false;
   String? _noticesError;
+  Future<void>? _loadNoticesInFlight;
 
   @override
   void initState() {
@@ -55,35 +56,54 @@ class _NoticesScreenState extends State<NoticesScreen>
     }
   }
 
-  /// Refreshes notices immediately. Attendance [loadAll] runs in parallel so
-  /// the notices query is not blocked behind five large collection reads (the
-  /// main cause of slow notice loads).
-  Future<void> _refreshRemoteData() async {
-    try {
-      unawaited(
-        AttendanceRepository.instance
-            .loadAll(
-              force: !AttendanceRepository.instance.hasCachedStore,
-              scopeToLecturerUid:
-                  AttendanceRepository.currentLecturerLoadScopeUid(),
-            )
-            .whenComplete(() {
-          if (mounted) setState(() {});
-        }),
-      );
-    } catch (_) {}
-    await _loadNotices();
+  /// Refreshes notices. Attendance is loaded only when the store lacks data
+  /// needed for audience filtering — never a full admin [loadAll] storm here.
+  Future<void> _refreshRemoteData({bool force = false}) async {
+    await _ensureAttendanceForNoticeFiltering();
+    await _loadNotices(force: force);
   }
 
-  Future<void> _loadNotices() async {
+  Future<void> _ensureAttendanceForNoticeFiltering() async {
+    final repo = AttendanceRepository.instance;
+    if (repo.hasCachedStore || repo.isLoaded) return;
+    try {
+      if (AttendanceRepository.isStudentScopedUser()) {
+        await repo.loadStudentAttendanceForProfile(force: false);
+        return;
+      }
+      await repo.loadAttendanceListsFirst(force: false);
+    } catch (_) {}
+  }
+
+  Future<void> _loadNotices({bool force = false}) {
+    final inFlight = _loadNoticesInFlight;
+    if (inFlight != null && !force) return inFlight;
+    final task = _loadNoticesBody(force: force).whenComplete(() {
+      _loadNoticesInFlight = null;
+    });
+    _loadNoticesInFlight = task;
+    return task;
+  }
+
+  Future<void> _loadNoticesBody({bool force = false}) async {
     if (!mounted) return;
+    if (_notices.isEmpty) {
+      final cached = await NoticesRepository.instance.loadCachedRecent();
+      if (cached.isNotEmpty && mounted) {
+        setState(() {
+          _notices = cached;
+          _loadingNotices = false;
+        });
+      }
+    }
     final blocking = _notices.isEmpty;
     setState(() {
       if (blocking) _loadingNotices = true;
       _noticesError = null;
     });
     try {
-      final list = await NoticesRepository.instance.fetchRecent(limit: 50);
+      final list =
+          await NoticesRepository.instance.fetchRecent(limit: 50, force: force);
       if (!mounted) return;
       final visible = _visibleNoticesFor(list);
       if (visible.isNotEmpty) {
@@ -125,6 +145,7 @@ class _NoticesScreenState extends State<NoticesScreen>
     return noticeVisibleToUser(
       n,
       admin: _isAdminUser(),
+      kiuAdmin: AuthRepository.instance.isKiuAdmin,
       lecturer: _isLecturerUser(),
       lecturerListIds: _lecturerListIds(),
       lecturerFirebaseUid: AuthRepository.instance.currentFirebaseUid,
@@ -141,7 +162,10 @@ class _NoticesScreenState extends State<NoticesScreen>
     return auth.lecturerCheckDone && auth.isLecturer && !auth.isAdmin;
   }
 
-  bool _canCreateNotice() => _isAdminUser() || _isLecturerUser();
+  bool _canCreateNotice() =>
+      _isAdminUser() ||
+      _isLecturerUser() ||
+      AuthRepository.instance.isKiuAdmin;
 
   Set<String> _lecturerListIds() {
     if (!_isLecturerUser()) return const {};
@@ -197,7 +221,13 @@ class _NoticesScreenState extends State<NoticesScreen>
       author = AuthRepository.instance.currentEmail?.trim() ?? '';
     }
     if (author.isEmpty) {
-      author = _isLecturerUser() ? 'Lecturer' : 'Admin';
+      if (_isLecturerUser()) {
+        author = 'Lecturer';
+      } else if (AuthRepository.instance.isKiuAdmin) {
+        author = 'KIU Admin';
+      } else {
+        author = 'Admin';
+      }
     }
 
     final err = await NoticesRepository.instance.publish(
@@ -215,11 +245,15 @@ class _NoticesScreenState extends State<NoticesScreen>
       return;
     }
 
-    await _loadNotices();
+    await _loadNotices(force: true);
 
-    final audienceBit = draft.audience == NoticeAudienceKind.allAppUsers
-        ? 'All app users'
-        : 'Class list: ${draft.targetListTitle ?? 'list'}';
+    final audienceBit = switch (draft.audience) {
+      NoticeAudienceKind.allAppUsers => 'All app users',
+      NoticeAudienceKind.kiuAdmins => 'KIU administrators',
+      NoticeAudienceKind.classList =>
+        'Class list: ${draft.targetListTitle ?? 'list'}',
+      NoticeAudienceKind.student => 'Individual student',
+    };
     final msg = draft.scheduledFor == null
         ? (draft.sendPush
             ? 'Notice sent ($audienceBit). People subscribed to notices will get an alert.'
@@ -278,7 +312,7 @@ class _NoticesScreenState extends State<NoticesScreen>
         final visible = _visibleNotices();
         return ScreenRefreshRegistrar(
           section: widget.shellSection,
-          onRefresh: _refreshRemoteData,
+          onRefresh: () => _refreshRemoteData(force: true),
           child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -370,7 +404,7 @@ class _NoticesScreenState extends State<NoticesScreen>
             const SizedBox(height: 24),
             Expanded(
               child: PullToRefreshScrollable(
-                onRefresh: _refreshRemoteData,
+                onRefresh: () => _refreshRemoteData(force: true),
                 child: SingleChildScrollView(
                   physics: const AlwaysScrollableScrollPhysics(),
                   child: Column(
@@ -388,10 +422,8 @@ class _NoticesScreenState extends State<NoticesScreen>
                           child: Text('Active notices',
                               style: Theme.of(context).textTheme.titleLarge),
                         ),
-                        IconButton(
-                          tooltip: 'Refresh',
-                          onPressed: () => unawaited(_refreshRemoteData()),
-                          icon: const Icon(Icons.refresh_rounded),
+                        RefreshIconButton(
+                          onRefresh: () => _refreshRemoteData(force: true),
                         ),
                       ],
                     ),
@@ -436,9 +468,11 @@ class _NoticesScreenState extends State<NoticesScreen>
                           audienceLine:
                               visible[i].audience == NoticeAudienceKind.allAppUsers
                                   ? 'All app users'
-                                  : visible[i].audience == NoticeAudienceKind.student
-                                      ? 'Personal notice'
-                                      : 'Class list: ${visible[i].targetListTitle ?? 'List'}',
+                                  : visible[i].audience == NoticeAudienceKind.kiuAdmins
+                                      ? 'KIU administrators'
+                                      : visible[i].audience == NoticeAudienceKind.student
+                                          ? 'Personal notice'
+                                          : 'Class list: ${visible[i].targetListTitle ?? 'List'}',
                           sessionCode: visible[i].sessionCode,
                           onCopyCode: visible[i].sessionCode == null ||
                                   visible[i].sessionCode!.trim().isEmpty
@@ -693,9 +727,10 @@ class _NoticeTile extends StatelessWidget {
                               color: st.titleColor,
                               fontSize: compactSessionCard ? 13 : null,
                             ),
-                        maxLines: compactSessionCard ? 1 : 2,
-                        overflow:
-                            compactSessionCard ? TextOverflow.ellipsis : null,
+                        maxLines: compactSessionCard ? 1 : null,
+                        overflow: compactSessionCard
+                            ? TextOverflow.ellipsis
+                            : null,
                       ),
                       SizedBox(height: compactSessionCard ? 1 : 6),
                       if (!compactSessionCard)
@@ -717,9 +752,11 @@ class _NoticeTile extends StatelessWidget {
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                       color: st.bodyColor,
                       fontSize: compactSessionCard ? 12 : null,
+                      height: 1.45,
                     ),
-                maxLines: compactSessionCard ? 1 : 3,
-                overflow: compactSessionCard ? TextOverflow.ellipsis : null,
+                maxLines: compactSessionCard ? 1 : null,
+                overflow:
+                    compactSessionCard ? TextOverflow.ellipsis : null,
               ),
             ],
             if (hasCode) ...[

@@ -20,10 +20,6 @@ abstract final class WebFastBoot {
 
   /// Runs [callback] after the first Flutter frame (login / shell visible).
   static void afterFirstFrame(void Function() callback) {
-    if (!enabled) {
-      callback();
-      return;
-    }
     WidgetsBinding.instance.addPostFrameCallback((_) => callback());
   }
 }

@@ -17,11 +17,32 @@
   <title>U-Panel</title>
   <link rel="manifest" href="manifest.json">
 
-  <link rel="preload" href="icons/Icon-192.png" as="image">
   <link rel="preload" href="flutter_bootstrap.js" as="script">
-  <link rel="preload" href="main.dart.js" as="script">
-  <link rel="preload" href="canvaskit/chromium/canvaskit.js" as="script">
-  <link rel="preload" href="canvaskit/chromium/canvaskit.wasm" as="fetch" crossorigin>
+  <script>
+    (function upanelPreloadCanvasKit() {
+      var conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+      if (conn && (conn.saveData || conn.effectiveType === 'slow-2g' || conn.effectiveType === '2g')) {
+        return;
+      }
+      var ua = navigator.userAgent || '';
+      var isChromium =
+        /Chrome|Chromium|Edg|OPR|SamsungBrowser/i.test(ua) &&
+        !/Firefox|FxiOS/i.test(ua);
+      var base = isChromium ? 'canvaskit/chromium/' : 'canvaskit/';
+      var wasm = document.createElement('link');
+      wasm.rel = 'preload';
+      wasm.href = base + 'canvaskit.wasm';
+      wasm.as = 'fetch';
+      wasm.crossOrigin = 'anonymous';
+      document.head.appendChild(wasm);
+      var ckJs = document.createElement('link');
+      ckJs.rel = 'preload';
+      ckJs.href = base + 'canvaskit.js';
+      ckJs.as = 'script';
+      ckJs.crossOrigin = 'anonymous';
+      document.head.appendChild(ckJs);
+    })();
+  </script>
 
   <style>
     #upanel-splash {
@@ -105,7 +126,7 @@
         window.upanelCachedSessionHint =
           raw != null && String(raw).trim().length > 0;
       } catch (_) {
-        window.upanelCachedSessionHint = null;
+        window.upanelCachedSessionHint = false;
       }
     })();
 
@@ -164,6 +185,8 @@
           .register('firebase-messaging-sw.js')
           .catch(function () {});
       }
+      window.upanelLoadScriptOnce('upanel-brand', 'upanel_brand.js').catch(function () {});
+      window.upanelLoadScriptOnce('android-web-gate', 'android_web_gate.js').catch(function () {});
     });
 
     window.upanelLoadScriptOnce = function (id, src) {
@@ -240,10 +263,50 @@
         if (window.__upanelBootOk || window.__upanelSplashHidden) return;
         if (window.__upanelNativeGateShown) return;
         window.upanelShowBootRetry(
-          'Still loading U-Panel… Tap Retry if this takes too long.'
+          'Still loading U-Panel… Check your connection, then tap Retry. ' +
+            'If this keeps happening, clear site data for this page and reload.'
         );
-      }, 90000);
+      }, 45000);
     };
+
+    window.upanelIsCriticalBootAsset = function (filename) {
+      if (!filename) return false;
+      return /flutter_bootstrap|main\.dart\.js|canvaskit|flutter\.js/i.test(
+        filename
+      );
+    };
+
+    window.addEventListener(
+      'error',
+      function (event) {
+        if (window.__upanelBootOk) return;
+        if (!window.upanelIsCriticalBootAsset(event.filename)) return;
+        var msg = event.message || 'U-Panel could not start.';
+        if (event.filename) {
+          msg += ' (' + event.filename.split('/').pop() + ')';
+        }
+        window.upanelShowBootRetry(msg);
+      },
+      true
+    );
+
+    window.addEventListener('unhandledrejection', function (event) {
+      if (window.__upanelBootOk) return;
+      var reason = event.reason;
+      var text = String(
+        reason && reason.message ? reason.message : reason || ''
+      );
+      if (
+        text.indexOf('canvaskit') < 0 &&
+        text.indexOf('FlutterLoader') < 0 &&
+        text.indexOf('main.dart') < 0
+      ) {
+        return;
+      }
+      window.upanelShowBootRetry(
+        text || 'U-Panel failed to start. Tap Retry or clear site data.'
+      );
+    });
 
     (function upanelEarlyBoot() {
       window.upanelBootFlutter();
@@ -251,7 +314,5 @@
     })();
   </script>
 
-  <script async src="upanel_brand.js"></script>
-  <script async src="android_web_gate.js"></script>
 </body>
 </html>

@@ -1,7 +1,7 @@
 {
     "version":  "1.0.0",
-    "build":  4,
-    "releasedAt":  "2026-06-10",
+    "build":  5,
+    "releasedAt":  "2026-06-14",
     "hostBase":  "https://kiu.orion13.us",
     "ios":  {
                 "label":  "iPhone \u0026 iPad",
@@ -14,14 +14,14 @@
                     "label":  "Android APK",
                     "minAndroid":  "7.0 (Nougat)",
                     "available":  true,
-                    "size":  "58.8 MB"
+                    "size":  "69.0 MB"
                 },
     "windows":  {
                     "file":  "https://kiu.orion13.us/downloads/U-Panel-1.0.0-windows-setup.exe",
                     "label":  "Windows installer",
                     "minWindows":  "Windows 10 (64-bit)",
                     "available":  true,
-                    "size":  "15.2 MB"
+                    "size":  "19.7 MB"
                 },
     "web":  {
                 "url":  "https://u-panel-2026.web.app/",

@@ -9,11 +9,13 @@ import '../check_in_validation.dart'
     show
         isPositionWithinSession,
         isTimestampWithinSessionBounds,
-        resolveCourseForStudentCheckIn,
-        verifyLinkedSessionCheckIn;
+        pendingReplayLocationOk,
+        resolveCourseForStudentCheckIn;
 import '../../../core/connectivity/app_connectivity.dart';
 import '../../../core/firebase/firestore_collections.dart';
+import '../../../core/firebase/session_rtd_sync.dart';
 import '../../../core/firebase/u_panel_firestore.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter/foundation.dart';
 import '../models/attendance_models.dart';
 import 'attendance_repository.dart';
@@ -28,6 +30,7 @@ class PendingSessionCodeSync {
   static final Set<String> _watchedPublishCodes = {};
   static final List<StreamSubscription<QuerySnapshot<Map<String, dynamic>>>>
       _sessionPublishSubs = [];
+  static final List<StreamSubscription<void>> _sessionRtdPublishSubs = [];
 
   static Future<void> _withDrainLock(Future<void> Function() body) async {
     final prior = _drainTail;
@@ -67,9 +70,6 @@ class PendingSessionCodeSync {
   /// Removed from queue: check-in submitted or duplicate.
   static const _removeSubmitted = 2;
 
-  /// Removed from queue: session metadata uploaded to server (no local copy).
-  static const _removeUploadedMetadata = 3;
-
   /// Result of [processOnCreate] — whether to persist locally.
   static Future<({bool discardLocal, PendingSessionCodeEntry? keepLocal})>
       processOnCreate(PendingSessionCodeEntry entry) async {
@@ -77,7 +77,6 @@ class PendingSessionCodeSync {
     if (result is int) {
       switch (result) {
         case _removeSubmitted:
-        case _removeUploadedMetadata:
         case _rejectVerifiedMismatch:
           return (discardLocal: true, keepLocal: null);
         default:
@@ -119,6 +118,21 @@ class PendingSessionCodeSync {
         },
       );
       _sessionPublishSubs.add(sub);
+
+      if (SessionRtdSync.pluginAvailable) {
+        final rtdSub = SessionRtdSync.watchByCode(code).listen(
+          (_) {
+            unawaited(drainUrgent());
+          },
+          onError: (Object e) {
+            SessionRtdSync.markPluginUnavailable(e);
+            if (kDebugMode && e is! MissingPluginException) {
+              debugPrint('PendingSessionCodeSync RTD session watch $code: $e');
+            }
+          },
+        );
+        _sessionRtdPublishSubs.add(rtdSub);
+      }
     }
   }
 
@@ -136,6 +150,10 @@ class PendingSessionCodeSync {
       await sub.cancel();
     }
     _sessionPublishSubs.clear();
+    for (final sub in _sessionRtdPublishSubs) {
+      await sub.cancel();
+    }
+    _sessionRtdPublishSubs.clear();
     _watchedPublishCodes.clear();
   }
 
@@ -204,6 +222,8 @@ class PendingSessionCodeSync {
         return;
       }
 
+      await AttendanceRepository.instance.prefetchSessionsForPendingCodes();
+
       final processed = await _processEntriesOnline(keep, now);
       await PendingSessionCodeQueue.saveAll(processed.remaining);
       refreshSessionPublishWatchesFromQueue();
@@ -255,6 +275,7 @@ class PendingSessionCodeSync {
         await PendingSessionCodeQueue.saveAll(const []);
         return;
       }
+      await AttendanceRepository.instance.prefetchSessionsForPendingCodes();
       final processed = await _processEntriesOnline(keep, now);
       await PendingSessionCodeQueue.saveAll(processed.remaining);
       refreshSessionPublishWatchesFromQueue();
@@ -329,23 +350,22 @@ class PendingSessionCodeSync {
   static AttendanceSession? _sessionLinkedInStore(PendingSessionCodeEntry entry) {
     final normalizedCode = normalizeSessionCodeInput(entry.sessionCodeRaw);
     final hint = entry.sessionId?.trim();
-    if (hint != null && hint.isNotEmpty) {
-      final byId = AttendanceStore.sessionById(hint);
-      if (byId != null &&
-          normalizeSessionCodeInput(byId.sessionCode) == normalizedCode) {
-        return byId;
-      }
-    }
+
+    // Prefer the live open session for this code (ignore stale sessionId hints).
     final byCode = AttendanceRepository.instance.validateSessionCode(
       entry.sessionCodeRaw,
     );
-    if (byCode == null) return null;
-    if (hint != null &&
-        hint.isNotEmpty &&
-        byCode.id != hint) {
-      return null;
+    if (byCode != null) return byCode;
+
+    if (hint != null && hint.isNotEmpty) {
+      final byId = AttendanceStore.sessionById(hint);
+      if (byId != null &&
+          normalizeSessionCodeInput(byId.sessionCode) == normalizedCode &&
+          byId.isOpenForCheckIn) {
+        return byId;
+      }
     }
-    return byCode;
+    return null;
   }
 
   static Future<Object> _completeLinkedPendingEntry({
@@ -379,7 +399,10 @@ class PendingSessionCodeSync {
     );
 
     var student = studentForGuard ??
-        await repo.resolveStudentForRegistration(entry.registrationNumber);
+        await repo.resolveStudentForRegistration(
+          entry.registrationNumber,
+          fast: true,
+        );
     if (student == null) {
       return withMeta.copyWith(
         status: PendingSessionCodeStatus.needsRegistration,
@@ -390,6 +413,7 @@ class PendingSessionCodeSync {
       final enroll = await repo.ensureStudentEnrolledOnList(
         list: list,
         student: student,
+        deferHeavyWork: true,
       );
       switch (enroll) {
         case StudentListEnrollOutcome.noCourses:
@@ -463,12 +487,12 @@ class PendingSessionCodeSync {
         return _removeSubmitted;
       case StudentOfflineCheckInOutcome.sessionMismatch:
       case StudentOfflineCheckInOutcome.rejectedVerification:
-        return _rejectVerifiedMismatch;
       case StudentOfflineCheckInOutcome.queuedOffline:
-        return withMeta.copyWith(
-          status: PendingSessionCodeStatus.queued,
-          note:
-              'Attendance saved on this device; will upload when the connection is stable.',
+        return _trustedOfflinePresentEntry(
+          entry: withMeta,
+          session: session,
+          student: student,
+          course: course,
         );
       case StudentOfflineCheckInOutcome.deviceBlocked:
         return withMeta.copyWith(
@@ -476,6 +500,161 @@ class PendingSessionCodeSync {
           note: deviceAlreadyUsedUserMessage,
         );
     }
+  }
+
+  static PendingSessionCodeEntry _trustedOfflinePresentEntry({
+    required PendingSessionCodeEntry entry,
+    required AttendanceSession session,
+    required StudentRecord student,
+    required String course,
+  }) {
+    final record = AttendanceRecord(
+      id: '${session.id}_${student.id}',
+      sessionId: session.id,
+      studentId: student.id,
+      course: course,
+      timestamp: entry.capturedAt,
+      latitude: entry.latitude,
+      longitude: entry.longitude,
+      verified: false,
+      present: true,
+      deviceId: entry.deviceId,
+    );
+    final existing = AttendanceStore.attendanceRecordForSessionStudent(
+      session.id,
+      student.id,
+    );
+    if (existing == null) {
+      AttendanceStore.addAttendanceRecordIfAbsent(record);
+    } else if (!existing.verified) {
+      AttendanceStore.updateAttendanceRecord(record);
+    }
+    AttendanceRepository.instance.notifyAttendanceStoreUpdated();
+    return entry.copyWith(
+      sessionId: session.id,
+      listId: session.listId,
+      status: PendingSessionCodeStatus.queued,
+      note:
+          'Check-in saved offline — counted present on this device; will keep syncing.',
+      invalidMarkedAt: null,
+    );
+  }
+
+  /// Claim is on Firestore but check-in is not verified yet — keep local queue
+  /// row and retry upload/verification until accepted or rejected.
+  static Future<Object> _resolveUploadedClaim({
+    required PendingSessionCodeEntry entry,
+    required StudentRecord student,
+    required DateTime now,
+    AttendanceSession? localSessionHint,
+  }) async {
+    final repo = AttendanceRepository.instance;
+    final claimId = PendingSessionCodeClaimUpload.claimDocId(
+      normalizedCode: normalizeSessionCodeInput(entry.sessionCodeRaw),
+      studentId: student.id,
+    );
+
+    final rejection =
+        await repo.fetchCheckInAttemptRejectionReason(claimId);
+    if (rejection != null) {
+      discardLocalAttendanceSideEffects(entry);
+      return entry.copyWith(
+        status: PendingSessionCodeStatus.invalidOrExpired,
+        note: rejection,
+        invalidMarkedAt: now,
+      );
+    }
+
+    if (await PendingSessionCodeClaimUpload.tryRefreshLocalFromServerClaim(
+      entry: entry,
+      studentId: student.id,
+    )) {
+      return _removeSubmitted;
+    }
+
+    var session = localSessionHint;
+    session ??= await repo.resolvePublishedLecturerSessionForPendingClaim(
+      sessionCodeRaw: entry.sessionCodeRaw,
+      capturedAt: entry.capturedAt,
+      sessionIdHint: entry.sessionId,
+    );
+
+    if (session != null) {
+      await PendingSessionCodeClaimUpload.linkPublishedSessionToClaim(
+        entry: entry,
+        studentId: student.id,
+        session: session,
+      );
+      return _completeLinkedPendingEntry(
+        entry: entry,
+        session: session,
+        now: now,
+        studentForGuard: student,
+      );
+    }
+
+    return entry.copyWith(
+      sessionId: localSessionHint?.id ?? entry.sessionId,
+      listId: localSessionHint?.listId ?? entry.listId,
+      status: PendingSessionCodeStatus.queued,
+      note:
+          'Check-in saved on this device — uploaded to server, waiting to verify '
+          '(up to ${PendingRetention.unverifiedPending.inDays} days).',
+      invalidMarkedAt: null,
+    );
+  }
+
+  /// Upload student claim metadata if needed; never drops the local row until
+  /// check-in is verified or permanently rejected.
+  static Future<Object> _ensureClaimUploadedAndResolve({
+    required PendingSessionCodeEntry entry,
+    required StudentRecord student,
+    required DateTime now,
+    AttendanceSession? localSessionHint,
+  }) async {
+    var onServer = await PendingSessionCodeClaimUpload.isClaimOnServer(
+      entry: entry,
+      studentId: student.id,
+    );
+    if (!onServer) {
+      final uploaded = await PendingSessionCodeClaimUpload.uploadForEntryWithStudent(
+        entry: entry,
+        studentId: student.id,
+      );
+      if (!uploaded) {
+        return entry.copyWith(
+          sessionId: localSessionHint?.id ?? entry.sessionId,
+          listId: localSessionHint?.listId ?? entry.listId,
+          status: PendingSessionCodeStatus.queued,
+          note:
+              'Could not upload session metadata yet — saved on this device. '
+              'Will retry when the connection is stable.',
+          invalidMarkedAt: null,
+        );
+      }
+      onServer = await PendingSessionCodeClaimUpload.isClaimOnServer(
+        entry: entry,
+        studentId: student.id,
+      );
+      if (!onServer) {
+        return entry.copyWith(
+          sessionId: localSessionHint?.id ?? entry.sessionId,
+          listId: localSessionHint?.listId ?? entry.listId,
+          status: PendingSessionCodeStatus.queued,
+          note:
+              'Upload did not confirm on server yet — saved on this device. '
+              'Will retry shortly.',
+          invalidMarkedAt: null,
+        );
+      }
+    }
+
+    return _resolveUploadedClaim(
+      entry: entry,
+      student: student,
+      now: now,
+      localSessionHint: localSessionHint,
+    );
   }
 
   static Future<Object> _tryProcess(
@@ -487,11 +666,13 @@ class PendingSessionCodeSync {
     }
 
     final repo = AttendanceRepository.instance;
-    final studentForGuard =
-        await repo.resolveStudentForRegistration(entry.registrationNumber);
+    final studentForGuard = await repo.resolveStudentForRegistration(
+      entry.registrationNumber,
+      fast: true,
+    );
     if (studentForGuard != null) {
-      final block = await PendingSessionCodeClaimUpload.deviceBlockReason(
-        entry: entry,
+      final block = await PendingSessionCodeClaimUpload.localDeviceBlockReason(
+        entry,
         studentId: studentForGuard.id,
       );
       if (block != null) {
@@ -500,27 +681,24 @@ class PendingSessionCodeSync {
           note: block,
         );
       }
+      await repo.ensureStudentDocOnServer(studentForGuard.id);
     }
 
     final linked = _sessionLinkedInStore(entry);
     if (linked != null) {
-      final verification = verifyLinkedSessionCheckIn(
-        session: linked,
-        at: _validationTimestampForPendingCode(entry),
-        latitude: entry.latitude,
-        longitude: entry.longitude,
-      );
-      if (verification.passed) {
-        return _completeLinkedPendingEntry(
+      if (studentForGuard != null) {
+        await PendingSessionCodeClaimUpload.linkPublishedSessionToClaim(
           entry: entry,
+          studentId: studentForGuard.id,
           session: linked,
-          now: now,
-          studentForGuard: studentForGuard,
         );
       }
-      if (!verification.passed && linked.isOpenForCheckIn) {
-        return _rejectVerifiedMismatch;
-      }
+      return _completeLinkedPendingEntry(
+        entry: entry,
+        session: linked,
+        now: now,
+        studentForGuard: studentForGuard,
+      );
     }
 
     var session = await repo.resolvePublishedLecturerSessionForPendingClaim(
@@ -528,6 +706,19 @@ class PendingSessionCodeSync {
       capturedAt: entry.capturedAt,
       sessionIdHint: entry.sessionId,
     );
+    if (session != null && studentForGuard != null) {
+      await PendingSessionCodeClaimUpload.linkPublishedSessionToClaim(
+        entry: entry,
+        studentId: studentForGuard.id,
+        session: session,
+      );
+      return _completeLinkedPendingEntry(
+        entry: entry,
+        session: session,
+        now: now,
+        studentForGuard: studentForGuard,
+      );
+    }
     if (session == null) {
       final localOnly = await repo.resolveSessionForPendingCodeEntry(
         sessionCodeRaw: entry.sessionCodeRaw,
@@ -537,25 +728,17 @@ class PendingSessionCodeSync {
       if (localOnly != null &&
           !await repo.isLecturerSessionPublishedOnServer(localOnly.id)) {
         final student = studentForGuard ??
-            await repo.resolveStudentForRegistration(entry.registrationNumber);
-        if (student != null) {
-          final metadataOnServer =
-              await PendingSessionCodeClaimUpload.isClaimOnServer(
-            entry: entry,
-            studentId: student.id,
-          );
-          if (!metadataOnServer) {
-            final uploaded =
-                await PendingSessionCodeClaimUpload.uploadForEntryWithStudent(
-              entry: entry,
-              studentId: student.id,
+            await repo.resolveStudentForRegistration(
+              entry.registrationNumber,
+              fast: true,
             );
-            if (uploaded) {
-              return _removeUploadedMetadata;
-            }
-          } else {
-            return _removeUploadedMetadata;
-          }
+        if (student != null) {
+          return _ensureClaimUploadedAndResolve(
+            entry: entry,
+            student: student,
+            now: now,
+            localSessionHint: localOnly,
+          );
         }
         return entry.copyWith(
           sessionId: localOnly.id,
@@ -569,51 +752,32 @@ class PendingSessionCodeSync {
     }
     if (session == null) {
       final student = studentForGuard ??
-          await repo.resolveStudentForRegistration(entry.registrationNumber);
-      var metadataOnServer = false;
-      if (student != null) {
-        metadataOnServer = await PendingSessionCodeClaimUpload.isClaimOnServer(
-          entry: entry,
-          studentId: student.id,
+          await repo.resolveStudentForRegistration(
+          entry.registrationNumber,
+          fast: true,
         );
-        if (!metadataOnServer) {
-          metadataOnServer =
-              await PendingSessionCodeClaimUpload.uploadForEntryWithStudent(
-            entry: entry,
-            studentId: student.id,
-          );
+      if (student != null) {
+        final resolved = await _ensureClaimUploadedAndResolve(
+          entry: entry,
+          student: student,
+          now: now,
+        );
+        if (resolved is int) return resolved;
+        final updated = resolved as PendingSessionCodeEntry;
+        session = await repo.resolvePublishedLecturerSessionForPendingClaim(
+          sessionCodeRaw: entry.sessionCodeRaw,
+          capturedAt: entry.capturedAt,
+          sessionIdHint: updated.sessionId ?? entry.sessionId,
+        );
+        if (session == null) {
+          return updated;
         }
-        if (metadataOnServer) {
-          session = await repo.resolvePublishedLecturerSessionForPendingClaim(
-            sessionCodeRaw: entry.sessionCodeRaw,
-            capturedAt: entry.capturedAt,
-            sessionIdHint: entry.sessionId,
-          );
-          if (session != null) {
-            final verified =
-                await PendingSessionCodeClaimUpload
-                    .awaitImmediateVerificationWhenBothEndsPresent(
-              entry: entry,
-              studentId: student.id,
-              session: session,
-            );
-            if (verified) {
-              return _removeSubmitted;
-            }
-            // Both ends on server — run full check-in below.
-          } else {
-            final refreshed =
-                await PendingSessionCodeClaimUpload.tryRefreshLocalFromServerClaim(
-              entry: entry,
-              studentId: student.id,
-            );
-            if (refreshed) {
-              return _removeSubmitted;
-            }
-            // Student claim only — wait for lecturer session (up to 7 days).
-            return _removeUploadedMetadata;
-          }
-        }
+        return _completeLinkedPendingEntry(
+          entry: updated,
+          session: session,
+          now: now,
+          studentForGuard: student,
+        );
       }
       if (await repo.serverHasOnlyInactiveSessionForCode(entry.sessionCodeRaw)) {
         final endedSession =
@@ -666,28 +830,23 @@ class PendingSessionCodeSync {
     }
 
     final boundsTime = _validationTimestampForPendingCode(entry);
-    final withinTime = isTimestampWithinSessionBounds(session, boundsTime);
-    final withinRadius =
-        isPositionWithinSession(session, entry.latitude, entry.longitude);
-    if (!withinTime || !withinRadius) {
+    if (!isTimestampWithinSessionBounds(session, boundsTime) && kDebugMode) {
+      debugPrint(
+        'PendingSessionCodeSync: offline trust for ${entry.sessionCodeRaw} — '
+        'capture time outside live session window (session ${session.id}).',
+      );
+    }
+    if (!pendingReplayLocationOk(
+      session,
+      entry.latitude,
+      entry.longitude,
+    )) {
       if (kDebugMode) {
         debugPrint(
-          'PendingSessionCodeSync: rejected code ${entry.sessionCodeRaw} — '
-          '${withinTime ? "outside radius" : "outside session time"} '
-          '(session ${session.id}).',
+          'PendingSessionCodeSync: GPS soft-fail for ${entry.sessionCodeRaw} '
+          '(session ${session.id}) — submitting for server verification.',
         );
       }
-      if (!session.isOpenForCheckIn) {
-        return entry.copyWith(
-          sessionId: null,
-          listId: null,
-          status: PendingSessionCodeStatus.queued,
-          note:
-              'Waiting for an active session with code ${normalizeSessionCodeInput(entry.sessionCodeRaw)}.',
-          invalidMarkedAt: null,
-        );
-      }
-      return _rejectVerifiedMismatch;
     }
 
     final withMeta = entry.copyWith(
@@ -701,6 +860,7 @@ class PendingSessionCodeSync {
 
     var student = await repo.resolveStudentForRegistration(
       entry.registrationNumber,
+      fast: true,
     );
     if (student == null) {
       return withMeta.copyWith(
@@ -712,6 +872,7 @@ class PendingSessionCodeSync {
       final enroll = await repo.ensureStudentEnrolledOnList(
         list: list,
         student: student,
+        deferHeavyWork: true,
       );
       switch (enroll) {
         case StudentListEnrollOutcome.noCourses:
@@ -782,12 +943,12 @@ class PendingSessionCodeSync {
         return _removeSubmitted;
       case StudentOfflineCheckInOutcome.sessionMismatch:
       case StudentOfflineCheckInOutcome.rejectedVerification:
-        return _rejectVerifiedMismatch;
       case StudentOfflineCheckInOutcome.queuedOffline:
-        return withMeta.copyWith(
-          status: PendingSessionCodeStatus.queued,
-          note:
-              'Attendance saved on this device; will upload when the connection is stable.',
+        return _trustedOfflinePresentEntry(
+          entry: withMeta,
+          session: session,
+          student: student,
+          course: course,
         );
       case StudentOfflineCheckInOutcome.deviceBlocked:
         return withMeta.copyWith(

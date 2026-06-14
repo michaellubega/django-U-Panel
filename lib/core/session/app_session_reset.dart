@@ -3,6 +3,7 @@ import '../notifications/notification_maintenance_coordinator.dart';
 import '../push/push_controller.dart';
 import '../storage/attendance_local_queues.dart';
 import '../../features/attendance/data/attendance_repository.dart';
+import '../../features/notices/data/notices_repository.dart';
 
 /// Clears in-memory and local queued state when the signed-in user changes.
 class AppSessionReset {
@@ -14,17 +15,20 @@ class AppSessionReset {
   }
 
   /// Slow I/O (FCM unsubscribe, local queues) — run after UI has switched.
-  static Future<void> onSignOutDeferred() async {
+  static Future<void> onSignOutDeferred({String? noticesDiskCacheUserKey}) async {
     await Future.wait<void>([
       DeviceStudentRegistrationLock.clearOnSignOut(),
       AttendanceLocalQueues.clearAllPending(),
       PushController.instance.resetForSignOut(),
       NotificationMaintenanceCoordinator.onSignedOut(),
+      if (noticesDiskCacheUserKey != null &&
+          noticesDiskCacheUserKey.trim().isNotEmpty)
+        NoticesRepository.clearDiskCacheForUserKey(noticesDiskCacheUserKey),
     ]);
   }
 
-  static Future<void> onSignOut() async {
+  static Future<void> onSignOut({String? noticesDiskCacheUserKey}) async {
     onSignOutImmediate();
-    await onSignOutDeferred();
+    await onSignOutDeferred(noticesDiskCacheUserKey: noticesDiskCacheUserKey);
   }
 }

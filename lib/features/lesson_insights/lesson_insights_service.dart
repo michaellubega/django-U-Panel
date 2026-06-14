@@ -49,6 +49,18 @@ class LessonInsightsService {
     RollPendingContext pending, {
     DateTime? now,
   }) {
+    if (!session.isActive) {
+      final rtd = AttendanceStore.sessionRollStats(session.id);
+      if (rtd != null) {
+        return LessonSessionRollCounts(
+          enrolled: rtd.enrolled,
+          present: rtd.present,
+          absent: rtd.absent,
+          pending: rtd.pending,
+        );
+      }
+    }
+
     final studentIds = AttendanceStore.studentIdsSignedIntoList(list.id);
     if (studentIds.isEmpty) return LessonSessionRollCounts.empty;
 

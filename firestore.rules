@@ -10,6 +10,18 @@ service cloud.firestore {
       return v == true || v == 'true' || v == 1;
     }
 
+    function callerAuthEmailLower() {
+      return request.auth != null
+        && request.auth.token.email is string
+        ? request.auth.token.email.lower()
+        : '';
+    }
+
+    // @studmc.kiu.ac.ug / @studwc.kiu.ac.ug — student accounts only; never staff roles.
+    function isCallerStudentMailbox() {
+      return callerAuthEmailLower().matches('.*@(studmc|studwc)\\.kiu\\.ac\\.ug$');
+    }
+
     function isAdminFlag(data) {
       return ('isAdmin' in data && isTruthy(data.isAdmin))
         || ('isadmin' in data && isTruthy(data.isadmin));
@@ -24,7 +36,8 @@ service cloud.firestore {
     }
 
     function isCallerAdmin() {
-      return request.auth != null && (
+      return !isCallerStudentMailbox()
+        && request.auth != null && (
         (
           exists(/databases/$(database)/documents/admins/$(request.auth.uid))
           && isAdminFlag(callerAdminDoc().data)
@@ -72,7 +85,8 @@ service cloud.firestore {
 
     // KIU administrator onboarding: own doc may set isKiuAdmin only (not self-grant full admin).
     function callerCanSelfGrantKiuAdmin(adminId) {
-      return request.auth != null
+      return !isCallerStudentMailbox()
+        && request.auth != null
         && request.auth.uid == adminId
         && isKiuAdminFlag(request.resource.data)
         && (
@@ -102,14 +116,16 @@ service cloud.firestore {
 
     // @kiu.ac.ug / ICT staff may bootstrap their own lecturers/{uid} after email verification.
     function callerCanBootstrapOwnLecturer(lecturerId) {
-      return request.auth != null
+      return !isCallerStudentMailbox()
+        && request.auth != null
         && request.auth.uid == lecturerId
         && lecturerDocShapeValid()
         && request.resource.data.isLecturer == true;
     }
 
     function isCallerKiuAdmin() {
-      return request.auth != null && (
+      return !isCallerStudentMailbox()
+        && request.auth != null && (
         (
           exists(/databases/$(database)/documents/admins/$(request.auth.uid))
           && isKiuAdminFlag(get(/databases/$(database)/documents/admins/$(request.auth.uid)).data)
@@ -122,7 +138,8 @@ service cloud.firestore {
     }
 
     function isCallerLecturer() {
-      return request.auth != null
+      return !isCallerStudentMailbox()
+        && request.auth != null
         && exists(/databases/$(database)/documents/lecturers/$(request.auth.uid))
         && isTruthy(
           get(/databases/$(database)/documents/lecturers/$(request.auth.uid)).data.isLecturer
@@ -170,10 +187,48 @@ service cloud.firestore {
       return request.auth != null
         && !isCallerLecturer()
         && !isCallerAdmin()
-        && exists(/databases/$(database)/documents/students/$(studentId))
-        && get(/databases/$(database)/documents/students/$(studentId)).data.get(
-          'registrationNumber', ''
-        ) == callerRegistration();
+        && (
+          (callerRegistration() != '' && studentId == callerRegistration())
+          || (
+            exists(/databases/$(database)/documents/student_registrations/$(studentId))
+            && get(/databases/$(database)/documents/student_registrations/$(studentId)).data.uid
+              == request.auth.uid
+          )
+          || (
+            callerRegistration() != ''
+            && exists(/databases/$(database)/documents/students/$(studentId))
+            && get(/databases/$(database)/documents/students/$(studentId)).data.get(
+              'registrationNumber', ''
+            ) == callerRegistration()
+          )
+        );
+    }
+
+    function studentOwnsRegistrationField(registrationNumber) {
+      return request.auth != null
+        && !isCallerLecturer()
+        && !isCallerAdmin()
+        && registrationNumber is string
+        && registrationNumber != ''
+        && (
+          (callerRegistration() != '' && registrationNumber == callerRegistration())
+          || (
+            exists(/databases/$(database)/documents/student_registrations/$(registrationNumber))
+            && get(/databases/$(database)/documents/student_registrations/$(registrationNumber)).data.uid
+              == request.auth.uid
+          )
+        );
+    }
+
+    function studentOwnsCheckInAttemptData(data) {
+      return data.keys().hasAll(['studentId'])
+        && (
+          studentOwnsStudentId(data.studentId)
+          || (
+            data.keys().hasAll(['registrationNumber'])
+            && studentOwnsRegistrationField(data.registrationNumber)
+          )
+        );
     }
 
     // Role bootstrap: any signed-in user may read their own admins/{uid} (missing doc = not admin).
@@ -216,30 +271,82 @@ service cloud.firestore {
 
     // Student signup: one registration number ↔ one Auth uid + school email (immutable).
     match /student_registrations/{regId} {
+      function studentRegOwnedByCaller() {
+        return request.auth != null
+          && resource.data.uid == request.auth.uid;
+      }
+
+      function studentRegEmailMatchesCaller() {
+        return request.auth != null
+          && isCallerStudentMailbox()
+          && resource.data.email is string
+          && resource.data.email == callerAuthEmailLower();
+      }
+
       // Any signed-in user may read a lock doc to detect "already taken" during signup.
-      allow read: if request.auth != null;
-      allow list: if isCallerAdmin();
-      // Create when the lock doc does not exist yet (signup transaction).
-      allow create: if request.auth != null
-        && request.auth.uid == request.resource.data.uid
-        && request.resource.data.uid is string
-        && request.resource.data.email is string
-        && request.resource.data.registrationNumber is string
-        && request.resource.data.registrationNumber == regId
-        && (!('fullName' in request.resource.data)
-          || request.resource.data.fullName is string);
-      // Owner may retry signup; cannot change email or take another student's lock.
+      allow get: if request.auth != null;
+      // Students resolve their registration from uid / attached school email; admins list all.
+      allow list: if isCallerAdmin()
+        || studentRegOwnedByCaller()
+        || studentRegEmailMatchesCaller();
+
+      // Pending lock at account creation (before email verification).
+      function studentRegPendingCreateValid() {
+        return request.auth.uid == request.resource.data.uid
+          && request.resource.data.uid is string
+          && request.resource.data.email is string
+          && request.resource.data.registrationNumber is string
+          && request.resource.data.registrationNumber == regId
+          && request.resource.data.get('emailVerifiedAtLink', false) == false;
+      }
+
+      // Final lock after the school mailbox is verified in Firebase Auth.
+      function studentRegVerifiedCreateValid() {
+        return request.auth.token.email_verified == true
+          && request.auth.uid == request.resource.data.uid
+          && request.resource.data.uid is string
+          && request.resource.data.email is string
+          && request.resource.data.registrationNumber is string
+          && request.resource.data.registrationNumber == regId
+          && request.resource.data.emailVerifiedAtLink == true
+          && (!('fullName' in request.resource.data)
+            || request.resource.data.fullName is string);
+      }
+
+      allow create: if request.auth != null && (
+        studentRegPendingCreateValid() || studentRegVerifiedCreateValid()
+      );
+      // Verified owner updates their lock; verified users may claim unverified locks.
       allow update: if isCallerAdmin()
         || (
           request.auth != null
+          && request.auth.token.email_verified == true
           && resource.data.uid == request.auth.uid
           && request.auth.uid == request.resource.data.uid
           && request.resource.data.registrationNumber == regId
           && request.resource.data.email == resource.data.email
+          && request.resource.data.emailVerifiedAtLink == true
+          && (!('fullName' in request.resource.data)
+            || request.resource.data.fullName is string)
+        )
+        || (
+          request.auth != null
+          && request.auth.token.email_verified == true
+          && resource.data.get('emailVerifiedAtLink', false) != true
+          && request.auth.uid == request.resource.data.uid
+          && request.resource.data.registrationNumber == regId
+          && request.resource.data.emailVerifiedAtLink == true
+          && request.resource.data.email is string
           && (!('fullName' in request.resource.data)
             || request.resource.data.fullName is string)
         );
-      allow delete: if isCallerAdmin();
+      // Roll back failed signup or admin cleanup.
+      allow delete: if isCallerAdmin()
+        || (
+          request.auth != null
+          && resource.data.uid == request.auth.uid
+          && resource.data.get('emailVerifiedAtLink', false) != true
+        );
     }
 
     // Atomic KIU-#### counter; create on first use is allowed for admins.
@@ -290,6 +397,7 @@ service cloud.firestore {
 
     match /app_users/{userId} {
       allow read: if request.auth != null && request.auth.uid == userId;
+      // Student self-signup writes their own profile doc immediately after Auth account creation.
       allow create: if request.auth != null && (
         request.auth.uid == userId || isCallerAdmin()
       );
@@ -350,10 +458,14 @@ service cloud.firestore {
 
     match /attendance_records/{docId} {
       allow read: if isCallerAdmin();
-      allow read: if request.auth != null && !isCallerLecturer();
       allow read: if isCallerLecturer()
         && resource.data.keys().hasAll(['sessionId'])
         && lecturerOwnsSessionById(resource.data.sessionId);
+      allow read: if request.auth != null
+        && !isCallerLecturer()
+        && !isCallerAdmin()
+        && resource.data.keys().hasAll(['studentId'])
+        && studentOwnsStudentId(resource.data.studentId);
       // Official roll rows: Cloud Functions (Admin SDK) only.
       allow create, update, delete: if false;
     }
@@ -362,8 +474,7 @@ service cloud.firestore {
     match /check_in_attempts/{docId} {
       allow read: if isCallerAdmin();
       allow read: if request.auth != null && !isCallerLecturer()
-        && resource.data.keys().hasAll(['studentId'])
-        && studentOwnsStudentId(resource.data.studentId);
+        && studentOwnsCheckInAttemptData(resource.data);
       allow read: if isCallerLecturer()
         && resource.data.keys().hasAll(['sessionId'])
         && lecturerOwnsSessionById(resource.data.sessionId);
@@ -388,11 +499,11 @@ service cloud.firestore {
         ]);
       }
 
-      allow create: if studentOwnsStudentId(request.resource.data.studentId)
+      allow create: if studentOwnsCheckInAttemptData(request.resource.data)
         && request.resource.data.status == 'pending'
         && hasDeviceId()
         && (isFullCheckInAttempt() || isAwaitingSessionClaim());
-      allow update: if studentOwnsStudentId(request.resource.data.studentId)
+      allow update: if studentOwnsCheckInAttemptData(request.resource.data)
         && request.resource.data.status == 'pending'
         && hasDeviceId()
         && (resource.data.status == 'pending' || resource.data.status == 'rejected');
@@ -489,12 +600,33 @@ service cloud.firestore {
         );
     }
 
+    function kiuAdminCanPublishManualNotice() {
+      return isCallerKiuAdmin()
+        && (
+          request.resource.data.audience == 'allAppUsers'
+          || (
+            request.resource.data.audience == 'classList'
+            && request.resource.data.keys().hasAll(['targetListId'])
+          )
+        )
+        && (
+          !('kind' in request.resource.data)
+          || request.resource.data.kind == 'manual'
+        );
+    }
+
     match /notices/{noticeId} {
       allow read: if request.auth != null;
       allow create, update: if isCallerAdmin()
+        || kiuAdminCanPublishManualNotice()
         || lecturerCanPublishManualClassNotice()
         || lecturerCanPublishSessionStartNotice();
-      allow delete: if request.auth != null;
+      allow delete: if isCallerAdmin()
+        || (
+          isCallerLecturer()
+          && resource.data.keys().hasAll(['targetListId'])
+          && lecturerOwnsListId(resource.data.targetListId)
+        );
     }
   }
 }

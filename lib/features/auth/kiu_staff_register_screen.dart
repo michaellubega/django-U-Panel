@@ -5,8 +5,9 @@ import '../../core/auth/kiu_admin_job_title.dart';
 import '../../core/auth/kiu_admin_registration_number.dart';
 import '../../core/auth/kiu_staff_auth_email.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/widgets/dismissible_error_banner.dart';
 
-/// Staff self-registration with @kiu.ac.ug email and KIU4235S registration number.
+/// Staff self-registration with @kiu.ac.ug email and staff ID (e.g. KIU4235S).
 class KiuStaffRegisterScreen extends StatefulWidget {
   const KiuStaffRegisterScreen({super.key});
 
@@ -23,6 +24,7 @@ class _KiuStaffRegisterScreenState extends State<KiuStaffRegisterScreen> {
   bool _busy = false;
   bool? _isKiuAdministrator;
   bool _passwordVisible = false;
+  String? _formError;
 
   @override
   void dispose() {
@@ -40,15 +42,16 @@ class _KiuStaffRegisterScreenState extends State<KiuStaffRegisterScreen> {
 
     final isKiuAdministrator = _isKiuAdministrator;
     if (isKiuAdministrator == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Select account type: KIU administrator or staff.'),
-        ),
-      );
+      setState(() {
+        _formError = 'Select account type: KIU administrator or staff.';
+      });
       return;
     }
 
-    setState(() => _busy = true);
+    setState(() {
+      _busy = true;
+      _formError = null;
+    });
     final result = await AuthRepository.instance.registerKiuStaffWithEmail(
       email: _emailC.text.trim(),
       fullName: _fullNameC.text.trim(),
@@ -61,9 +64,7 @@ class _KiuStaffRegisterScreenState extends State<KiuStaffRegisterScreen> {
     setState(() => _busy = false);
 
     if (result.error != null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(result.error!)),
-      );
+      setState(() => _formError = result.error);
       return;
     }
 
@@ -93,7 +94,7 @@ class _KiuStaffRegisterScreenState extends State<KiuStaffRegisterScreen> {
         children: [
           Text(
             'Use your official @${KiuStaffAuthEmail.staffEmailDomain} email and '
-            'registration number (e.g. ${KiuAdminRegistrationNumber.example}).',
+            'staff ID (e.g. ${KiuAdminRegistrationNumber.example}).',
             style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                   color: AppTheme.textSecondary,
                   height: 1.4,
@@ -161,7 +162,7 @@ class _KiuStaffRegisterScreenState extends State<KiuStaffRegisterScreen> {
           TextFormField(
             controller: _regC,
             decoration: InputDecoration(
-              labelText: 'Registration number',
+              labelText: 'Staff ID',
               hintText: KiuAdminRegistrationNumber.example,
             ),
             textCapitalization: TextCapitalization.characters,
@@ -208,6 +209,14 @@ class _KiuStaffRegisterScreenState extends State<KiuStaffRegisterScreen> {
             ),
             obscureText: !_passwordVisible,
           ),
+          if (_formError != null && _formError!.trim().isNotEmpty) ...[
+            const SizedBox(height: 8),
+            DismissibleErrorBanner(
+              message: _formError!,
+              dismissEnabled: !_busy,
+              onDismiss: () => setState(() => _formError = null),
+            ),
+          ],
           const SizedBox(height: 28),
           FilledButton(
             onPressed: (_busy || isKiuAdministrator == null) ? null : _submit,

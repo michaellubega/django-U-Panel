@@ -91,6 +91,14 @@ class SessionCodeAutoCheckIn {
     required String rawCode,
     bool showFeedback = true,
   }) async {
+    final auth = AuthRepository.instance;
+    if (!auth.isLoggedIn || !auth.roleCheckDone) {
+      return SessionCodeAutoCheckInResult.skipped;
+    }
+    if (auth.isAdmin || auth.isLecturer) {
+      return SessionCodeAutoCheckInResult.skipped;
+    }
+    await auth.ensureStudentRegistrationHydrated();
     if (!_shouldRunForCurrentUser()) {
       return SessionCodeAutoCheckInResult.skipped;
     }
@@ -127,6 +135,7 @@ class SessionCodeAutoCheckIn {
       if (student == null) {
         return SessionCodeAutoCheckInResult.failed;
       }
+      await AttendanceRepository.instance.ensureStudentDocOnServer(student.id);
 
       final resolved = await AttendanceRepository.instance
           .resolveSessionAndListForStudentCode(code);

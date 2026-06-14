@@ -1,7 +1,10 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../core/auth/auth_repository.dart';
+import '../../../core/cache/smart_cache_policy.dart';
+import 'notices_disk_cache.dart';
 import '../../../core/firebase/firestore_collections.dart';
 import '../../../core/firebase/u_panel_firestore.dart';
 import '../../attendance/attendance_list_hierarchy.dart';
@@ -69,6 +72,8 @@ class NoticeRecord {
       audience = NoticeAudienceKind.classList;
     } else if (audRaw == 'student' || audRaw == 'targetstudent') {
       audience = NoticeAudienceKind.student;
+    } else if (audRaw == 'kiuadmins' || audRaw == 'kiu_admins') {
+      audience = NoticeAudienceKind.kiuAdmins;
     } else {
       audience = NoticeAudienceKind.allAppUsers;
     }
@@ -102,6 +107,8 @@ String _audienceToField(NoticeAudienceKind k) {
       return 'student';
     case NoticeAudienceKind.allAppUsers:
       return 'allAppUsers';
+    case NoticeAudienceKind.kiuAdmins:
+      return 'kiuAdmins';
   }
 }
 
@@ -123,6 +130,9 @@ bool noticeAllowsPendingPreview({
   Set<String> lecturerListIds = const {},
 }) {
   if (admin) {
+    if (n.audience == NoticeAudienceKind.kiuAdmins) {
+      return (n.kind ?? '').toLowerCase() == 'manual';
+    }
     return n.audience == NoticeAudienceKind.allAppUsers &&
         noticeNotifiesAdmin(n);
   }
@@ -144,6 +154,8 @@ bool isRemoteLearningSessionCodeNotice(NoticeRecord n) {
   final code = n.sessionCode?.trim() ?? '';
   if (code.isEmpty) return false;
   final normalized = normalizeSessionCodeInput(code);
+  // Avoid scanning thousands of sessions on admin devices (OOM / UI jank).
+  if (AttendanceStore.sessions.length > 300) return false;
   for (final s in AttendanceStore.sessions) {
     if (normalizeSessionCodeInput(s.sessionCode) == normalized) {
       return s.remoteLearning;
@@ -165,6 +177,7 @@ bool noticeNotifiesAdmin(NoticeRecord n) {
 bool noticeAudienceMatchesUser(
   NoticeRecord n, {
   required bool admin,
+  bool kiuAdmin = false,
   bool lecturer = false,
   Set<String> lecturerListIds = const {},
   String? lecturerFirebaseUid,
@@ -172,6 +185,9 @@ bool noticeAudienceMatchesUser(
   required Set<String> signedListIds,
 }) {
   final k = (n.kind ?? '').toLowerCase();
+  if (n.audience == NoticeAudienceKind.kiuAdmins) {
+    return kiuAdmin;
+  }
   if (admin) {
     return noticeNotifiesAdmin(n);
   }
@@ -189,6 +205,13 @@ bool noticeAudienceMatchesUser(
     if (n.audience == NoticeAudienceKind.classList) {
       return listId.isNotEmpty && lecturerListIds.contains(listId);
     }
+    return false;
+  }
+  if (kiuAdmin) {
+    if (k == 'lecturertakeattendance' || k == 'qastartattendance') {
+      return false;
+    }
+    if (n.audience == NoticeAudienceKind.allAppUsers) return true;
     return false;
   }
   if (k == 'lecturertakeattendance' || k == 'qastartattendance') return false;
@@ -210,6 +233,7 @@ bool noticeAudienceMatchesUser(
 bool noticeVisibleToUser(
   NoticeRecord n, {
   required bool admin,
+  bool kiuAdmin = false,
   bool lecturer = false,
   Set<String> lecturerListIds = const {},
   String? lecturerFirebaseUid,
@@ -219,6 +243,7 @@ bool noticeVisibleToUser(
   if (!noticeAudienceMatchesUser(
     n,
     admin: admin,
+    kiuAdmin: kiuAdmin,
     lecturer: lecturer,
     lecturerListIds: lecturerListIds,
     lecturerFirebaseUid: lecturerFirebaseUid,
@@ -243,24 +268,150 @@ class NoticesRepository {
 
   final FirebaseFirestore _firestore = uPanelFirestore();
 
+  Future<List<NoticeRecord>>? _fetchRecentInFlight;
+
   String _seenKeyForUser(String userKey) => '$_seenPrefix$userKey';
 
+  /// Stable disk-cache partition per signed-in user (not shared across accounts).
+  static String diskCacheUserKeyFrom({
+    String? firebaseUid,
+    String? registrationNumber,
+  }) {
+    final uid = firebaseUid?.trim();
+    if (uid != null && uid.isNotEmpty) return uid;
+    final reg = registrationNumber?.trim();
+    if (reg != null && reg.isNotEmpty) return 'reg:${reg.toUpperCase()}';
+    return 'anon';
+  }
+
+  String _diskCacheUserKey() => diskCacheUserKeyFrom(
+        firebaseUid: AuthRepository.instance.currentFirebaseUid,
+        registrationNumber: AuthRepository.instance.currentRegistrationNumber,
+      );
+
+  /// Clears cached notices for [userKey] and the legacy shared `all` bucket.
+  static Future<void> clearDiskCacheForUserKey(String userKey) async {
+    final key = userKey.trim();
+    if (key.isNotEmpty) {
+      await NoticesDiskCache.clear(key);
+    }
+    await NoticesDiskCache.clear('all');
+  }
+
   /// Most recent first. Client-side filtering applies audience rules.
-  Future<List<NoticeRecord>> fetchRecent({int limit = 100}) async {
-    final snap = await _firestore
-        .collection(FirestoreCollections.notices)
-        .orderBy('createdAt', descending: true)
-        .limit(limit)
-        .get();
+  ///
+  /// Uses a 7-day disk cache; within TTL only notices newer than the cached
+  /// newest row are requested from Firestore.
+  Future<List<NoticeRecord>> fetchRecent({
+    int limit = 100,
+    bool force = false,
+  }) {
+    final inFlight = _fetchRecentInFlight;
+    if (inFlight != null && !force) return inFlight;
+    final task = _fetchRecentBody(limit: limit, force: force).whenComplete(() {
+      _fetchRecentInFlight = null;
+    });
+    _fetchRecentInFlight = task;
+    return task;
+  }
+
+  /// Cached rows for instant UI paint (ignores [force]).
+  Future<List<NoticeRecord>> loadCachedRecent() async {
+    final cached = await NoticesDiskCache.load(_diskCacheUserKey());
+    return cached?.notices ?? const [];
+  }
+
+  DateTime? _newestCreatedAt(Iterable<NoticeRecord> notices) {
+    DateTime? newest;
+    for (final n in notices) {
+      if (newest == null || n.createdAt.isAfter(newest)) {
+        newest = n.createdAt;
+      }
+    }
+    return newest;
+  }
+
+  List<NoticeRecord> _parseNoticeDocs(
+    Iterable<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+  ) {
     final out = <NoticeRecord>[];
     final now = DateTime.now();
-    for (final d in snap.docs) {
-      final r = NoticeRecord.fromDoc(d);
-      if (r == null) continue;
-      if (r.expiresAt != null && !r.expiresAt!.isAfter(now)) continue;
-      out.add(r);
+    for (final d in docs) {
+      try {
+        final r = NoticeRecord.fromDoc(d);
+        if (r == null) continue;
+        if (r.expiresAt != null && !r.expiresAt!.isAfter(now)) continue;
+        out.add(r);
+      } catch (e, st) {
+        if (kDebugMode) {
+          debugPrint('NoticesRepository: skip bad notice ${d.id}: $e');
+          debugPrint('$st');
+        }
+      }
     }
     return out;
+  }
+
+  Future<List<NoticeRecord>> _fetchRecentBody({
+    required int limit,
+    required bool force,
+  }) async {
+    final cached = await NoticesDiskCache.load(_diskCacheUserKey());
+    if (!force && cached != null) {
+      final fresh = SmartCachePolicy.isWithinTtl(
+        cached.cachedAt,
+        SmartCachePolicy.profileAndNoticesTtl,
+      );
+      if (fresh) {
+        final newest = _newestCreatedAt(cached.notices);
+        if (newest == null) return cached.notices;
+        try {
+          final snap = await _firestore
+              .collection(FirestoreCollections.notices)
+              .where(
+                'createdAt',
+                isGreaterThan: Timestamp.fromDate(newest),
+              )
+              .orderBy('createdAt', descending: true)
+              .limit(limit)
+              .get();
+          final incoming = _parseNoticeDocs(snap.docs);
+          if (incoming.isEmpty) return cached.notices;
+          final merged = NoticesDiskCache.mergeNotices(
+            existing: cached.notices,
+            incoming: incoming,
+          );
+          await NoticesDiskCache.save(
+            userKey: _diskCacheUserKey(),
+            notices: merged,
+          );
+          return merged;
+        } catch (e, st) {
+          if (kDebugMode) {
+            debugPrint('NoticesRepository incremental fetch failed: $e');
+            debugPrint('$st');
+          }
+          return cached.notices;
+        }
+      }
+    }
+
+    try {
+      final snap = await _firestore
+          .collection(FirestoreCollections.notices)
+          .orderBy('createdAt', descending: true)
+          .limit(limit)
+          .get();
+      final out = _parseNoticeDocs(snap.docs);
+      await NoticesDiskCache.save(userKey: _diskCacheUserKey(), notices: out);
+      return out;
+    } catch (e, st) {
+      if (kDebugMode) {
+        debugPrint('NoticesRepository.fetchRecent failed: $e');
+        debugPrint('$st');
+      }
+      return cached?.notices ?? const [];
+    }
   }
 
   Future<DateTime?> getLastSeenAt(String userKey) async {
@@ -278,6 +429,7 @@ class NoticesRepository {
   Future<int> unseenCountForUser({
     required String userKey,
     required bool admin,
+    bool kiuAdmin = false,
     bool lecturer = false,
     Set<String> lecturerListIds = const {},
     String? lecturerFirebaseUid,
@@ -292,6 +444,7 @@ class NoticesRepository {
       if (!noticeVisibleToUser(
         n,
         admin: admin,
+        kiuAdmin: kiuAdmin,
         lecturer: lecturer,
         lecturerListIds: lecturerListIds,
         lecturerFirebaseUid: lecturerFirebaseUid,
@@ -332,6 +485,27 @@ class NoticesRepository {
       if (list == null ||
           !attendanceListAccessibleToLecturer(list, uid)) {
         return 'You can only notify class lists assigned to you or that you created.';
+      }
+    }
+
+    if (auth.isQaStaff && !auth.isFullAdministrator) {
+      const allowed = {
+        NoticeAudienceKind.allAppUsers,
+        NoticeAudienceKind.classList,
+        NoticeAudienceKind.kiuAdmins,
+      };
+      if (!allowed.contains(draft.audience)) {
+        return 'QA staff can only send to all users, a class list, or KIU administrators.';
+      }
+    }
+
+    if (auth.isKiuAdmin && !auth.isAdmin) {
+      const allowed = {
+        NoticeAudienceKind.allAppUsers,
+        NoticeAudienceKind.classList,
+      };
+      if (!allowed.contains(draft.audience)) {
+        return 'KIU administrators can broadcast to all users or a class list.';
       }
     }
 
@@ -409,6 +583,7 @@ class NoticesRepository {
   Future<String?> deleteNotice(String noticeId) async {
     try {
       await _firestore.collection(FirestoreCollections.notices).doc(noticeId).delete();
+      await NoticesDiskCache.removeNotice(_diskCacheUserKey(), noticeId);
       return null;
     } catch (e) {
       return '$e';

@@ -399,7 +399,7 @@ class _PendingSessionsScreenState extends State<PendingSessionsScreen> {
         ),
         const SizedBox(height: 4),
         Text(
-          'Saved on this device after GPS check; uploads when Firestore accepts writes.',
+          'Saved on this device after GPS check; uploads when you are back online.',
           style: Theme.of(context)
               .textTheme
               .bodySmall
@@ -497,27 +497,46 @@ class _PendingSessionsScreenState extends State<PendingSessionsScreen> {
     if (courses.length == 1) return courses.first;
     return showModalBottomSheet<String>(
       context: context,
-      builder: (ctx) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            const Padding(
-              padding: EdgeInsets.fromLTRB(16, 16, 16, 8),
-              child: Text('Choose course'),
-            ),
-            for (final c in courses)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                child: OutlinedButton(
-                  onPressed: () => Navigator.of(ctx).pop(c),
-                  child: Text(c),
+      isScrollControlled: true,
+      builder: (ctx) {
+        final maxHeight = MediaQuery.sizeOf(ctx).height * 0.85;
+        return SafeArea(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 24),
+            child: ConstrainedBox(
+              constraints: BoxConstraints(maxHeight: maxHeight),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Text(
+                      'Choose course',
+                      style: Theme.of(ctx).textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.w700,
+                          ),
+                    ),
+                    const SizedBox(height: 12),
+                    for (final c in courses)
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 8),
+                        child: OutlinedButton(
+                          onPressed: () => Navigator.of(ctx).pop(c),
+                          child: Text(
+                            c,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            textAlign: TextAlign.center,
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
               ),
-            const SizedBox(height: 8),
-          ],
-        ),
-      ),
+            ),
+          ),
+        );
+      },
     );
   }
 

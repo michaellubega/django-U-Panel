@@ -8,6 +8,7 @@ import '../../../core/auth/auth_repository.dart';
 import '../../../core/auth/kiu_admin_job_title.dart';
 import '../../../core/connectivity/app_connectivity.dart';
 import '../../../core/device/device_identity.dart';
+import '../../../core/errors/user_facing_errors.dart';
 import '../../../core/firebase/firestore_collections.dart';
 import '../../../core/firebase/u_panel_firestore.dart';
 import '../../../core/storage/attendance_local_queues.dart';
@@ -56,6 +57,8 @@ class CampusPresenceRepository {
 
     final online = AppConnectivity.instance.isOnline;
     if (!online && !forceServer) return cached;
+    // University meta is cached forever until the admin updates it on the server.
+    if (!forceServer && cached != null) return cached;
 
     try {
       final ref = _db
@@ -74,8 +77,7 @@ class CampusPresenceRepository {
     } on FirebaseException catch (e) {
       if (e.code == 'permission-denied') {
         throw StateError(
-          'Could not load campus check-in area (Firestore access denied). '
-          'Deploy the latest firestore.rules, then try again.',
+          UserFacingErrors.campusAreaLoadFailed,
         );
       }
       return cached;
@@ -417,8 +419,8 @@ class CampusPresenceRepository {
         message: AppConnectivity.instance.isOnline
             ? 'Campus location is not configured. QA staff can open Campus '
                 'check-in and tap Use my location (minimum 1.5 km radius).'
-            : 'Campus area is not cached on this device. Open campus check-in '
-                'once while online so QA can configure the area, then you can '
+            : 'Campus area is not cached on this device. Connect to the internet '
+                'once so QA staff can configure the campus centre, then you can '
                 'check in offline.',
       );
     }
@@ -488,14 +490,13 @@ class CampusPresenceRepository {
         if (e.code == 'permission-denied') {
           return (
             outcome: CampusPresenceSubmitOutcome.firebaseError,
-            message: 'Firestore denied campus check-in. Your admins/{uid} '
-                'document must have isKiuAdmin: true.',
+            message: UserFacingErrors.campusCheckInFailed,
           );
         }
         if (e.code != 'unavailable') {
           return (
             outcome: CampusPresenceSubmitOutcome.firebaseError,
-            message: 'Could not save: ${e.message ?? e.code}',
+            message: UserFacingErrors.campusCheckInFailed,
           );
         }
       } catch (_) {}
@@ -647,7 +648,7 @@ class CampusPresenceRepository {
     if (!_firebaseReady) {
       return (
         outcome: CampusGeofenceSaveOutcome.firebaseError,
-        message: 'Firebase is not ready. Restart the app and try again.',
+        message: UserFacingErrors.backendNotReady,
       );
     }
     if (!isCampusRadiusAllowed(radiusMeters)) {
@@ -695,19 +696,17 @@ class CampusPresenceRepository {
       if (e.code == 'permission-denied') {
         return (
           outcome: CampusGeofenceSaveOutcome.firebaseError,
-          message: 'Firestore denied saving the campus area. Your account must '
-              'be QA staff in admins/{uid} (adminRole qa_staff or KIU staff ID), '
-              'and firestore.rules must be deployed to the upanel database.',
+          message: UserFacingErrors.campusAreaSaveFailed,
         );
       }
       return (
         outcome: CampusGeofenceSaveOutcome.firebaseError,
-        message: 'Could not save campus location: ${e.message ?? e.code}',
+        message: UserFacingErrors.campusAreaSaveFailed,
       );
     } catch (e) {
       return (
         outcome: CampusGeofenceSaveOutcome.firebaseError,
-        message: 'Could not save campus location: $e',
+        message: UserFacingErrors.campusAreaSaveFailed,
       );
     }
   }

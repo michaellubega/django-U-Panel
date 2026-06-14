@@ -5,7 +5,7 @@ import '../widgets/web_app_loading_screen.dart';
 import '../../features/auth/auth_screen.dart';
 import '../../features/auth/email_verification_screen.dart';
 import '../../features/auth/kiu_admin_onboarding_screen.dart';
-import 'app_shell.dart' deferred as app_shell;
+import 'app_shell.dart';
 
 /// Single [MaterialApp] home — swaps login / shell without replacing [home],
 /// so the root navigator stack stays predictable on web and mobile.
@@ -18,6 +18,12 @@ class AuthGate extends StatefulWidget {
 
 class _AuthGateState extends State<AuthGate> {
   var _htmlSplashHidden = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _hideHtmlSplashOnce());
+  }
 
   void _hideHtmlSplashOnce() {
     if (_htmlSplashHidden || !WebFastBoot.enabled) return;
@@ -44,10 +50,12 @@ class _AuthGateState extends State<AuthGate> {
               ? 'Starting U-Panel…'
               : 'Signing you in…';
           child = WebAppLoadingScreen(message: message);
-        } else if (!auth.isLoggedIn) {
+        } else if (!auth.isLoggedIn || auth.isAuthenticating) {
           if (auth.pendingWebSessionRestore) {
             child = const WebAppLoadingScreen(message: 'Signing you in…');
           } else {
+            // Keep [AuthScreen] mounted while sign-in/register runs so errors
+            // are not lost when Firebase briefly emits a session (e.g. rollback).
             child = AuthScreen(key: ValueKey('auth_${auth.sessionEpoch}'));
           }
         } else if (auth.needsEmailVerification) {
@@ -59,47 +67,14 @@ class _AuthGateState extends State<AuthGate> {
             key: ValueKey('kiu_admin_onboarding'),
           );
         } else {
-          child = _DeferredAppShell(
+          child = AppShell(
             key: ValueKey(
               'shell_${auth.sessionEpoch}_${auth.currentFirebaseUid}',
             ),
           );
         }
 
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          _hideHtmlSplashOnce();
-        });
         return child;
-      },
-    );
-  }
-}
-
-/// Loads [AppShell] in a separate JS chunk so login / startup stays lighter.
-class _DeferredAppShell extends StatefulWidget {
-  const _DeferredAppShell({super.key});
-
-  @override
-  State<_DeferredAppShell> createState() => _DeferredAppShellState();
-}
-
-class _DeferredAppShellState extends State<_DeferredAppShell> {
-  late final Future<void> _loadFuture = app_shell.loadLibrary();
-
-  @override
-  Widget build(BuildContext context) {
-    return FutureBuilder<void>(
-      future: _loadFuture,
-      builder: (context, snapshot) {
-        if (snapshot.connectionState != ConnectionState.done) {
-          return const WebAppLoadingScreen(message: 'Loading your workspace…');
-        }
-        if (snapshot.hasError) {
-          return WebAppLoadingScreen(
-            message: 'Loading is taking longer than usual. Pull to refresh or try again.',
-          );
-        }
-        return app_shell.AppShell(key: widget.key);
       },
     );
   }

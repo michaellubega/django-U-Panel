@@ -3,13 +3,16 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
 
+import '../../../core/auth/auth_repository.dart';
 import '../../../core/connectivity/app_connectivity.dart';
 import '../../../core/firebase/firestore_collections.dart';
+import '../../../core/firebase/session_rtd_sync.dart';
 import '../../../core/firebase/u_panel_firestore.dart';
 import '../../notices/data/notices_repository.dart';
 import '../check_in_validation.dart';
 import '../models/attendance_models.dart';
 import 'attendance_repository.dart';
+import 'pending_list_create_sync.dart';
 import 'pending_retention.dart';
 import 'pending_session_code_sync.dart';
 import 'pending_session_create_queue.dart';
@@ -20,9 +23,28 @@ class PendingSessionCreateSync {
 
   static Future<void>? _drainTail;
   static bool _drainAgain = false;
+  static final Map<String, DateTime> _retryAfterBySession = {};
+  static final Map<String, int> _failureCountBySession = {};
 
-  static const Duration _uploadTimeout = Duration(seconds: 8);
-  static const int _maxParallel = 4;
+  static Duration get _uploadTimeout =>
+      kIsWeb ? const Duration(seconds: 18) : const Duration(seconds: 10);
+
+  static Duration get _probeTimeout =>
+      kIsWeb ? const Duration(seconds: 10) : const Duration(seconds: 6);
+
+  static int get _maxParallel => kIsWeb ? 2 : 4;
+
+  static Duration _scheduleRetryAfterFailure(String sessionId) {
+    final failures = (_failureCountBySession[sessionId] ?? 0) + 1;
+    _failureCountBySession[sessionId] = failures;
+    final seconds = (15 * failures).clamp(15, 120);
+    return Duration(seconds: seconds);
+  }
+
+  static void _clearRetryState(String sessionId) {
+    _retryAfterBySession.remove(sessionId);
+    _failureCountBySession.remove(sessionId);
+  }
 
   /// Fast path on reconnect: skip reachability probe, upload session docs first.
   static Future<void> drainUrgent() => drain(urgent: true);
@@ -76,14 +98,40 @@ class PendingSessionCreateSync {
 
     final firestore = uPanelFirestore();
     var uploadedAny = false;
+    var skippedBackoff = 0;
+    var keptAfterError = 0;
 
     Future<void> uploadOne(PendingSessionCreateEntry e) async {
+      final now = DateTime.now();
+      final retryAfter = _retryAfterBySession[e.sessionId];
+      if (retryAfter != null && now.isBefore(retryAfter)) {
+        skippedBackoff++;
+        return;
+      }
+
       try {
-        final uploadCode =
-            await AttendanceRepository.instance.ensureJoinCodeForSessionUpload(
-          sessionId: e.sessionId,
-          sessionCode: e.sessionCode,
-        );
+        if (!await _ensureListPublished(firestore, e.listId)) {
+          _retryAfterBySession[e.sessionId] = now.add(
+            urgent ? const Duration(seconds: 8) : const Duration(seconds: 30),
+          );
+          keptAfterError++;
+          return;
+        }
+
+        if (await AttendanceRepository.instance
+            .firestoreActiveSessionDocExists(e.sessionId)) {
+          _ensureSessionInStore(e);
+          await _publishSessionToRtdAfterUpload(
+            entry: e,
+            creatorUid: AuthRepository.instance.currentFirebaseUid?.trim(),
+          );
+          await PendingSessionCreateQueue.removeBySessionId(e.sessionId);
+          _clearRetryState(e.sessionId);
+          uploadedAny = true;
+          return;
+        }
+
+        final uploadCode = normalizeSessionCodeInput(e.sessionCode);
         final entry = uploadCode == e.sessionCode
             ? e
             : PendingSessionCreateEntry(
@@ -108,24 +156,72 @@ class PendingSessionCreateSync {
           }
         }
 
+        final session = AttendanceSession(
+          id: entry.sessionId,
+          listId: entry.listId,
+          sessionCode: entry.sessionCode,
+          latitude: entry.latitude,
+          longitude: entry.longitude,
+          radiusMeters: entry.radiusMeters,
+          startTime: entry.startTime,
+          endTime: entry.endTime,
+          status: SessionStatus.active,
+          createdBy: entry.createdBy,
+          remoteLearning: entry.remoteLearning,
+        );
+        final metadataReady =
+            entry.remoteLearning || isSessionGeofenceConfigured(session);
+        final creatorUid = AuthRepository.instance.currentFirebaseUid?.trim();
         await firestore
             .collection(FirestoreCollections.attendanceSessions)
             .doc(entry.sessionId)
             .set(
-              _sessionMap(entry),
+              AttendanceRepository.activeSessionToFirestoreMapForSync(
+                session: session,
+                createdByUid: creatorUid,
+                locationMetadataPending: !metadataReady && !entry.remoteLearning,
+              ),
+              SetOptions(merge: true),
             )
             .timeout(_uploadTimeout);
 
+        final confirmedOnServer =
+            await AttendanceRepository.instance.firestoreActiveSessionDocExists(
+          entry.sessionId,
+        );
+        if (!confirmedOnServer) {
+          keptAfterError++;
+          final wait = _scheduleRetryAfterFailure(e.sessionId);
+          _retryAfterBySession[e.sessionId] = DateTime.now().add(wait);
+          if (kDebugMode) {
+            debugPrint(
+              'PendingSessionCreateSync: keep ${e.sessionId} '
+              '(upload not confirmed on server, retry after ${wait.inSeconds}s)',
+            );
+          }
+          return;
+        }
+
         _ensureSessionInStore(entry);
+        await _publishSessionToRtdAfterUpload(
+          entry: entry,
+          creatorUid: creatorUid,
+          locationMetadataPending: !metadataReady && !entry.remoteLearning,
+        );
         await PendingSessionCreateQueue.removeBySessionId(e.sessionId);
+        _clearRetryState(e.sessionId);
         uploadedAny = true;
 
         unawaited(_markListActive(firestore, e.listId));
         unawaited(_publishNoticeIfNeeded(e));
       } catch (err) {
+        keptAfterError++;
+        final wait = _scheduleRetryAfterFailure(e.sessionId);
+        _retryAfterBySession[e.sessionId] = DateTime.now().add(wait);
         if (kDebugMode) {
           debugPrint(
-            'PendingSessionCreateSync: keep ${e.sessionId} after error: $err',
+            'PendingSessionCreateSync: keep ${e.sessionId} '
+            '(retry after ${wait.inSeconds}s): $err',
           );
         }
       }
@@ -134,6 +230,13 @@ class PendingSessionCreateSync {
     for (var i = 0; i < pending.length; i += _maxParallel) {
       final batch = pending.skip(i).take(_maxParallel);
       await Future.wait(batch.map(uploadOne));
+    }
+
+    if (kDebugMode && (skippedBackoff > 0 || keptAfterError > 0) && !uploadedAny) {
+      debugPrint(
+        'PendingSessionCreateSync: ${pending.length} queued, '
+        '$skippedBackoff waiting backoff, $keptAfterError deferred',
+      );
     }
 
     if (uploadedAny) {
@@ -145,39 +248,32 @@ class PendingSessionCreateSync {
     }
   }
 
-  static Map<String, dynamic> _sessionMap(PendingSessionCreateEntry e) {
-    final session = AttendanceSession(
-      id: e.sessionId,
-      listId: e.listId,
-      sessionCode: e.sessionCode,
-      latitude: e.latitude,
-      longitude: e.longitude,
-      radiusMeters: e.radiusMeters,
-      startTime: e.startTime,
-      endTime: e.endTime,
-      status: SessionStatus.active,
-      createdBy: e.createdBy,
-      remoteLearning: e.remoteLearning,
-    );
-    final metadataReady =
-        e.remoteLearning || isSessionGeofenceConfigured(session);
-    return {
-      'listId': e.listId,
-      'sessionCode': e.sessionCode,
-      'latitude': e.latitude,
-      'longitude': e.longitude,
-      'radiusMeters': e.radiusMeters,
-      'startTime': Timestamp.fromDate(e.startTime),
-      'endTime': Timestamp.fromDate(e.endTime),
-      'status': SessionStatus.active.name,
-      'createdBy': e.createdBy,
-      if (e.remoteLearning) 'remoteLearning': true,
-      'awaitingStudentMetadata': !metadataReady,
-      if (!metadataReady)
-        'metadataPendingUntil': Timestamp.fromDate(
-          e.startTime.add(PendingRetention.unverifiedPending),
-        ),
-    };
+  static Future<bool> _ensureListPublished(
+    FirebaseFirestore firestore,
+    String listId,
+  ) async {
+    final id = listId.trim();
+    if (id.isEmpty) return false;
+    try {
+      final snap = await firestore
+          .collection(FirestoreCollections.attendanceLists)
+          .doc(id)
+          .get()
+          .timeout(_probeTimeout);
+      if (snap.exists) return true;
+    } catch (_) {}
+
+    await PendingListCreateSync.drain();
+    try {
+      final snap = await firestore
+          .collection(FirestoreCollections.attendanceLists)
+          .doc(id)
+          .get()
+          .timeout(_probeTimeout);
+      return snap.exists;
+    } catch (_) {
+      return false;
+    }
   }
 
   static void _ensureSessionInStore(PendingSessionCreateEntry e) {
@@ -235,6 +331,38 @@ class PendingSessionCreateSync {
           )
           .timeout(_uploadTimeout);
     } catch (_) {}
+  }
+
+  /// RTD publish lets [onRunningSessionRtdWritten] reconcile pending claims
+  /// immediately instead of waiting on the Firestore trigger chain alone.
+  static Future<void> _publishSessionToRtdAfterUpload({
+    required PendingSessionCreateEntry entry,
+    required String? creatorUid,
+    bool locationMetadataPending = false,
+  }) async {
+    final session = AttendanceStore.sessionById(entry.sessionId) ??
+        AttendanceSession(
+          id: entry.sessionId,
+          listId: entry.listId,
+          sessionCode: entry.sessionCode,
+          latitude: entry.latitude,
+          longitude: entry.longitude,
+          radiusMeters: entry.radiusMeters,
+          startTime: entry.startTime,
+          endTime: entry.endTime,
+          status: SessionStatus.active,
+          createdBy: entry.createdBy,
+          remoteLearning: entry.remoteLearning,
+          locationMetadataPending: locationMetadataPending,
+        );
+    final published = await SessionRtdSync.publishRunningSession(
+      session,
+      createdByUid: creatorUid,
+      locationMetadataPending: locationMetadataPending,
+    );
+    if (published) {
+      AttendanceRepository.instance.markSessionPublishedOnServer(entry.sessionId);
+    }
   }
 
   static Future<void> _publishNoticeIfNeeded(

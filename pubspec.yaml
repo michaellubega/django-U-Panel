@@ -1,7 +1,7 @@
 name: u_panel
 description: U-Panel - University operations platform. Leadership, attendance, and communication.
 publish_to: 'none'
-version: 1.0.0+4
+version: 1.0.0+5
 
 environment:
   sdk: '>=3.0.0 <4.0.0'
@@ -26,6 +26,9 @@ dependencies:
   workmanager: ^0.9.0+3
   timezone: ^0.10.1
   flutter_timezone: ^5.1.0
+  firebase_database: ^11.3.10
+  pdf: ^3.12.0
+  printing: ^5.14.3
 
 dev_dependencies:
   flutter_test:

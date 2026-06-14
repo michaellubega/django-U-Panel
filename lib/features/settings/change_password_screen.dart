@@ -7,6 +7,7 @@ import '../../core/auth/auth_repository.dart';
 import '../../core/auth/staff_auth_email.dart';
 import '../../core/connectivity/app_connectivity.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/widgets/dismissible_error_banner.dart';
 import '../auth/forgot_password_screen.dart';
 
 enum _ChangePasswordPhase { form, processing, success }
@@ -293,7 +294,10 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen>
             ),
             const SizedBox(height: 16),
             if (_submitError != null) ...[
-              _MessageBanner.error(_submitError!),
+              DismissibleErrorBanner(
+                message: _submitError!,
+                onDismiss: () => setState(() => _submitError = null),
+              ),
               const SizedBox(height: 12),
             ],
             TextFormField(
@@ -482,29 +486,3 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen>
   }
 }
 
-class _MessageBanner extends StatelessWidget {
-  const _MessageBanner.error(this.message);
-
-  final String message;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: AppTheme.error.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: AppTheme.error.withValues(alpha: 0.35)),
-      ),
-      child: Text(
-        message,
-        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: AppTheme.textPrimary,
-              fontWeight: FontWeight.w600,
-              height: 1.4,
-            ),
-      ),
-    );
-  }
-}

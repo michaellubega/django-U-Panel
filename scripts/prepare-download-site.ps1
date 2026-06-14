@@ -3,6 +3,7 @@
 #   flutter build apk --release
 #   Inno Setup compile -> installer/U-Panel-<version>-windows-setup.exe
 #     (or pass -WindowsInstaller path\to\your-setup.exe)
+#     Default search: installer\, Desktop\Output\UPanelSetup.exe (OneDrive Desktop OK)
 
 param(
     [string]$Version = "",
@@ -31,11 +32,8 @@ $assets = Join-Path $website "assets"
 $siteDomain = "https://kiu.orion13.us"
 New-Item -ItemType Directory -Force -Path $downloads, $assets | Out-Null
 
-$iconSrc = Join-Path $root "kiu\playstore.png"
+& (Join-Path $PSScriptRoot "sync-kiu-branding.ps1")
 $iconDst = Join-Path $assets "icon.png"
-if (Test-Path $iconSrc) {
-    Copy-Item $iconSrc $iconDst -Force
-}
 
 function Format-Size([long]$bytes) {
     if ($bytes -ge 1GB) { return "{0:N2} GB" -f ($bytes / 1GB) }
@@ -75,10 +73,52 @@ $release = [ordered]@{
     }
 }
 
+function Copy-ReleaseBinary {
+    param(
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$Destination,
+        [int]$MaxAttempts = 8
+    )
+
+    if (-not (Test-Path -LiteralPath $Source)) {
+        throw "Release copy source not found: $Source"
+    }
+
+    $destDir = Split-Path -Parent $Destination
+    if ($destDir -and -not (Test-Path -LiteralPath $destDir)) {
+        New-Item -ItemType Directory -Force -Path $destDir | Out-Null
+    }
+
+    $temp = "$Destination.part"
+    if (Test-Path -LiteralPath $temp) {
+        Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
+    }
+
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        try {
+            Copy-Item -LiteralPath $Source -Destination $temp -Force
+            if (Test-Path -LiteralPath $Destination) {
+                Remove-Item -LiteralPath $Destination -Force
+            }
+            Move-Item -LiteralPath $temp -Destination $Destination -Force
+            return
+        } catch {
+            if ($attempt -ge $MaxAttempts) { throw }
+            $waitMs = 250 * $attempt
+            Write-Host "  Copy retry $attempt/$MaxAttempts ($waitMs ms): $($_.Exception.Message)"
+            Start-Sleep -Milliseconds $waitMs
+        } finally {
+            if (Test-Path -LiteralPath $temp) {
+                Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+}
+
 $apkSrc = Join-Path $root "build\app\outputs\flutter-apk\app-release.apk"
 $apkDst = Join-Path $downloads "U-Panel-$Version-android.apk"
 if (Test-Path $apkSrc) {
-    Copy-Item $apkSrc $apkDst -Force
+    Copy-ReleaseBinary -Source $apkSrc -Destination $apkDst
     $release.android.available = $true
     $release.android.size = Format-Size (Get-Item $apkDst).Length
     Write-Host "Android: $apkDst"
@@ -89,15 +129,59 @@ if (Test-Path $apkSrc) {
 $winDst = Join-Path $downloads "U-Panel-$Version-windows-setup.exe"
 $winSrc = $null
 
+function Get-WindowsInstallerSearchDirs {
+    param([string]$ProjectRoot)
+
+    $dirs = New-Object System.Collections.Generic.List[string]
+    $seen = @{}
+
+    function Add-Dir([string]$path) {
+        if ([string]::IsNullOrWhiteSpace($path)) { return }
+        $full = $path
+        if (Test-Path -LiteralPath $path) {
+            $full = (Resolve-Path -LiteralPath $path).Path
+        }
+        $key = $full.ToLowerInvariant()
+        if (-not $seen.ContainsKey($key)) {
+            $seen[$key] = $true
+            [void]$dirs.Add($full)
+        }
+    }
+
+    Add-Dir (Join-Path $ProjectRoot "installer")
+
+    $desktop = [Environment]::GetFolderPath('Desktop')
+    if ($desktop) {
+        Add-Dir (Join-Path $desktop "Output")
+        Add-Dir (Join-Path $desktop "output")
+    }
+
+    # Legacy path when Desktop is not under OneDrive.
+    Add-Dir (Join-Path $env:USERPROFILE "Desktop\Output")
+    Add-Dir (Join-Path $env:USERPROFILE "Desktop\output")
+
+    return $dirs
+}
+
 function Find-WindowsInstaller {
     param([string]$Version, [string]$ProjectRoot)
 
+    $searchDirs = Get-WindowsInstallerSearchDirs -ProjectRoot $ProjectRoot
+    $desktop = [Environment]::GetFolderPath('Desktop')
+
     $candidates = @(
         (Join-Path $ProjectRoot "installer\U-Panel-$Version-windows-setup.exe"),
-        (Join-Path $ProjectRoot "installer\UPanelSetup.exe"),
-        (Join-Path $env:USERPROFILE "Desktop\output\UPanelSetup.exe"),
-        (Join-Path $env:USERPROFILE "Desktop\output\U-Panel-$Version-windows-setup.exe")
+        (Join-Path $ProjectRoot "installer\UPanelSetup.exe")
     )
+
+    if ($desktop) {
+        $candidates += @(
+            (Join-Path $desktop "Output\UPanelSetup.exe"),
+            (Join-Path $desktop "Output\U-Panel-$Version-windows-setup.exe"),
+            (Join-Path $desktop "output\UPanelSetup.exe"),
+            (Join-Path $desktop "output\U-Panel-$Version-windows-setup.exe")
+        )
+    }
 
     foreach ($path in $candidates) {
         if ($path -and (Test-Path -LiteralPath $path)) {
@@ -105,14 +189,9 @@ function Find-WindowsInstaller {
         }
     }
 
-    $searchDirs = @(
-        (Join-Path $ProjectRoot "installer"),
-        (Join-Path $env:USERPROFILE "Desktop\output")
-    )
-
     foreach ($dir in $searchDirs) {
-        if (-not (Test-Path $dir)) { continue }
-        $latestExe = Get-ChildItem $dir -Filter "*.exe" -File -ErrorAction SilentlyContinue |
+        if (-not (Test-Path -LiteralPath $dir)) { continue }
+        $latestExe = Get-ChildItem -LiteralPath $dir -Filter "*.exe" -File -ErrorAction SilentlyContinue |
             Sort-Object LastWriteTime -Descending |
             Select-Object -First 1
         if ($latestExe) { return $latestExe.FullName }
@@ -133,13 +212,13 @@ if ($WindowsInstaller -ne "") {
 
 if ($winSrc) {
     if ($winSrc -ne $winDst) {
-        Copy-Item $winSrc $winDst -Force
+        Copy-ReleaseBinary -Source $winSrc -Destination $winDst
     }
     $release.windows.available = $true
     $release.windows.size = Format-Size (Get-Item $winDst).Length
     Write-Host "Windows installer: $winDst"
 } else {
-    Write-Warning "Windows installer not found. Place UPanelSetup.exe in Desktop\output or installer\, or pass -WindowsInstaller path\to\setup.exe"
+    Write-Warning "Windows installer not found. Place UPanelSetup.exe in Desktop\Output (or installer\), or pass -WindowsInstaller path\to\setup.exe"
 }
 
 $jsonPath = Join-Path $website "releases.json"
@@ -186,6 +265,9 @@ if (Test-Path $webFlutterIndex) {
     Write-Host "  Web app URL:       https://u-panel-2026.web.app/"
     Write-Host "  Landing page URL:  $siteDomain/"
     Write-Host "  APK / Windows URL: $siteDomain/downloads/"
+
+    & (Join-Path $PSScriptRoot "finalize-web-build.ps1")
+    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 } else {
     Write-Warning "Flutter web build not found. Run: flutter build web --release"
     Write-Warning "Then re-run this script before firebase deploy --only hosting"

@@ -6,10 +6,13 @@ import '../../core/auth/auth_repository.dart';
 import '../../core/connectivity/app_connectivity.dart';
 import '../../core/navigation/screen_refresh.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/util/debounced_callback.dart';
 import '../../core/widgets/content_skeleton.dart';
 import '../attendance/attendance_list_title.dart';
 import '../attendance/data/attendance_repository.dart';
 import '../attendance/models/attendance_models.dart';
+import '../attendance/student_attendance_live_sync.dart';
+import '../attendance/student_session_grace.dart';
 import '../attendance/roll_cell_status.dart';
 
 /// Per-session attendance for one class list (opened from Profile).
@@ -32,12 +35,18 @@ class StudentClassAttendanceDetailScreen extends StatefulWidget {
 
 class _StudentClassAttendanceDetailScreenState
     extends State<StudentClassAttendanceDetailScreen> {
-  bool _loading = true;
+  bool _loading = false;
   Map<String, String> _rejectionBySession = {};
   RollPendingContext _pending = const RollPendingContext.empty();
   String? _studentId;
   Set<String> _studentIds = const {};
-  int _pendingReloadGen = 0;
+  late final DebouncedCallback _storeRebuild = DebouncedCallback(
+    delay: const Duration(milliseconds: 180),
+    callback: () {
+      if (!mounted) return;
+      unawaited(_reloadFromStore());
+    },
+  );
 
   @override
   void initState() {
@@ -45,23 +54,28 @@ class _StudentClassAttendanceDetailScreenState
     AttendanceRepository.instance.addListener(_onStore);
     _resolveStudentId();
     _syncFromStore();
+    unawaited(
+      StudentAttendanceLiveSync.activate(prioritizeListId: widget.listId),
+    );
     unawaited(_warmThenRefresh());
   }
 
   @override
   void dispose() {
     AttendanceRepository.instance.removeListener(_onStore);
+    _storeRebuild.dispose();
     super.dispose();
   }
 
   void _onStore() {
+    _storeRebuild.schedule();
+  }
+
+  Future<void> _reloadFromStore() async {
     _syncFromStore();
-    final gen = ++_pendingReloadGen;
-    unawaited(() async {
-      final pending = await RollPendingContext.load();
-      if (!mounted || gen != _pendingReloadGen) return;
-      setState(() => _pending = pending);
-    }());
+    _pending = await RollPendingContext.load();
+    if (!mounted) return;
+    setState(() {});
   }
 
   void _resolveStudentId() {
@@ -101,6 +115,12 @@ class _StudentClassAttendanceDetailScreenState
     if (!mounted) return;
     _syncFromStore();
 
+    await AttendanceRepository.instance.refreshStudentListAttendanceFromRtd(
+      widget.listId,
+    );
+    if (!mounted) return;
+    _syncFromStore();
+
     if (!AppConnectivity.instance.isOnline) {
       await AttendanceRepository.instance.loadStudentAttendanceForProfile(
         force: false,
@@ -129,9 +149,24 @@ class _StudentClassAttendanceDetailScreenState
       return;
     }
 
-    await AttendanceRepository.instance.loadStudentAttendanceForProfile(
-      force: force && AppConnectivity.instance.isOnline,
-    );
+    if (AppConnectivity.instance.isOnline) {
+      await AttendanceRepository.instance.refreshStudentListAttendanceFromRtd(
+        widget.listId,
+      );
+    }
+    _syncFromStore();
+
+    if (!force && AttendanceRepository.instance.hasCachedStore) {
+      unawaited(
+        AttendanceRepository.instance.loadStudentAttendanceForProfile(
+          force: false,
+        ),
+      );
+    } else {
+      await AttendanceRepository.instance.loadStudentAttendanceForProfile(
+        force: force && AppConnectivity.instance.isOnline,
+      );
+    }
     _syncFromStore();
 
     if (!AppConnectivity.instance.isOnline && !force) {
@@ -140,16 +175,33 @@ class _StudentClassAttendanceDetailScreenState
       return;
     }
 
-    final blocking = !AttendanceRepository.instance.listDetailReady(widget.listId) &&
-        AttendanceStore.sessionsForListNewestFirst(widget.listId).isEmpty;
-    if (blocking && mounted) {
+    final hasLocal =
+        AttendanceRepository.instance.hasLocalListData(widget.listId);
+    if (!hasLocal && mounted) {
       setState(() => _loading = true);
+    }
+
+    if (!force && hasLocal) {
+      await _finishRefreshAfterListLoad();
+      unawaited(
+        AttendanceRepository.instance
+            .loadListAttendanceData(widget.listId, force: false)
+            .then((_) async {
+          if (!mounted) return;
+          await _finishRefreshAfterListLoad();
+        }),
+      );
+      return;
     }
 
     await AttendanceRepository.instance.loadListAttendanceData(
       widget.listId,
       force: force,
     );
+    await _finishRefreshAfterListLoad();
+  }
+
+  Future<void> _finishRefreshAfterListLoad() async {
     _resolveStudentId();
 
     if (_studentId != null) {
@@ -163,12 +215,6 @@ class _StudentClassAttendanceDetailScreenState
 
     if (mounted) {
       setState(() => _loading = false);
-    }
-
-    if (!force && AppConnectivity.instance.isOnline) {
-      unawaited(
-        AttendanceRepository.instance.loadStudentAttendanceForProfile(),
-      );
     }
   }
 
@@ -230,7 +276,13 @@ class _StudentClassAttendanceDetailScreenState
       return 'Absent — no check-in recorded for this session.';
     }
 
-    if (!rollGracePeriodExpired(session, DateTime.now())) {
+    if (!registrationSessionGraceExpired(
+      session: session,
+      listId: widget.listId,
+      studentIds: _studentIds,
+      recordsForStudents: AttendanceStore.attendanceRecords
+          .where((r) => _studentIds.contains(r.studentId)),
+    )) {
       return 'No check-in recorded yet for this session.';
     }
 
@@ -317,6 +369,10 @@ class _StudentClassAttendanceDetailScreenState
                       String? label;
                       if (record != null && record.present) {
                         label = kRollLabelPresent;
+                      } else if (record != null &&
+                          !record.present &&
+                          session.countsTowardRollStats) {
+                        label = kRollLabelAbsent;
                       } else if (labelSid != null) {
                         label = rollCellLabelForStudentSession(
                           session: session,

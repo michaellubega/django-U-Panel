@@ -48,6 +48,7 @@ class AttendanceLocalSnapshot {
       'students': AttendanceStore.students.map(_studentToJson).toList(),
       'signIns': AttendanceStore.signIns.map(_signInToJson).toList(),
       'records': AttendanceStore.attendanceRecords.map(_recordToJson).toList(),
+      'rollStats': AttendanceStore.rollStatsForLocalSnapshot(),
     };
     await AttendanceLocalQueues.writeString(
       _hiveKey(uid, scopeTag),
@@ -119,6 +120,12 @@ class AttendanceLocalSnapshot {
       AttendanceStore.attendanceRecords
         ..clear()
         ..addAll(records);
+      final rollStatsRaw = m['rollStats'];
+      if (rollStatsRaw is Map) {
+        AttendanceStore.restoreRollStatsFromLocalSnapshot(
+          Map<String, dynamic>.from(rollStatsRaw),
+        );
+      }
       AttendanceStore.invalidateLookupCaches();
       final cc = (m['codeCounter'] as num?)?.toInt();
       if (cc != null) {

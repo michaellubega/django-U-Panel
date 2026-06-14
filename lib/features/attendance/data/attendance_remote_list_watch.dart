@@ -17,10 +17,14 @@ class AttendanceRemoteListWatch {
   static final AttendanceRemoteListWatch instance =
       AttendanceRemoteListWatch._();
 
+  static const _lecturerSources = {'lecturerAssigned', 'lecturerCreated'};
+
   final List<StreamSubscription<QuerySnapshot<Map<String, dynamic>>>> _subs =
       [];
   final Map<String, Set<String>> _idsBySource = {};
   bool _running = false;
+  bool _lecturerDualWatch = false;
+  Set<String>? _studentSignInSourcesExpected;
 
   bool get isRunning => _running;
 
@@ -41,8 +45,10 @@ class AttendanceRemoteListWatch {
 
     final auth = AuthRepository.instance;
     if (AttendanceRepository.isStudentScopedUser()) {
+      _lecturerDualWatch = false;
       _attachStudentSignInWatch(db);
     } else if (auth.adminCheckDone && auth.isAdmin) {
+      _lecturerDualWatch = false;
       _attachCollectionWatch(
         db,
         source: 'staffLists',
@@ -51,6 +57,7 @@ class AttendanceRemoteListWatch {
     } else {
       final uid = auth.currentFirebaseUid?.trim();
       if (uid != null && uid.isNotEmpty) {
+        _lecturerDualWatch = true;
         _attachCollectionWatch(
           db,
           source: 'lecturerAssigned',
@@ -79,6 +86,8 @@ class AttendanceRemoteListWatch {
     }
     _subs.clear();
     _idsBySource.clear();
+    _lecturerDualWatch = false;
+    _studentSignInSourcesExpected = null;
     _running = false;
   }
 
@@ -87,8 +96,10 @@ class AttendanceRemoteListWatch {
         .studentIdsForCurrentUserInStore()
         .toList();
     if (studentIds.isEmpty) return;
+    final expectedSources = <String>{};
     for (final chunk in _chunk(studentIds, 10)) {
       final source = 'signIns:${chunk.join(',')}';
+      expectedSources.add(source);
       final sub = db
           .collection(FirestoreCollections.signIns)
           .where('studentId', whereIn: chunk)
@@ -111,6 +122,7 @@ class AttendanceRemoteListWatch {
           );
       _subs.add(sub);
     }
+    _studentSignInSourcesExpected = expectedSources;
   }
 
   void _attachCollectionWatch(
@@ -134,8 +146,23 @@ class AttendanceRemoteListWatch {
     _subs.add(sub);
   }
 
+  bool _allWatchSourcesReady() {
+    if (_lecturerDualWatch &&
+        !_lecturerSources.every(_idsBySource.containsKey)) {
+      return false;
+    }
+    final studentSources = _studentSignInSourcesExpected;
+    if (studentSources != null &&
+        !studentSources.every(_idsBySource.containsKey)) {
+      return false;
+    }
+    return true;
+  }
+
   void _updateFromSource(String source, Set<String> ids) {
     _idsBySource[source] = ids;
+    if (!_allWatchSourcesReady()) return;
+
     final remoteIds = <String>{
       ..._idsBySource.values.expand((s) => s).map((id) => id.trim()),
       for (final s in AttendanceStore.signIns)

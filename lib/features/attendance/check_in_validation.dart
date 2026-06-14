@@ -43,8 +43,28 @@ bool isValidCheckInCoordinates(double lat, double lng) {
 /// On-campus sessions need a real centre and positive radius.
 bool isSessionGeofenceConfigured(AttendanceSession s) {
   if (s.remoteLearning) return true;
+  if (s.locationMetadataPending) return false;
   if (s.radiusMeters <= 0) return false;
   return isValidCheckInCoordinates(s.latitude, s.longitude);
+}
+
+/// Long-distance learning, pending lecturer GPS, or location not set — skip radius.
+bool sessionSkipsLocationCheck(AttendanceSession s) {
+  return s.remoteLearning ||
+      s.locationMetadataPending ||
+      !isSessionGeofenceConfigured(s);
+}
+
+/// Pending queue replay: strict geofence or correction path (server uses same rules).
+bool pendingReplayLocationOk(
+  AttendanceSession session,
+  double latitude,
+  double longitude,
+) {
+  if (sessionSkipsLocationCheck(session)) return true;
+  if (!isValidCheckInCoordinates(latitude, longitude)) return false;
+  return isPositionWithinSession(session, latitude, longitude) ||
+      positionQualifiesForPresentCorrection(session, latitude, longitude);
 }
 
 /// Haversine distance from the session centre to a student fix (metres).
@@ -59,8 +79,7 @@ double sessionDistanceMeters(AttendanceSession s, double lat, double lng) {
 
 /// True if [lat],[lng] is within [s.radiusMeters] of the session center.
 bool isPositionWithinSession(AttendanceSession s, double lat, double lng) {
-  if (s.remoteLearning) return true;
-  if (!isSessionGeofenceConfigured(s)) return false;
+  if (sessionSkipsLocationCheck(s)) return true;
   if (!isValidCheckInCoordinates(lat, lng)) return false;
   final dist = sessionDistanceMeters(s, lat, lng);
   return dist <= s.radiusMeters;
@@ -109,7 +128,7 @@ LinkedSessionCheckInVerification verifyLinkedSessionCheckIn({
           'Check-in is only allowed during the scheduled session window.',
     );
   }
-  if (session.remoteLearning) {
+  if (sessionSkipsLocationCheck(session)) {
     return const LinkedSessionCheckInVerification(
       passed: true,
       timeOk: true,
@@ -140,12 +159,8 @@ String sessionGeofenceFailureMessage(
   double lat,
   double lng,
 ) {
-  if (s.remoteLearning) {
+  if (sessionSkipsLocationCheck(s)) {
     return 'Location is not required for this session.';
-  }
-  if (!isSessionGeofenceConfigured(s)) {
-    return 'This session has no valid class location set. Ask your lecturer to '
-        'refresh location and start the session again.';
   }
   if (!isValidCheckInCoordinates(lat, lng)) {
     return 'Could not read a valid GPS location. Turn on location and try again.';

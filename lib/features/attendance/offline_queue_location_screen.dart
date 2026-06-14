@@ -34,6 +34,8 @@ PendingSessionCodeEntry _offlinePendingEntry({
   );
 }
 
+enum _OfflineQueuePhase { processing, result, error }
+
 /// Fullscreen pipeline while saving a session-code attempt to the offline
 /// pending queue (reuses last-known GPS when captured within 5 minutes).
 class OfflineQueueLocationScreen extends StatefulWidget {
@@ -58,15 +60,27 @@ class OfflineQueueLocationScreen extends StatefulWidget {
 }
 
 class _OfflineQueueLocationScreenState extends State<OfflineQueueLocationScreen>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
+  static const _stageLabels = <String>[
+    'Confirming your location…',
+    'Saving session on this device…',
+    'Preparing offline verification…',
+  ];
+
   late final AnimationController _pulse;
-  String _statusLine = 'Checking location…';
+  late final AnimationController _successController;
+  late final Animation<double> _successScale;
+
+  _OfflineQueuePhase _phase = _OfflineQueuePhase.processing;
+  int _stageIndex = 0;
   String? _errorMessage;
-  bool _done = false;
   bool _resolving = false;
   bool _locationServiceDisabled = false;
   bool _permissionBlocked = false;
   var _openedPendingList = false;
+  String? _resultTitle;
+  String? _resultSubtitle;
+  bool _uploadedToServer = false;
 
   @override
   void initState() {
@@ -75,20 +89,54 @@ class _OfflineQueueLocationScreenState extends State<OfflineQueueLocationScreen>
       vsync: this,
       duration: const Duration(milliseconds: 1200),
     )..repeat(reverse: true);
+    _successController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 520),
+    );
+    _successScale = Tween<double>(begin: 0.35, end: 1.0).animate(
+      CurvedAnimation(parent: _successController, curve: Curves.elasticOut),
+    );
     WidgetsBinding.instance.addPostFrameCallback((_) => _run());
   }
 
   @override
   void dispose() {
     _pulse.dispose();
+    _successController.dispose();
     super.dispose();
   }
 
-  void _setStage(String line) {
+  Future<void> _advanceToStage(int index) async {
+    if (!mounted) return;
+    await Future<void>.delayed(const Duration(milliseconds: 500));
+    if (!mounted) return;
+    setState(() => _stageIndex = index.clamp(0, _stageLabels.length - 1));
+  }
+
+  Future<void> _showResult({
+    required String title,
+    required String subtitle,
+    required bool uploaded,
+  }) async {
+    if (!mounted) return;
+    setState(() => _stageIndex = _stageLabels.length);
+    await Future<void>.delayed(const Duration(milliseconds: 400));
+    if (!mounted) return;
+    _successController.reset();
+    setState(() {
+      _phase = _OfflineQueuePhase.result;
+      _resultTitle = title;
+      _resultSubtitle = subtitle;
+      _uploadedToServer = uploaded;
+    });
+    await _successController.forward();
+  }
+
+  void _showError(String message) {
     if (!mounted) return;
     setState(() {
-      _statusLine = line;
-      _errorMessage = null;
+      _phase = _OfflineQueuePhase.error;
+      _errorMessage = message;
     });
   }
 
@@ -103,20 +151,25 @@ class _OfflineQueueLocationScreenState extends State<OfflineQueueLocationScreen>
   }
 
   Future<void> _run() async {
+    setState(() {
+      _phase = _OfflineQueuePhase.processing;
+      _stageIndex = 0;
+      _errorMessage = null;
+    });
+
     if (!await isDeviceLocationServiceEnabled()) {
       setState(() {
         _locationServiceDisabled = true;
-        _statusLine = 'Turn on location to continue';
+        _phase = _OfflineQueuePhase.error;
       });
       return;
     }
 
+    await _advanceToStage(0);
     setState(() {
       _resolving = true;
       _locationServiceDisabled = false;
       _permissionBlocked = false;
-      _errorMessage = null;
-      _statusLine = 'Resolving your current location…';
     });
 
     final pos = await acquireCurrentGpsPosition(
@@ -130,22 +183,21 @@ class _OfflineQueueLocationScreenState extends State<OfflineQueueLocationScreen>
     if (pos.locationServiceDisabled) {
       setState(() {
         _locationServiceDisabled = true;
-        _statusLine = 'Turn on location to continue';
+        _phase = _OfflineQueuePhase.error;
       });
       return;
     }
 
     if (pos.position == null) {
-      setState(() {
-        _errorMessage = pos.errorMessage ??
-            'Could not read your current location. Turn on GPS and try again.';
-        _permissionBlocked = pos.permissionBlocked;
-        _statusLine = 'Location required';
-      });
+      _showError(
+        pos.errorMessage ??
+            'Could not read your current location. Turn on GPS and try again.',
+      );
+      setState(() => _permissionBlocked = pos.permissionBlocked);
       return;
     }
 
-    _setStage('Saving your check-in for verification…');
+    await _advanceToStage(1);
     final entryId = widget.id;
     await PendingSessionCodeQueue.enqueue(
       _offlinePendingEntry(
@@ -163,106 +215,265 @@ class _OfflineQueueLocationScreenState extends State<OfflineQueueLocationScreen>
       ),
     );
     if (!mounted) return;
+
+    await _advanceToStage(2);
     final stillOnDevice = (await PendingSessionCodeQueue.loadAll())
         .any((e) => e.id == entryId);
     if (!stillOnDevice) {
       await _openPendingListOnce();
     }
     final online = AppConnectivity.instance.isOnline;
-    setState(() {
-      _done = true;
-      _statusLine = stillOnDevice
-          ? (online
-              ? 'Saved on this device — will retry upload when stable.'
-              : 'Saved as pending — will upload when online.')
-          : (online
-              ? 'Uploaded to server — will verify as soon as the lecturer session appears (up to ${PendingRetention.unverifiedPending.inDays} days if only your side is recorded).'
-              : 'Saved as pending — will verify when online.');
-    });
     if (online && stillOnDevice) {
       unawaited(AttendanceOfflineSync.drainAllInOrder());
     }
-    await Future<void>.delayed(const Duration(milliseconds: 220));
+
+    final code = widget.rawCode.trim();
+    if (stillOnDevice) {
+      await _showResult(
+        title: 'Recorded on this device',
+        subtitle: online
+            ? 'Session $code is saved on this phone. '
+                'It will upload and verify when the connection is stable (up to ${PendingRetention.unverifiedPending.inDays} days).'
+            : 'Session $code is saved on this phone while offline. '
+                'Attendance will verify automatically when you\'re back online (up to ${PendingRetention.unverifiedPending.inDays} days).',
+        uploaded: false,
+      );
+    } else {
+      await _showResult(
+        title: online ? 'Submitted for verification' : 'Recorded on this device',
+        subtitle: online
+            ? 'Session $code was sent to the server. '
+                'You will be marked present once the lecturer session syncs (up to ${PendingRetention.unverifiedPending.inDays} days).'
+            : 'Session $code is saved on this phone. '
+                'It will verify when you\'re back online.',
+        uploaded: online,
+      );
+    }
+  }
+
+  void _finish() {
     if (mounted) Navigator.of(context).pop(true);
   }
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    return Scaffold(
-      appBar: AppBar(title: const Text('Offline check-in')),
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
+    return PopScope(
+      canPop: _phase != _OfflineQueuePhase.processing,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Offline check-in'),
+          automaticallyImplyLeading: _phase != _OfflineQueuePhase.processing,
+        ),
+        body: SafeArea(
           child: AnimatedSwitcher(
-            duration: const Duration(milliseconds: 350),
-            child: _errorMessage != null || _locationServiceDisabled
-                ? Column(
-                    key: const ValueKey('err'),
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      LocationResolvingPanel(
-                        resolving: _resolving,
-                        errorMessage: _errorMessage,
-                        locationServiceDisabled: _locationServiceDisabled,
-                        permissionBlocked: _permissionBlocked,
-                        onRetry: _run,
-                      ),
-                      const SizedBox(height: 28),
-                      FilledButton(
-                        onPressed: () => Navigator.of(context).pop(false),
-                        child: const Text('Back'),
-                      ),
-                    ],
-                  )
-                : Column(
-                    key: ValueKey(_done ? 'done' : 'run'),
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      FadeTransition(
-                        opacity: Tween<double>(begin: 0.55, end: 1.0).animate(
-                          CurvedAnimation(
-                            parent: _pulse,
-                            curve: Curves.easeInOut,
-                          ),
-                        ),
-                        child: Icon(
-                          _done
-                              ? Icons.check_circle_rounded
-                              : Icons.sensors_rounded,
-                          size: 72,
-                          color: _done ? AppTheme.success : AppTheme.primary,
-                        ),
-                      ),
-                      const SizedBox(height: 28),
-                      Text(
-                        _statusLine,
-                        textAlign: TextAlign.center,
-                        style: theme.textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      LocationResolvingPanel(
-                        resolving: _resolving,
-                        locationServiceDisabled: _locationServiceDisabled,
-                        onRetry: _run,
-                      ),
-                      if (!_done && _resolving) ...[
-                        const SizedBox(height: 20),
-                        const Center(
-                          child: SizedBox(
-                            width: 36,
-                            height: 36,
-                            child: CircularProgressIndicator(strokeWidth: 3),
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
+            duration: const Duration(milliseconds: 360),
+            switchInCurve: Curves.easeOutCubic,
+            switchOutCurve: Curves.easeInCubic,
+            child: switch (_phase) {
+              _OfflineQueuePhase.processing => _buildProcessing(
+                  key: const ValueKey('processing'),
+                  theme: theme,
+                ),
+              _OfflineQueuePhase.result => _buildResult(
+                  key: const ValueKey('result'),
+                  theme: theme,
+                ),
+              _OfflineQueuePhase.error => _buildError(
+                  key: const ValueKey('error'),
+                  theme: theme,
+                ),
+            },
           ),
         ),
+      ),
+    );
+  }
+
+  Widget _buildProcessing({required Key key, required ThemeData theme}) {
+    final progress = _stageIndex >= _stageLabels.length
+        ? 1.0
+        : (_stageIndex + 1) / _stageLabels.length;
+    return Padding(
+      key: key,
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Spacer(),
+          FadeTransition(
+            opacity: Tween<double>(begin: 0.55, end: 1.0).animate(
+              CurvedAnimation(parent: _pulse, curve: Curves.easeInOut),
+            ),
+            child: const Icon(
+              Icons.sensors_rounded,
+              size: 72,
+              color: AppTheme.primary,
+            ),
+          ),
+          const SizedBox(height: 24),
+          Text(
+            'Saving your check-in',
+            textAlign: TextAlign.center,
+            style: theme.textTheme.titleLarge?.copyWith(
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Session ${widget.rawCode.trim()}',
+            textAlign: TextAlign.center,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: AppTheme.textSecondary,
+            ),
+          ),
+          const SizedBox(height: 28),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(
+              minHeight: 6,
+              value: progress,
+              backgroundColor: AppTheme.softGrey,
+              color: AppTheme.primary,
+            ),
+          ),
+          const SizedBox(height: 22),
+          for (var i = 0; i < _stageLabels.length; i++) ...[
+            if (i > 0) const SizedBox(height: 10),
+            Row(
+              children: [
+                if (i < _stageIndex || _stageIndex >= _stageLabels.length)
+                  const Icon(
+                    Icons.check_circle_rounded,
+                    size: 22,
+                    color: AppTheme.success,
+                  )
+                else if (i == _stageIndex)
+                  const SizedBox(
+                    width: 22,
+                    height: 22,
+                    child: CircularProgressIndicator(strokeWidth: 2.5),
+                  )
+                else
+                  const Icon(
+                    Icons.radio_button_unchecked_rounded,
+                    size: 22,
+                    color: AppTheme.textSecondary,
+                  ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    _stageLabels[i],
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      fontWeight: i == _stageIndex ? FontWeight.w700 : FontWeight.w500,
+                      color: i > _stageIndex && _stageIndex < _stageLabels.length
+                          ? AppTheme.textSecondary
+                          : AppTheme.textPrimary,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+          if (_resolving) ...[
+            const SizedBox(height: 18),
+            LocationResolvingPanel(
+              resolving: true,
+              locationServiceDisabled: _locationServiceDisabled,
+              onRetry: _run,
+              compact: true,
+            ),
+          ],
+          const Spacer(),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildResult({required Key key, required ThemeData theme}) {
+    final color = _uploadedToServer ? AppTheme.primary : AppTheme.warning;
+    final icon = _uploadedToServer
+        ? Icons.cloud_done_rounded
+        : Icons.offline_pin_rounded;
+    return Center(
+      key: key,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 420),
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Card(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(24, 32, 24, 28),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  ScaleTransition(
+                    scale: _successScale,
+                    child: Container(
+                      width: 80,
+                      height: 80,
+                      decoration: BoxDecoration(
+                        color: color.withValues(alpha: 0.14),
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(icon, size: 44, color: color),
+                    ),
+                  ),
+                  const SizedBox(height: 22),
+                  Text(
+                    _resultTitle ?? 'Saved',
+                    textAlign: TextAlign.center,
+                    style: theme.textTheme.headlineSmall?.copyWith(
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  const SizedBox(height: 10),
+                  Text(
+                    _resultSubtitle ?? '',
+                    textAlign: TextAlign.center,
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: AppTheme.textSecondary,
+                      height: 1.45,
+                    ),
+                  ),
+                  const SizedBox(height: 28),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton(
+                      onPressed: _finish,
+                      child: const Text('Done'),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildError({required Key key, required ThemeData theme}) {
+    return Padding(
+      key: key,
+      padding: const EdgeInsets.all(24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Spacer(),
+          LocationResolvingPanel(
+            resolving: _resolving,
+            errorMessage: _errorMessage,
+            locationServiceDisabled: _locationServiceDisabled,
+            permissionBlocked: _permissionBlocked,
+            onRetry: _run,
+          ),
+          const Spacer(),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Back'),
+          ),
+        ],
       ),
     );
   }

@@ -14,7 +14,6 @@ import 'core/navigation/app_navigator.dart';
 import 'core/navigation/auth_gate.dart';
 import 'core/auth/auth_repository.dart';
 import 'core/push/push_background_handler.dart';
-import 'core/push/push_controller.dart';
 import 'core/notifications/background_notification_entry.dart';
 import 'core/session/app_session_reset.dart';
 
@@ -26,34 +25,51 @@ void main() async {
     unawaited(_initStorageForWeb());
     unawaited(_initFirebaseForWeb());
     runApp(const UPanelApp());
+    WebFastBoot.afterFirstFrame(WebFastBoot.hideHtmlSplash);
     return;
   }
 
+  // Paint login/splash first; Hive + Firebase init must not block first frame.
+  runApp(const UPanelApp());
+  unawaited(_initNativeStorageAndFirebase());
+}
+
+Future<void> _initNativeStorageAndFirebase() async {
+  Future<void> storageFuture;
   try {
-    await AttendanceLocalQueues.ensureInitialized();
-    unawaited(AttendanceLocalQueues.sanitizeCorruptStorage());
+    storageFuture = AttendanceLocalQueues.ensureInitialized().then((_) {
+      unawaited(AttendanceLocalQueues.sanitizeCorruptStorage());
+    });
   } catch (e, st) {
     if (kDebugMode) {
       debugPrint('AttendanceLocalQueues startup failed: $e');
       debugPrint('$st');
     }
-    await AttendanceLocalQueues.recoverFromCorruptStorage();
-    unawaited(AttendanceLocalQueues.sanitizeCorruptStorage());
+    storageFuture = AttendanceLocalQueues.recoverFromCorruptStorage().then((_) {
+      unawaited(AttendanceLocalQueues.sanitizeCorruptStorage());
+    });
   }
+
   try {
-    await Firebase.initializeApp(
-      options: DefaultFirebaseOptions.currentPlatform,
-    );
+    await Future.wait<void>([
+      storageFuture,
+      Firebase.initializeApp(
+        options: DefaultFirebaseOptions.currentPlatform,
+      ),
+    ]);
     unawaited(initializeBackgroundNotificationTasks());
-    unawaited(AppConnectivity.instance.initialize());
+    WebFastBoot.afterFirstFrame(() {
+      unawaited(AppConnectivity.instance.initialize());
+    });
     if (Firebase.apps.isNotEmpty) {
       if (!kIsWeb &&
           (defaultTargetPlatform == TargetPlatform.android ||
               defaultTargetPlatform == TargetPlatform.iOS)) {
         FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
       }
-      unawaited(PushController.instance.initialize());
+      // PushController runs from AppShell once the user passes AuthGate.
     }
+    unawaited(AuthRepository.instance.loadInitialSession());
   } on UnsupportedError catch (e) {
     if (kDebugMode) {
       debugPrint('Firebase is not configured for this platform: $e');
@@ -68,13 +84,11 @@ void main() async {
       debugPrint('$st');
     }
   }
-  runApp(const UPanelApp());
 }
 
 Future<void> _initStorageForWeb() async {
   try {
     await AttendanceLocalQueues.ensureInitialized();
-    unawaited(AttendanceLocalQueues.sanitizeCorruptStorage());
   } catch (e, st) {
     if (kDebugMode) {
       debugPrint('Web storage init failed: $e');
@@ -117,6 +131,7 @@ class _UPanelAppState extends State<UPanelApp> {
   void initState() {
     super.initState();
     AuthRepository.instance.addListener(_onAuthChanged);
+    // Kick off session restore immediately so login can paint before Firebase init.
     AuthRepository.instance.loadInitialSession();
   }
 
@@ -137,11 +152,7 @@ class _UPanelAppState extends State<UPanelApp> {
       AppSessionReset.onSignOutImmediate();
       unawaited(AppSessionReset.onSignOutDeferred());
     }
-    if (mounted) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) setState(() {});
-      });
-    }
+    // AuthGate listens to AuthRepository — avoid rebuilding MaterialApp on every hydrate tick.
   }
 
   @override
@@ -158,6 +169,24 @@ class _UPanelAppState extends State<UPanelApp> {
       title: 'U-Panel',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.light,
+      builder: (context, child) {
+        // Desktop OS dark mode must not override our fixed light theme colors.
+        final media = MediaQuery.of(context);
+        final defaultStyle = Theme.of(context).textTheme.bodyLarge?.copyWith(
+              color: AppTheme.textPrimary,
+            ) ??
+            const TextStyle(
+              color: AppTheme.textPrimary,
+              fontSize: 15,
+            );
+        return MediaQuery(
+          data: media.copyWith(platformBrightness: Brightness.light),
+          child: DefaultTextStyle(
+            style: defaultStyle,
+            child: child ?? const SizedBox.shrink(),
+          ),
+        );
+      },
       home: const AuthGate(),
     );
   }

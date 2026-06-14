@@ -56,7 +56,7 @@ class DeleteAccountScreen extends StatelessWidget {
             bodyStyle: bodyStyle,
             headingStyle: headingStyle,
             bullets: [
-              'Firebase Authentication sign-in for U-Panel.',
+              'your U-Panel sign-in account.',
               'App user profile (name, email, registration or staff ID, role).',
               'Push notification tokens and subscriptions.',
               'Other personal app data not required for academic or legal reasons.',

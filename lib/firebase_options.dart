@@ -49,6 +49,8 @@ class DefaultFirebaseOptions {
     messagingSenderId: '307189985628',
     projectId: 'u-panel-2026',
     storageBucket: 'u-panel-2026.firebasestorage.app',
+    databaseURL:
+        'https://u-panel-2026-default-rtdb.europe-west1.firebasedatabase.app',
   );
 
   static const FirebaseOptions web = FirebaseOptions(
@@ -58,6 +60,8 @@ class DefaultFirebaseOptions {
     projectId: 'u-panel-2026',
     authDomain: 'u-panel-2026.firebaseapp.com',
     storageBucket: 'u-panel-2026.firebasestorage.app',
+    databaseURL:
+        'https://u-panel-2026-default-rtdb.europe-west1.firebasedatabase.app',
   );
 
   static const FirebaseOptions macos = FirebaseOptions(
@@ -67,6 +71,8 @@ class DefaultFirebaseOptions {
     projectId: 'u-panel-2026',
     storageBucket: 'u-panel-2026.firebasestorage.app',
     iosBundleId: 'com.example.uPanel',
+    databaseURL:
+        'https://u-panel-2026-default-rtdb.europe-west1.firebasedatabase.app',
   );
 
   static const FirebaseOptions windows = FirebaseOptions(
@@ -76,6 +82,8 @@ class DefaultFirebaseOptions {
     projectId: 'u-panel-2026',
     authDomain: 'u-panel-2026.firebaseapp.com',
     storageBucket: 'u-panel-2026.firebasestorage.app',
+    databaseURL:
+        'https://u-panel-2026-default-rtdb.europe-west1.firebasedatabase.app',
   );
 
 }

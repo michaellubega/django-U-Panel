@@ -72,6 +72,6 @@ String campusDistanceMessage(
     lng,
   );
   return 'You are ${dist.toStringAsFixed(0)} m from the campus centre. '
-      'You must be within ${formatCampusRadiusMeters(campusGeofenceMinRadiusMeters)} '
-      'of the centre of campus to check in or out.';
+      'You must be within ${formatCampusRadiusMeters(fence.radiusMeters)} '
+      'of the centre to check in or out.';
 }

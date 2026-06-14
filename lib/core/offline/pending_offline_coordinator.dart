@@ -18,7 +18,8 @@ class PendingOfflineCoordinator {
 
   static const _tickInterval = Duration(minutes: 3);
   static const _syncDebounce = Duration(milliseconds: 300);
-  static const _backgroundSyncTimeout = Duration(seconds: 120);
+  static const _backgroundSyncTimeout = Duration(seconds: 50);
+  static DateTime? _lastBackgroundSyncLogAt;
 
   Timer? _periodicTimer;
   Timer? _syncDebounceTimer;
@@ -54,12 +55,12 @@ class PendingOfflineCoordinator {
         requestSync(immediate: true);
         break;
       case AppLifecycleState.paused:
-      case AppLifecycleState.inactive:
       case AppLifecycleState.hidden:
-        unawaited(_backgroundSync());
-        break;
       case AppLifecycleState.detached:
         unawaited(_backgroundSync());
+        break;
+      case AppLifecycleState.inactive:
+        // Web fires [inactive] during hot restart and focus churn — not true background.
         break;
     }
   }
@@ -89,15 +90,12 @@ class PendingOfflineCoordinator {
     if (!AuthRepository.instance.isLoggedIn) return;
     if (!AppConnectivity.instance.isOnline) return;
     try {
-      // Skip slow loadAll/reconcile — urgent uploads only while backgrounded.
-      await AttendanceOfflineSync.drainSessionValidationFirst().timeout(
+      await AttendanceOfflineSync.drainUrgentUploadsOnly(
+        timeBudget: _backgroundSyncTimeout,
+      ).timeout(
         _backgroundSyncTimeout,
         onTimeout: () {
-          if (kDebugMode) {
-            debugPrint(
-              'PendingOfflineCoordinator: background sync timed out — will retry later.',
-            );
-          }
+          _logBackgroundSyncTimeoutThrottled();
         },
       );
     } catch (e, st) {
@@ -106,6 +104,19 @@ class PendingOfflineCoordinator {
         debugPrint('$st');
       }
     }
+  }
+
+  void _logBackgroundSyncTimeoutThrottled() {
+    if (!kDebugMode) return;
+    final now = DateTime.now();
+    final last = _lastBackgroundSyncLogAt;
+    if (last != null && now.difference(last) < const Duration(minutes: 2)) {
+      return;
+    }
+    _lastBackgroundSyncLogAt = now;
+    debugPrint(
+      'PendingOfflineCoordinator: background sync timed out — will retry later.',
+    );
   }
 
   Future<void> _urgentSync() async {

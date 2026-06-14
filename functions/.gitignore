@@ -1,3 +1,4 @@
+service-account.json
+u-panel-*-firebase-adminsdk*.json
+*-firebase-adminsdk-*.json
 node_modules/
-npm-debug.log
-firebase-debug.log

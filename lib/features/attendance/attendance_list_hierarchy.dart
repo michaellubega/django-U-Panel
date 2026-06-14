@@ -28,6 +28,25 @@ bool attendanceListVisibleInHierarchy(AttendanceList list) {
   );
 }
 
+/// Non-null when [program] and the list class [date] weekday disagree.
+String? attendanceListProgramWeekdayValidationError(
+  AttendanceProgram program,
+  DateTime date,
+) {
+  final weekday = date.weekday.clamp(1, 7);
+  if (program == AttendanceProgram.weekend) {
+    if (!isWeekendWeekday(weekday)) {
+      return 'Weekend program lists must use Saturday or Sunday as the class day.';
+    }
+    return null;
+  }
+  if (isWeekendWeekday(weekday)) {
+    return 'Day and evening programs cannot use Saturday or Sunday. '
+        'Choose the Weekend program instead.';
+  }
+  return null;
+}
+
 List<AttendanceList> filterListsForHierarchy(Iterable<AttendanceList> lists) {
   return lists.where(attendanceListVisibleInHierarchy).toList();
 }

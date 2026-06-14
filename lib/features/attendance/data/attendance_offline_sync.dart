@@ -4,7 +4,7 @@ import 'package:flutter/foundation.dart';
 
 import '../../../core/connectivity/app_connectivity.dart';
 import '../../../core/notifications/notification_maintenance_coordinator.dart';
-import '../check_in_validation.dart';
+import '../check_in_outcome.dart';
 import '../models/attendance_models.dart';
 import 'attendance_repository.dart';
 import 'pending_check_in_queue.dart';
@@ -62,10 +62,22 @@ class AttendanceOfflineSync {
       await _drainAllInOrderBodyWithoutLoadAll();
       final counts = await countPendingWork();
       if (counts.checkIns > 0 || counts.sessionCodes > 0) {
+        await _runStep(
+          '_refreshAfterSessionValidation',
+          _refreshAfterSessionValidation,
+        );
         return;
       }
-      if (AttendanceStore.attendanceRecords
-          .any((r) => r.present && !r.verified)) {
+      // Staff rolls still need a full refresh while students await verification.
+      final studentAwaitingVerification =
+          AttendanceRepository.isStudentScopedUser() &&
+              AttendanceStore.attendanceRecords
+                  .any((r) => r.present && !r.verified);
+      if (studentAwaitingVerification) {
+        await _runStep(
+          '_refreshAfterSessionValidation',
+          _refreshAfterSessionValidation,
+        );
         return;
       }
       if (await _onlineForDrain()) {
@@ -77,6 +89,36 @@ class AttendanceOfflineSync {
   /// Session code validation first, then check-ins — updates records before other sync.
   static Future<void> drainSessionValidationFirst() async {
     await _withDrainLock(_drainSessionValidationFirstBody);
+  }
+
+  /// Bounded upload pass for background / tab blur — skips sign-in sweeps and loadAll.
+  static Future<void> drainUrgentUploadsOnly({
+    Duration timeBudget = const Duration(seconds: 45),
+  }) async {
+    await _withDrainLock(() => _drainUrgentUploadsOnlyBody(timeBudget));
+  }
+
+  static Future<void> _drainUrgentUploadsOnlyBody(Duration timeBudget) async {
+    if (!AppConnectivity.instance.hasNetworkInterface) return;
+    final deadline = DateTime.now().add(timeBudget);
+    bool withinBudget() => !DateTime.now().isAfter(deadline);
+
+    Future<void> step(String label, Future<void> Function() fn) async {
+      if (!withinBudget()) return;
+      await _runStep(label, fn);
+    }
+
+    await step('PendingListCreateSync.drain', PendingListCreateSync.drain);
+    if (!withinBudget()) return;
+    await step(
+      'PendingSessionCreateSync.drainUrgent',
+      PendingSessionCreateSync.drainUrgent,
+    );
+    if (!withinBudget()) return;
+    await step(
+      'PendingSessionCodeSync.drainUrgent',
+      PendingSessionCodeSync.drainUrgent,
+    );
   }
 
   /// Fast path when connectivity returns: validate pending sessions first.
@@ -120,6 +162,11 @@ class AttendanceOfflineSync {
   /// Pending session creates → session-code validation → GPS check-ins → UI refresh.
   static Future<void> _drainSessionValidationFirstBody() async {
     if (AppConnectivity.instance.hasNetworkInterface) {
+      PendingSessionCodeSync.refreshSessionPublishWatchesFromQueue();
+      await _runStep(
+        'PendingListCreateSync.drain',
+        PendingListCreateSync.drain,
+      );
       await _runStep(
         'PendingSessionCreateSync.drainUrgent',
         PendingSessionCreateSync.drainUrgent,
@@ -130,29 +177,43 @@ class AttendanceOfflineSync {
       );
     }
     await _runStep('purgeExpiredPendingOnly', purgeExpiredPendingOnly);
-    if (!await _onlineForDrain()) return;
-    await _runStep(
-      'AttendanceRepository.syncUnuploadedSignIns',
-      AttendanceRepository.instance.syncUnuploadedSignIns,
-    );
-    await _runStep(
-      '_drainSessionCodesWithRetry',
-      _drainSessionCodesWithRetry,
-    );
-    await _runStep(
-      '_drainCheckInsWithoutReload',
-      _drainCheckInsWithoutReload,
-    );
-    await _runStep(
-      '_refreshAfterSessionValidation',
-      _refreshAfterSessionValidation,
-    );
+    // Upload/compare on any network — do not gate on Firestore reachability probe.
+    // Captive portals and slow probes left queues stuck at Pending while urgent
+    // drains at the top had already succeeded.
+    if (AppConnectivity.instance.hasNetworkInterface) {
+      await _runStep(
+        'AttendanceRepository.syncUnuploadedSignIns',
+        AttendanceRepository.instance.syncUnuploadedSignIns,
+      );
+      await _runStep(
+        '_drainSessionCodesWithRetry',
+        _drainSessionCodesWithRetry,
+      );
+      await _runStep(
+        '_drainCheckInsWithoutReload',
+        _drainCheckInsWithoutReload,
+      );
+      await _runStep(
+        '_refreshAfterSessionValidation',
+        _refreshAfterSessionValidation,
+      );
+    } else {
+      return;
+    }
+    if (await _onlineForDrain()) {
+      await _runStep(
+        'correctMetadataMatchedAbsentRollForSignedInLists',
+        AttendanceRepository.instance
+            .correctMetadataMatchedAbsentRollForSignedInLists,
+      );
+    }
   }
 
   /// Re-runs session-code upload after session creates; stops when queue drains or stalls.
   static Future<void> _drainSessionCodesWithRetry() async {
     for (var pass = 0; pass < 3; pass++) {
       if (pass > 0 && AppConnectivity.instance.hasNetworkInterface) {
+        await PendingListCreateSync.drain();
         await PendingSessionCreateSync.drainUrgent();
         await PendingSessionCodeSync.drainUrgent();
         await Future<void>.delayed(Duration(milliseconds: 350 * pass));
@@ -162,7 +223,7 @@ class AttendanceOfflineSync {
       if (AppConnectivity.instance.hasNetworkInterface) {
         await AttendanceRepository.instance.prefetchSessionsForPendingCodes();
       }
-      await PendingSessionCodeSync.drainWithoutReload();
+      await PendingSessionCodeSync.drainUrgent();
       final after = (await PendingSessionCodeQueue.loadAll()).length;
       if (after == 0) return;
       if (after < before) continue;
@@ -200,10 +261,14 @@ class AttendanceOfflineSync {
     final counts = await countPendingWork();
     if (counts.total == 0) {
       await _runStep(
+        'correctMetadataMatchedAbsentRollForSignedInLists',
+        AttendanceRepository.instance
+            .correctMetadataMatchedAbsentRollForSignedInLists,
+      );
+      await _runStep(
         'finalizeGraceExpiredSessions',
         AttendanceRepository.instance.finalizeGraceExpiredSessions,
       );
-    } else {
     }
     await _runStep(
       'NotificationMaintenanceCoordinator.onAttendanceStoreUpdated',
@@ -309,6 +374,10 @@ class AttendanceOfflineSync {
         return;
       }
 
+      if (AppConnectivity.instance.hasNetworkInterface) {
+        await AttendanceRepository.instance.prepareOfflineCheckInDrain();
+      }
+
       final now = DateTime.now();
       final afterExpiryPurge = <PendingCheckInEntry>[];
       var droppedExpired = 0;
@@ -329,8 +398,6 @@ class AttendanceOfflineSync {
         return;
       }
 
-      var droppedInvalidTime = 0;
-      var droppedInvalidDistance = 0;
       var droppedDuplicate = 0;
       var droppedDeviceBlocked = 0;
       var droppedExpiredSession = 0;
@@ -346,16 +413,6 @@ class AttendanceOfflineSync {
             continue;
           }
           keep.add(e);
-          continue;
-        }
-        if (!isTimestampWithinSessionBounds(session, e.capturedAt)) {
-          droppedInvalidTime++;
-          await repo.clearLocalUnverifiedPresentForCheckIn(e.id, force: true);
-          continue;
-        }
-        if (!isPositionWithinSession(session, e.latitude, e.longitude)) {
-          droppedInvalidDistance++;
-          await repo.clearLocalUnverifiedPresentForCheckIn(e.id, force: true);
           continue;
         }
         final d = e.deviceId.trim();
@@ -385,26 +442,73 @@ class AttendanceOfflineSync {
 
         final sessionCodeRaw =
             normalizeSessionCodeInput(session.sessionCode);
-        final didUpload = await repo.trySubmitCheckInAttempt(
-          sessionId: e.sessionId,
-          studentId: e.studentId,
-          listId: e.listId,
-          course: e.course,
-          capturedAt: e.capturedAt,
-          latitude: e.latitude,
-          longitude: e.longitude,
-          deviceId: e.deviceId,
+        final canonicalId = repo.canonicalStudentIdForUpload(e.studentId);
+        final pendingEntry = canonicalId == e.studentId.trim()
+            ? e
+            : PendingCheckInEntry(
+                id: attendanceRecordIdForSessionStudent(e.sessionId, canonicalId),
+                sessionId: e.sessionId,
+                studentId: canonicalId,
+                listId: e.listId,
+                course: e.course,
+                capturedAt: e.capturedAt,
+                latitude: e.latitude,
+                longitude: e.longitude,
+                deviceId: e.deviceId,
+                pendingSince: e.pendingSince,
+              );
+        final outcome = await repo.submitStudentCheckInWithOfflineSupport(
+          pendingEntry.toAttendanceRecord(),
+          listIdOverride: e.listId,
           sessionCodeRaw: sessionCodeRaw,
         );
-        if (!didUpload) {
-          keep.add(e);
-        } else {
-          final pendingLocal = e.toAttendanceRecord();
-          if (!AttendanceStore.hasCheckedIn(e.sessionId, e.studentId)) {
-            AttendanceStore.addAttendanceRecordIfAbsent(pendingLocal);
-            repo.notifyAttendanceStoreUpdated();
-          }
-          uploadedPairs.add((sessionId: e.sessionId, studentId: e.studentId));
+        switch (outcome) {
+          case StudentOfflineCheckInOutcome.success:
+          case StudentOfflineCheckInOutcome.duplicate:
+            uploadedPairs.add((sessionId: e.sessionId, studentId: e.studentId));
+            break;
+          case StudentOfflineCheckInOutcome.submittedPendingVerification:
+            if (await repo.pendingCheckInHasServerEvidence(
+              entry: pendingEntry,
+              session: session,
+            )) {
+              uploadedPairs.add((sessionId: e.sessionId, studentId: e.studentId));
+            } else {
+              keep.add(pendingEntry);
+            }
+            break;
+          case StudentOfflineCheckInOutcome.queuedOffline:
+            keep.add(pendingEntry);
+            break;
+          case StudentOfflineCheckInOutcome.sessionMismatch:
+          case StudentOfflineCheckInOutcome.rejectedVerification:
+            if (AttendanceRepository.pendingCheckInMatchesSessionForCorrection(
+              e,
+              session,
+            )) {
+              final local = e.toAttendanceRecord();
+              AttendanceStore.updateAttendanceRecord(
+                AttendanceRecord(
+                  id: local.id,
+                  sessionId: local.sessionId,
+                  studentId: local.studentId,
+                  course: local.course,
+                  timestamp: local.timestamp,
+                  latitude: local.latitude,
+                  longitude: local.longitude,
+                  verified: true,
+                  present: true,
+                  deviceId: local.deviceId,
+                ),
+              );
+              repo.notifyAttendanceStoreUpdated();
+            }
+            keep.add(e);
+            break;
+          case StudentOfflineCheckInOutcome.deviceBlocked:
+            droppedDeviceBlocked++;
+            await repo.clearLocalUnverifiedPresentForCheckIn(e.id, force: true);
+            break;
         }
       }
       await PendingCheckInQueue.saveAll(keep);
@@ -419,16 +523,12 @@ class AttendanceOfflineSync {
         );
         repo.notifyAttendanceStoreUpdated();
       }
-      if (droppedInvalidTime > 0 ||
-          droppedInvalidDistance > 0 ||
-          droppedDuplicate > 0 ||
+      if (droppedDuplicate > 0 ||
           droppedDeviceBlocked > 0 ||
           droppedExpired > 0 ||
           droppedExpiredSession > 0) {
         debugPrint(
           'AttendanceOfflineSync: dropped '
-          '$droppedInvalidTime invalid-time, '
-          '$droppedInvalidDistance out-of-radius, '
           '$droppedDuplicate duplicate, '
           '$droppedDeviceBlocked device-blocked, '
           '$droppedExpired+$droppedExpiredSession expired pending item(s).',

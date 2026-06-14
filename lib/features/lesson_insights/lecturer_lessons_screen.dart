@@ -30,7 +30,26 @@ class _LecturerLessonsScreenState extends State<LecturerLessonsScreen> {
   @override
   void initState() {
     super.initState();
+    AttendanceRepository.instance.addListener(_onStoreChanged);
     unawaited(_reload());
+  }
+
+  @override
+  void dispose() {
+    AttendanceRepository.instance.removeListener(_onStoreChanged);
+    super.dispose();
+  }
+
+  void _onStoreChanged() {
+    if (!mounted || _loading) return;
+    setState(() {
+      _insights = LessonInsightsService.insightsInPeriod(
+        _pending,
+        filter: _filter,
+        anchor: _anchor,
+        lecturerScopeOnly: true,
+      );
+    });
   }
 
   Future<void> _reload() async {

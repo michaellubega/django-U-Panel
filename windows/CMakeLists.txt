@@ -1,11 +1,7 @@
 # Project-level configuration.
 cmake_minimum_required(VERSION 3.14)
-
-# Flutter ships a 64-bit Windows engine only (Intel/AMD x64, not 32-bit x86).
-if(CMAKE_GENERATOR MATCHES "Visual Studio" AND NOT CMAKE_GENERATOR_PLATFORM)
-  set(CMAKE_GENERATOR_PLATFORM "x64" CACHE STRING "Windows target CPU (x64)" FORCE)
-endif()
-
+# Firebase C++ SDK still declares cmake_minimum_required(3.1); CMake 4.x errors on that.
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
 project(u_panel LANGUAGES CXX)
 
 # The name of the executable created for the application. Change this to change
@@ -48,6 +44,7 @@ function(APPLY_STANDARD_SETTINGS TARGET)
   target_compile_options(${TARGET} PRIVATE /W4 /WX /wd"4100")
   target_compile_options(${TARGET} PRIVATE /EHsc)
   target_compile_definitions(${TARGET} PRIVATE "_HAS_EXCEPTIONS=0")
+  target_compile_definitions(${TARGET} PRIVATE "_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS")
   target_compile_definitions(${TARGET} PRIVATE "$<$<CONFIG:Debug>:_DEBUG>")
 endfunction()
 

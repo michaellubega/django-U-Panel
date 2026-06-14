@@ -131,20 +131,31 @@ class _AttendanceListRollReportScreenState
           ),
         ],
       ),
-      body: roll.students.isEmpty
-          ? Center(
-              child: Padding(
-                padding: const EdgeInsets.all(24),
-                child: Text(
-                  'No students on this list yet.',
-                  textAlign: TextAlign.center,
-                  style: theme.textTheme.bodyLarge,
-                ),
-              ),
-            )
-          : ListView(
-              padding: const EdgeInsets.all(16),
-              children: [
+      body: RefreshIndicator(
+        onRefresh: _refresh,
+        child: roll.students.isEmpty
+            ? ListView(
+                physics: kRefreshScrollPhysics,
+                children: [
+                  SizedBox(
+                    height: MediaQuery.sizeOf(context).height * 0.35,
+                    child: Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(24),
+                        child: Text(
+                          'No students on this list yet.',
+                          textAlign: TextAlign.center,
+                          style: theme.textTheme.bodyLarge,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              )
+            : ListView(
+                physics: kRefreshScrollPhysics,
+                padding: const EdgeInsets.all(16),
+                children: [
                 _RollSummaryHeader(roll: roll),
                 const SizedBox(height: 16),
                 Card(
@@ -239,6 +250,7 @@ class _AttendanceListRollReportScreenState
                 ),
               ],
             ),
+      ),
     );
   }
 }

@@ -1,28 +1,29 @@
 import 'check_in_validation.dart';
+import 'offline_capture_trust.dart';
 import 'models/attendance_models.dart';
 import 'data/pending_check_in_queue.dart';
 import 'data/pending_retention.dart';
 import 'data/pending_session_code_queue.dart';
 import 'data/pending_session_create_queue.dart';
+import 'student_session_grace.dart';
 
 /// Roll cell labels shown in attendance tables.
 const kRollLabelPresent = 'Present';
 const kRollLabelAbsent = 'Absent';
 const kRollLabelPending = 'Pending';
 
-/// True when the lecturer session is missing code, time bounds, or geofence.
+/// True when the lecturer session is missing a valid join code.
 bool sessionStudentCheckInMetadataIncomplete(AttendanceSession session) {
   final code = normalizeSessionCodeInput(session.sessionCode);
   if (!isValidJoinCodeFormat(code)) return true;
-  if (session.remoteLearning) return false;
-  return !isSessionGeofenceConfigured(session);
+  return false;
 }
 
 /// Pending only while student evidence is missing code, time, GPS, or session link.
 bool pendingCheckInMissingMetadataForPending(PendingCheckInEntry entry) {
   if (entry.sessionId.trim().isEmpty) return true;
   final session = AttendanceStore.sessionById(entry.sessionId);
-  if (session?.remoteLearning == true) return false;
+  if (session != null && sessionSkipsLocationCheck(session)) return false;
   if (!isValidCheckInCoordinates(entry.latitude, entry.longitude)) return true;
   return false;
 }
@@ -34,8 +35,8 @@ bool pendingSessionCodeMissingMetadataForPending(PendingSessionCodeEntry entry) 
   }
   if (entry.sessionId == null || entry.sessionId!.trim().isEmpty) return true;
   final session = AttendanceStore.sessionById(entry.sessionId!);
-  if (session?.remoteLearning != true &&
-      !isValidCheckInCoordinates(entry.latitude, entry.longitude)) {
+  if (session != null && sessionSkipsLocationCheck(session)) return false;
+  if (!isValidCheckInCoordinates(entry.latitude, entry.longitude)) {
     return true;
   }
   return false;
@@ -48,7 +49,7 @@ bool attendanceRecordHasCompleteCheckInMetadata(
   AttendanceSession session,
 ) {
   if (record.sessionId.trim().isEmpty) return false;
-  if (session.remoteLearning) return true;
+  if (sessionSkipsLocationCheck(session)) return true;
   return isValidCheckInCoordinates(record.latitude, record.longitude);
 }
 
@@ -57,19 +58,24 @@ class RollPendingContext {
   const RollPendingContext({
     this.sessionIdsAwaitingUpload = const {},
     this.pendingPresentStudentIdsBySession = const {},
+    this.offlineTrustedPresentStudentIdsBySession = const {},
     this.sessionsWithIncompleteMetadata = const {},
   });
 
   const RollPendingContext.empty()
       : sessionIdsAwaitingUpload = const {},
         pendingPresentStudentIdsBySession = const {},
+        offlineTrustedPresentStudentIdsBySession = const {},
         sessionsWithIncompleteMetadata = const {};
 
   /// Sessions started offline that are not on Firestore yet.
   final Set<String> sessionIdsAwaitingUpload;
 
-  /// Students waiting on incomplete check-in metadata per session.
+  /// Students with any unexpired pending check-in / session-code work per session.
   final Map<String, Set<String>> pendingPresentStudentIdsBySession;
+
+  /// Offline captures with matching session/code — count as Present on roll.
+  final Map<String, Set<String>> offlineTrustedPresentStudentIdsBySession;
 
   /// Sessions whose lecturer-side metadata is not ready for check-in.
   final Set<String> sessionsWithIncompleteMetadata;
@@ -81,6 +87,7 @@ class RollPendingContext {
 
     final awaitingUpload = creates.map((e) => e.sessionId).toSet();
     final pendingBySession = <String, Set<String>>{};
+    final offlineTrustedBySession = <String, Set<String>>{};
     final incompleteSessions = <String>{};
 
     for (final s in AttendanceStore.sessions) {
@@ -94,29 +101,66 @@ class RollPendingContext {
       (pendingBySession[sessionId] ??= <String>{}).add(studentId);
     }
 
+    void addOfflineTrustedPresent(String sessionId, String studentId) {
+      if (sessionId.isEmpty || studentId.isEmpty) return;
+      (offlineTrustedBySession[sessionId] ??= <String>{}).add(studentId);
+    }
+
     for (final e in checkIns) {
-      if (!pendingCheckInMissingMetadataForPending(e)) continue;
+      if (PendingRetention.isExpired(e.pendingSince, DateTime.now())) continue;
+      if (e.sessionId.trim().isEmpty || e.studentId.trim().isEmpty) continue;
       final session = AttendanceStore.sessionById(e.sessionId);
       if (session != null &&
-          e.listId.isNotEmpty &&
-          e.listId != session.listId) {
-        continue;
+          offlineOrMetadataQueuedCheckInTrustsPresent(e, session)) {
+        addOfflineTrustedPresent(e.sessionId, e.studentId);
       }
       addPending(e.sessionId, e.studentId);
     }
 
     for (final e in pendingCodes) {
-      if (!pendingSessionCodeMissingMetadataForPending(e)) continue;
-      final sid = e.sessionId?.trim();
-      if (sid == null || sid.isEmpty) continue;
+      if (PendingRetention.isExpired(e.pendingSince, DateTime.now())) continue;
+      if (e.status == PendingSessionCodeStatus.invalidOrExpired) continue;
+      if (e.status == PendingSessionCodeStatus.deviceBlocked) continue;
       final student = AttendanceStore.findStudentByReg(e.registrationNumber);
       if (student == null) continue;
-      addPending(sid, student.id);
+      final sid = e.sessionId?.trim();
+      if (sid != null && sid.isNotEmpty) {
+        addPending(sid, student.id);
+        final linked = AttendanceStore.sessionById(sid);
+        if (linked != null &&
+            offlineQueuedSessionCodeTrustsPresent(
+              entry: e,
+              session: linked,
+              studentRegistrationNumber: student.registrationNumber,
+            )) {
+          addOfflineTrustedPresent(sid, student.id);
+        }
+        continue;
+      }
+      for (final s in AttendanceStore.sessions) {
+        if (offlineQueuedSessionCodeTrustsPresent(
+          entry: e,
+          session: s,
+          studentRegistrationNumber: student.registrationNumber,
+        )) {
+          addOfflineTrustedPresent(s.id, student.id);
+          addPending(s.id, student.id);
+          continue;
+        }
+        if (normalizeSessionCodeInput(e.sessionCodeRaw) !=
+            normalizeSessionCodeInput(s.sessionCode)) {
+          continue;
+        }
+        if (!isTimestampWithinSessionBounds(s, e.capturedAt)) continue;
+        if (!pendingReplayLocationOk(s, e.latitude, e.longitude)) continue;
+        addPending(s.id, student.id);
+      }
     }
 
     return RollPendingContext(
       sessionIdsAwaitingUpload: awaitingUpload,
       pendingPresentStudentIdsBySession: pendingBySession,
+      offlineTrustedPresentStudentIdsBySession: offlineTrustedBySession,
       sessionsWithIncompleteMetadata: incompleteSessions,
     );
   }
@@ -128,10 +172,16 @@ class RollPendingContext {
       pendingPresentStudentIdsBySession[sessionId]?.contains(studentId) ??
       false;
 
+  bool studentHasOfflineTrustedPresent(String sessionId, String studentId) =>
+      offlineTrustedPresentStudentIdsBySession[sessionId]?.contains(studentId) ??
+      false;
+
   bool sessionMetadataIncomplete(String sessionId) =>
       sessionsWithIncompleteMetadata.contains(sessionId);
 }
 
+/// Time-only cap (7 days after session end). Prefer [studentSessionGraceExpired]
+/// for per-student roll decisions.
 bool rollGracePeriodExpired(AttendanceSession session, DateTime now) =>
     PendingRetention.sessionGraceExpired(session.endTime, now);
 
@@ -163,6 +213,13 @@ String? rollCellLabelForStudentSession({
     return kRollLabelPresent;
   }
 
+  // Matching offline evidence counts as Present before generic Pending states.
+  if (pending.studentHasOfflineTrustedPresent(session.id, studentId)) {
+    return kRollLabelPresent;
+  }
+
+  // Pending offline evidence outranks a premature absent/backfill row (see
+  // docs/U_PANEL_ALGORITHMS.md §1.1).
   if (pending.sessionAwaitingUpload(session.id) ||
       pending.sessionMetadataIncomplete(session.id)) {
     return kRollLabelPending;
@@ -172,7 +229,7 @@ String? rollCellLabelForStudentSession({
     return kRollLabelPending;
   }
 
-  if (best != null) {
+  if (best != null && !best.present) {
     if (!session.countsTowardRollStats) return null;
     return kRollLabelAbsent;
   }
@@ -180,7 +237,13 @@ String? rollCellLabelForStudentSession({
   if (!session.countsTowardRollStats) return null;
 
   if (missedBeforeJoin) return kRollLabelAbsent;
-  if (!rollGracePeriodExpired(session, at)) {
+  if (!studentSessionGraceExpired(
+    session: session,
+    studentId: studentId,
+    listId: session.listId,
+    recordsForStudent: recordsForStudent,
+    now: at,
+  )) {
     return null;
   }
   return kRollLabelAbsent;
@@ -289,8 +352,27 @@ RollRateCounts rollRateCountsForStudentOnList({
     if (!sess.countsTowardRollStats) continue;
     final rec = recordForSession(sess.id);
     if (rec != null) {
+      if (!rec.present &&
+          (pending.studentHasOfflineTrustedPresent(sess.id, studentId) ||
+              pending.studentHasPendingPresent(sess.id, studentId) ||
+              pending.sessionAwaitingUpload(sess.id) ||
+              pending.sessionMetadataIncomplete(sess.id))) {
+        if (pending.studentHasOfflineTrustedPresent(sess.id, studentId)) {
+          total++;
+          present++;
+          countedSessionIds.add(sess.id);
+          continue;
+        }
+        continue;
+      }
       total++;
       if (rec.present) present++;
+      countedSessionIds.add(sess.id);
+      continue;
+    }
+    if (pending.studentHasOfflineTrustedPresent(sess.id, studentId)) {
+      total++;
+      present++;
       countedSessionIds.add(sess.id);
       continue;
     }
@@ -303,7 +385,14 @@ RollRateCounts rollRateCountsForStudentOnList({
     }
     final missedBeforeJoin =
         enrolledAt != null && sess.endTime.isBefore(enrolledAt);
-    if (!missedBeforeJoin && !rollGracePeriodExpired(sess, at)) {
+    if (!missedBeforeJoin &&
+        !studentSessionGraceExpired(
+          session: sess,
+          studentId: studentId,
+          listId: listId,
+          recordsForStudent: recordsForStudent,
+          now: at,
+        )) {
       continue;
     }
     total++;
@@ -332,4 +421,112 @@ class RollRateCounts {
 
   int get percentRounded =>
       total <= 0 ? 0 : ((100 * present) / total).round().clamp(0, 100);
+}
+
+/// Live session uptake: present vs roster (and walk-ins with a roll row).
+class LiveSessionCheckInSnapshot {
+  const LiveSessionCheckInSnapshot({
+    required this.enrolled,
+    required this.present,
+    required this.absent,
+    required this.pending,
+  });
+
+  final int enrolled;
+  final int present;
+  final int absent;
+  final int pending;
+
+  static const empty = LiveSessionCheckInSnapshot(
+    enrolled: 0,
+    present: 0,
+    absent: 0,
+    pending: 0,
+  );
+
+  int get percentCheckedIn => enrolled <= 0
+      ? 0
+      : ((100 * present) / enrolled).round().clamp(0, 100);
+
+  double get progress =>
+      enrolled <= 0 ? 0 : (present / enrolled).clamp(0.0, 1.0);
+
+  String get subtitle {
+    if (enrolled <= 0) return 'No students on roster yet';
+    return '$present of $enrolled checked in';
+  }
+
+  LiveSessionCheckInSnapshot mergeWithRtd(SessionRollStatsSnapshot? rtd) {
+    if (rtd == null) return this;
+    return LiveSessionCheckInSnapshot(
+      enrolled: enrolled > rtd.enrolled ? enrolled : rtd.enrolled,
+      present: present > rtd.present ? present : rtd.present,
+      absent: absent > rtd.absent ? absent : rtd.absent,
+      pending: pending > rtd.pending ? pending : rtd.pending,
+    );
+  }
+}
+
+/// Instant local roll uptake for a running session; merges RTD when available.
+LiveSessionCheckInSnapshot liveSessionCheckInSnapshot({
+  required AttendanceSession session,
+  required AttendanceList list,
+  RollPendingContext pending = const RollPendingContext.empty(),
+  DateTime? now,
+}) {
+  final sessionId = session.id.trim();
+  final studentIds = <String>{
+    ...AttendanceStore.studentIdsSignedIntoList(list.id),
+    ...AttendanceStore.recordsForSession(sessionId).map((r) => r.studentId),
+  };
+
+  if (studentIds.isEmpty) {
+    final rtdOnly = AttendanceStore.sessionRollStats(sessionId);
+    if (rtdOnly != null && rtdOnly.enrolled > 0) {
+      return LiveSessionCheckInSnapshot(
+        enrolled: rtdOnly.enrolled,
+        present: rtdOnly.present,
+        absent: rtdOnly.absent,
+        pending: rtdOnly.pending,
+      );
+    }
+    return LiveSessionCheckInSnapshot.empty;
+  }
+
+  var present = 0;
+  var absent = 0;
+  var pendingCount = 0;
+
+  for (final sid in studentIds) {
+    final records = AttendanceStore.attendanceRecords
+        .where((r) => r.studentId == sid)
+        .toList();
+    final label = rollCellLabelForStudentSession(
+      session: session,
+      studentId: sid,
+      recordsForStudent: records,
+      pending: pending,
+      now: now,
+    );
+    switch (label) {
+      case kRollLabelPresent:
+        present++;
+        break;
+      case kRollLabelAbsent:
+        absent++;
+        break;
+      case kRollLabelPending:
+        pendingCount++;
+        break;
+      default:
+        break;
+    }
+  }
+
+  return LiveSessionCheckInSnapshot(
+    enrolled: studentIds.length,
+    present: present,
+    absent: absent,
+    pending: pendingCount,
+  ).mergeWithRtd(AttendanceStore.sessionRollStats(sessionId));
 }

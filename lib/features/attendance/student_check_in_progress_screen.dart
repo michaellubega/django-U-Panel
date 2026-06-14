@@ -33,6 +33,10 @@ class StudentCheckInProgressResult {
   final bool serverVerified;
 }
 
+enum _CheckInUiPhase { processing, result, error }
+
+enum _CheckInResultKind { present, pendingSync, offlineRecorded }
+
 /// Animated pipeline: session time, GPS, distance, then Firestore or offline queue.
 class StudentCheckInProgressScreen extends StatefulWidget {
   const StudentCheckInProgressScreen({
@@ -58,16 +62,32 @@ class StudentCheckInProgressScreen extends StatefulWidget {
 }
 
 class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScreen>
-    with SingleTickerProviderStateMixin {
+    with TickerProviderStateMixin {
+  static const _stageLabels = <String>[
+    'Checking session time…',
+    'Confirming your location…',
+    'Verifying you are at class…',
+    'Saving your attendance…',
+  ];
+
   late final AnimationController _pulse;
+  late final AnimationController _successController;
+  late final Animation<double> _successScale;
   late final Future<String> _deviceIdFuture;
-  String _statusLine = 'Preparing…';
+
+  _CheckInUiPhase _phase = _CheckInUiPhase.processing;
+  int _stageIndex = 0;
   String? _errorMessage;
-  bool _done = false;
   bool _resolvingLocation = false;
   bool _locationServiceDisabled = false;
   bool _permissionBlocked = false;
+  _CheckInResultKind? _resultKind;
+  StudentCheckInProgressResult? _pendingResult;
+  DateTime? _lastStageAdvancedAt;
+  bool _pipelineLikelyOnline = true;
+  bool _pipelineRunning = false;
 
+  static const Duration _stageMinGap = Duration(milliseconds: 550);
   static const Duration _linkedSessionLocationMaxAge = Duration(minutes: 8);
 
   /// Resolves the session to validate against, refreshing when the store was
@@ -93,34 +113,86 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
       vsync: this,
       duration: const Duration(milliseconds: 1200),
     )..repeat(reverse: true);
+    _successController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 520),
+    );
+    _successScale = Tween<double>(begin: 0.35, end: 1.0).animate(
+      CurvedAnimation(parent: _successController, curve: Curves.elasticOut),
+    );
     WidgetsBinding.instance.addPostFrameCallback((_) => _runPipeline());
   }
 
   @override
   void dispose() {
     _pulse.dispose();
+    _successController.dispose();
     super.dispose();
   }
 
-  void _setStage(String line) {
+  Future<void> _advanceToStage(int index) async {
+    if (!mounted) return;
+    final now = DateTime.now();
+    if (_lastStageAdvancedAt != null) {
+      final elapsed = now.difference(_lastStageAdvancedAt!);
+      if (elapsed < _stageMinGap) {
+        await Future<void>.delayed(_stageMinGap - elapsed);
+        if (!mounted) return;
+      }
+    }
+    _lastStageAdvancedAt = DateTime.now();
+    setState(() => _stageIndex = index.clamp(0, _stageLabels.length - 1));
+  }
+
+  Future<void> _completeStagesBeforeResult() async {
+    if (!mounted) return;
+    setState(() => _stageIndex = _stageLabels.length);
+    await Future<void>.delayed(const Duration(milliseconds: 450));
+  }
+
+  void _showError(String message) {
     if (!mounted) return;
     setState(() {
-      _statusLine = line;
-      _errorMessage = null;
+      _phase = _CheckInUiPhase.error;
+      _errorMessage = message;
+      _resolvingLocation = false;
     });
+  }
+
+  Future<void> _showResult({
+    required _CheckInResultKind kind,
+    required StudentCheckInProgressResult result,
+  }) async {
+    await _completeStagesBeforeResult();
+    if (!mounted) return;
+    _successController.reset();
+    setState(() {
+      _phase = _CheckInUiPhase.result;
+      _resultKind = kind;
+      _pendingResult = result;
+    });
+    await _successController.forward();
+  }
+
+  void _finish() {
+    final result = _pendingResult;
+    if (result != null && mounted) {
+      Navigator.of(context).pop(result);
+    }
   }
 
   Future<({double latitude, double longitude})?> _resolveCoordinates(
     AttendanceSession session, {
     required bool likelyOnline,
   }) async {
+    await _advanceToStage(1);
+
     if (session.remoteLearning) {
       setState(() {
         _resolvingLocation = true;
         _locationServiceDisabled = false;
         _permissionBlocked = false;
       });
-      _setStage('Confirming location…');
       final gps = await acquireCurrentGpsPosition(
         timeLimit: const Duration(seconds: 5),
       );
@@ -135,7 +207,7 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
     if (!await isDeviceLocationServiceEnabled()) {
       setState(() {
         _locationServiceDisabled = true;
-        _statusLine = 'Turn on location to check in';
+        _phase = _CheckInUiPhase.error;
       });
       return null;
     }
@@ -162,7 +234,6 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
       _locationServiceDisabled = false;
       _permissionBlocked = false;
     });
-    _setStage('Confirming your location…');
 
     if (StudentLocationPriming.instance.resolving) {
       await StudentLocationPriming.instance.acquireFreshForCheckIn();
@@ -189,7 +260,7 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
     if (gps.locationServiceDisabled) {
       setState(() {
         _locationServiceDisabled = true;
-        _statusLine = 'Turn on location to check in';
+        _phase = _CheckInUiPhase.error;
       });
       return null;
     }
@@ -199,6 +270,7 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
         _errorMessage = gps.errorMessage ??
             'Could not read your current location. Turn on GPS and try again.';
         _permissionBlocked = gps.permissionBlocked;
+        _phase = _CheckInUiPhase.error;
       });
       return null;
     }
@@ -207,38 +279,58 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
   }
 
   Future<void> _runPipeline() async {
+    if (_pipelineRunning) return;
+    _pipelineRunning = true;
+    try {
+      await _runPipelineBody();
+    } finally {
+      _pipelineRunning = false;
+    }
+  }
+
+  Future<void> _runPipelineBody() async {
     final captureIntentAt = DateTime.now();
     final likelyOnline = AppConnectivity.instance.isOnline ||
         AppConnectivity.instance.hasNetworkInterface;
+    _pipelineLikelyOnline = likelyOnline;
+
+    setState(() {
+      _phase = _CheckInUiPhase.processing;
+      _errorMessage = null;
+      _resultKind = null;
+      _pendingResult = null;
+      _stageIndex = 0;
+      _lastStageAdvancedAt = null;
+      _locationServiceDisabled = false;
+      _permissionBlocked = false;
+      _resolvingLocation = false;
+    });
 
     AttendanceSession? session =
         widget.session.isOpenForCheckIn ? widget.session : null;
     session ??= await _resolveSessionForPipeline();
     if (!mounted) return;
     if (session == null || !session.isOpenForCheckIn) {
-      setState(() {
-        _errorMessage =
-            'This session is no longer active. Ask your lecturer for a new code.';
-      });
+      _showError(
+        'This session is no longer active. Ask your lecturer for a new code.',
+      );
+      return;
+    }
+
+    await _advanceToStage(0);
+    if (!isTimestampWithinSessionBounds(session, captureIntentAt)) {
+      _showError(
+        'Check-in is only allowed during the scheduled session window.',
+      );
       return;
     }
 
     final coordsFuture =
         _resolveCoordinates(session, likelyOnline: likelyOnline);
-
-    _setStage('Checking session time…');
-    if (!isTimestampWithinSessionBounds(session, captureIntentAt)) {
-      setState(() {
-        _errorMessage =
-            'Check-in is only allowed during the scheduled session window.';
-      });
-      return;
-    }
-
     final coords = await coordsFuture;
     if (!mounted || coords == null) return;
 
-    _setStage('Checking your location…');
+    await _advanceToStage(2);
     final verification = verifyLinkedSessionCheckIn(
       session: session,
       at: captureIntentAt,
@@ -246,10 +338,10 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
       longitude: coords.longitude,
     );
     if (!verification.passed) {
-      setState(() {
-        _errorMessage = verification.failureMessage ??
-            'Check-in could not be verified for this session.';
-      });
+      _showError(
+        verification.failureMessage ??
+            'Check-in could not be verified for this session.',
+      );
       return;
     }
     if (!mounted) return;
@@ -257,10 +349,9 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
     final installDeviceId = await _deviceIdFuture;
     if (!mounted) return;
     if (installDeviceId.trim().isEmpty) {
-      setState(() {
-        _errorMessage =
-            'Could not identify this device. Attendance cannot be saved.';
-      });
+      _showError(
+        'Could not identify this device. Attendance cannot be saved.',
+      );
       return;
     }
     if (AttendanceStore.hasPresentCheckInForDevice(
@@ -274,11 +365,9 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
           deviceId: installDeviceId,
           sessionCodeRaw: session.sessionCode,
         )) {
-      setState(() {
-        _errorMessage = userMessageForCheckInOutcome(
-          StudentOfflineCheckInOutcome.deviceBlocked,
-        );
-      });
+      _showError(
+        userMessageForCheckInOutcome(StudentOfflineCheckInOutcome.deviceBlocked),
+      );
       return;
     }
     if (AttendanceStore.isPresentForSession(session.id, widget.student.id)) {
@@ -287,14 +376,19 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
         widget.student.id,
       );
       if (row?.verified == true) {
-        setState(() {
-          _errorMessage = 'You already checked in for this session.';
-        });
+        await _showResult(
+          kind: _CheckInResultKind.present,
+          result: const StudentCheckInProgressResult(
+            success: true,
+            wasQueued: false,
+            serverVerified: true,
+          ),
+        );
         return;
       }
     }
 
-    _setStage('Saving attendance…');
+    await _advanceToStage(3);
 
     if (likelyOnline) {
       unawaited(
@@ -337,23 +431,17 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
               studentId: widget.student.id,
             ) ||
             AttendanceStore.isPresentForSession(session.id, widget.student.id)) {
-          setState(() {
-            _statusLine =
-                'Check-in submitted. Syncing official record from server…';
-            _done = true;
-          });
-          if (mounted) {
-            Navigator.of(context).pop(const StudentCheckInProgressResult(
+          await _showResult(
+            kind: _CheckInResultKind.pendingSync,
+            result: const StudentCheckInProgressResult(
               success: true,
               wasQueued: false,
               serverVerified: false,
-            ));
-          }
+            ),
+          );
           return;
         }
-        setState(() {
-          _errorMessage = userMessageForCheckInOutcome(outcome);
-        });
+        _showError(userMessageForCheckInOutcome(outcome));
         return;
       case StudentOfflineCheckInOutcome.sessionMismatch:
       case StudentOfflineCheckInOutcome.rejectedVerification:
@@ -374,57 +462,44 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
             )) {
           resolved = StudentOfflineCheckInOutcome.deviceBlocked;
         }
-        setState(() {
-          _errorMessage = userMessageForCheckInOutcome(
+        _showError(
+          userMessageForCheckInOutcome(
             resolved,
             rejectionReason: reason,
-          );
-        });
+          ),
+        );
         return;
       case StudentOfflineCheckInOutcome.duplicate:
-        setState(() {
-          _errorMessage = userMessageForCheckInOutcome(outcome);
-        });
+        _showError(userMessageForCheckInOutcome(outcome));
         return;
       case StudentOfflineCheckInOutcome.success:
-        setState(() {
-          _statusLine = 'Attendance verified and saved.';
-          _done = true;
-        });
-        if (mounted) {
-          Navigator.of(context).pop(const StudentCheckInProgressResult(
+        await _showResult(
+          kind: _CheckInResultKind.present,
+          result: const StudentCheckInProgressResult(
             success: true,
             wasQueued: false,
             serverVerified: true,
-          ));
-        }
+          ),
+        );
         return;
       case StudentOfflineCheckInOutcome.submittedPendingVerification:
-        setState(() {
-          _statusLine =
-              'Check-in submitted. Syncing official record from server…';
-          _done = true;
-        });
-        if (mounted) {
-          Navigator.of(context).pop(const StudentCheckInProgressResult(
+        await _showResult(
+          kind: _CheckInResultKind.pendingSync,
+          result: const StudentCheckInProgressResult(
             success: true,
             wasQueued: false,
             serverVerified: false,
-          ));
-        }
+          ),
+        );
         return;
       case StudentOfflineCheckInOutcome.queuedOffline:
-        setState(() {
-          _statusLine =
-              'Saved as pending on this device. Will verify when online (up to 7 days).';
-          _done = true;
-        });
-        if (mounted) {
-          Navigator.of(context).pop(const StudentCheckInProgressResult(
+        await _showResult(
+          kind: _CheckInResultKind.offlineRecorded,
+          result: const StudentCheckInProgressResult(
             success: true,
             wasQueued: true,
-          ));
-        }
+          ),
+        );
         return;
     }
   }
@@ -434,113 +509,394 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
     final theme = Theme.of(context);
     final listLabel =
         '${widget.list.whoTaught} · ${widget.list.room}'.trim();
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Check-in'),
-        bottom: listLabel.isEmpty
-            ? null
-            : PreferredSize(
-                preferredSize: const Size.fromHeight(22),
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
-                  child: Text(
-                    listLabel,
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: AppTheme.textSecondary,
+    return PopScope(
+      canPop: _phase != _CheckInUiPhase.processing,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Check-in'),
+          automaticallyImplyLeading: _phase != _CheckInUiPhase.processing,
+          bottom: listLabel.isEmpty
+              ? null
+              : PreferredSize(
+                  preferredSize: const Size.fromHeight(22),
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+                    child: Text(
+                      listLabel,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: AppTheme.textSecondary,
+                      ),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
                     ),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
-              ),
-      ),
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
+        ),
+        body: SafeArea(
           child: AnimatedSwitcher(
-            duration: const Duration(milliseconds: 350),
-            child: _errorMessage != null || _locationServiceDisabled
-                ? Column(
-                    key: const ValueKey('err'),
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      if (_resolvingLocation || _locationServiceDisabled)
-                        LocationResolvingPanel(
-                          resolving: _resolvingLocation,
-                          locationServiceDisabled: _locationServiceDisabled,
-                          permissionBlocked: _permissionBlocked,
-                          errorMessage: _errorMessage,
-                          onRetry: _runPipeline,
-                        )
-                      else ...[
-                        const Icon(Icons.error_outline_rounded,
-                            size: 56, color: AppTheme.error),
-                        const SizedBox(height: 20),
-                        Text(
-                          _errorMessage!,
-                          style: theme.textTheme.bodyLarge,
-                          textAlign: TextAlign.center,
-                        ),
-                      ],
-                      const SizedBox(height: 28),
-                      FilledButton(
-                        onPressed: () =>
-                            Navigator.of(context).pop<StudentCheckInProgressResult>(
-                              null,
-                            ),
-                        child: const Text('Back'),
-                      ),
-                    ],
-                  )
-                : Column(
-                    key: ValueKey(_done ? 'done' : 'run'),
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      FadeTransition(
-                        opacity: Tween<double>(begin: 0.55, end: 1.0).animate(
-                          CurvedAnimation(
-                            parent: _pulse,
-                            curve: Curves.easeInOut,
-                          ),
-                        ),
-                        child: Icon(
-                          _done ? Icons.check_circle_rounded : Icons.sensors_rounded,
-                          size: 72,
-                          color: _done ? AppTheme.success : AppTheme.primary,
-                        ),
-                      ),
-                      const SizedBox(height: 28),
-                      Text(
-                        _statusLine,
-                        textAlign: TextAlign.center,
-                        style: theme.textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      if (_resolvingLocation) ...[
-                        const SizedBox(height: 16),
-                        LocationResolvingPanel(
-                          resolving: true,
-                          locationServiceDisabled: _locationServiceDisabled,
-                          onRetry: _runPipeline,
-                        ),
-                      ],
-                      if (!_done && (_resolvingLocation || !_done)) ...[
-                        const SizedBox(height: 20),
-                        const Center(
-                          child: SizedBox(
-                            width: 36,
-                            height: 36,
-                            child: CircularProgressIndicator(strokeWidth: 3),
-                          ),
-                        ),
-                      ],
-                    ],
-                  ),
+            duration: const Duration(milliseconds: 360),
+            switchInCurve: Curves.easeOutCubic,
+            switchOutCurve: Curves.easeInCubic,
+            child: switch (_phase) {
+              _CheckInUiPhase.processing => _buildProcessing(
+                  key: const ValueKey('processing'),
+                  theme: theme,
+                ),
+              _CheckInUiPhase.result => _buildResult(
+                  key: const ValueKey('result'),
+                  theme: theme,
+                ),
+              _CheckInUiPhase.error => _buildError(
+                  key: const ValueKey('error'),
+                  theme: theme,
+                ),
+            },
           ),
         ),
       ),
+    );
+  }
+
+  Widget _buildProcessing({required Key key, required ThemeData theme}) {
+    final progress = _stageIndex >= _stageLabels.length
+        ? 1.0
+        : (_stageIndex + 1) / _stageLabels.length;
+    return LayoutBuilder(
+      key: key,
+      builder: (context, constraints) {
+        final compact = constraints.maxHeight < 520;
+        final pad = compact ? 16.0 : 24.0;
+        final iconSize = compact ? 56.0 : 72.0;
+        final minBodyHeight =
+            (constraints.maxHeight - pad * 2).clamp(0.0, double.infinity);
+        return SingleChildScrollView(
+          padding: EdgeInsets.all(pad),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minHeight: minBodyHeight),
+            child: Align(
+              alignment: Alignment.center,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                FadeTransition(
+                  opacity: Tween<double>(begin: 0.55, end: 1.0).animate(
+                    CurvedAnimation(parent: _pulse, curve: Curves.easeInOut),
+                  ),
+                  child: Icon(
+                    Icons.sensors_rounded,
+                    size: iconSize,
+                    color: AppTheme.primary,
+                  ),
+                ),
+                SizedBox(height: compact ? 16 : 24),
+                Text(
+                  'Checking you in',
+                  textAlign: TextAlign.center,
+                  style: theme.textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Session ${widget.session.sessionCode}',
+                  textAlign: TextAlign.center,
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: AppTheme.textSecondary,
+                  ),
+                ),
+                SizedBox(height: compact ? 16 : 28),
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(4),
+                  child: TweenAnimationBuilder<double>(
+                    tween: Tween<double>(begin: 0, end: progress),
+                    duration: const Duration(milliseconds: 420),
+                    curve: Curves.easeOutCubic,
+                    builder: (context, value, _) {
+                      return LinearProgressIndicator(
+                        minHeight: 6,
+                        value: value,
+                        backgroundColor: AppTheme.softGrey,
+                        color: AppTheme.primary,
+                      );
+                    },
+                  ),
+                ),
+                SizedBox(height: compact ? 14 : 22),
+                _CheckInStageList(
+                  labels: _stageLabels,
+                  activeIndex: _stageIndex,
+                  compact: compact,
+                  suppressActiveSpinner: _resolvingLocation,
+                ),
+                if (_resolvingLocation) ...[
+                  SizedBox(height: compact ? 12 : 18),
+                  LocationResolvingPanel(
+                    resolving: true,
+                    locationServiceDisabled: _locationServiceDisabled,
+                    onRetry: _runPipeline,
+                    compact: true,
+                  ),
+                ],
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildResult({required Key key, required ThemeData theme}) {
+    final kind = _resultKind ?? _CheckInResultKind.present;
+    final studentName = widget.student.name.trim();
+    final sessionCode = widget.session.sessionCode.trim();
+    final (title, subtitle, icon, color) = switch (kind) {
+      _CheckInResultKind.present => (
+          'You\'re present',
+          studentName.isEmpty
+              ? 'Your attendance for session $sessionCode has been recorded.'
+              : '$studentName — you are marked present for session $sessionCode.',
+          Icons.check_rounded,
+          AppTheme.success,
+        ),
+      _CheckInResultKind.pendingSync => (
+          'Check-in submitted',
+          _pipelineLikelyOnline
+              ? 'Session $sessionCode was sent. The official record will appear '
+                  'when the connection stabilizes — you can leave this screen.'
+              : 'Session $sessionCode is saved locally and will sync when '
+                  'you\'re back online. You can leave this screen.',
+          Icons.cloud_sync_rounded,
+          AppTheme.primary,
+        ),
+      _CheckInResultKind.offlineRecorded => (
+          'Saved on this device',
+          'Session $sessionCode is recorded on this phone. '
+              'Attendance will verify automatically when you\'re online (up to 7 days).',
+          Icons.offline_pin_rounded,
+          AppTheme.warning,
+        ),
+    };
+
+    return LayoutBuilder(
+      key: key,
+      builder: (context, constraints) {
+        return SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              minHeight: constraints.maxHeight,
+              maxWidth: 420,
+            ),
+            child: Align(
+              alignment: Alignment.center,
+              child: Card(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(24, 32, 24, 28),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      ScaleTransition(
+                        scale: _successScale,
+                        child: Container(
+                          width: 80,
+                          height: 80,
+                          decoration: BoxDecoration(
+                            color: color.withValues(alpha: 0.14),
+                            shape: BoxShape.circle,
+                          ),
+                          child: Icon(icon, size: 44, color: color),
+                        ),
+                      ),
+                      const SizedBox(height: 22),
+                      Text(
+                        title,
+                        textAlign: TextAlign.center,
+                        style: theme.textTheme.headlineSmall?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        subtitle,
+                        textAlign: TextAlign.center,
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color: AppTheme.textSecondary,
+                          height: 1.45,
+                        ),
+                      ),
+                      const SizedBox(height: 28),
+                      SizedBox(
+                        width: double.infinity,
+                        child: FilledButton(
+                          onPressed: _finish,
+                          style: FilledButton.styleFrom(
+                            backgroundColor: AppTheme.primary,
+                            foregroundColor: Colors.white,
+                          ),
+                          child: const Text('Done'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildError({required Key key, required ThemeData theme}) {
+    return LayoutBuilder(
+      key: key,
+      builder: (context, constraints) {
+        final minBodyHeight =
+            (constraints.maxHeight - 48).clamp(0.0, double.infinity);
+        return SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minHeight: minBodyHeight),
+            child: Align(
+              alignment: Alignment.center,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  if (_resolvingLocation || _locationServiceDisabled)
+                    LocationResolvingPanel(
+                      resolving: _resolvingLocation,
+                      locationServiceDisabled: _locationServiceDisabled,
+                      permissionBlocked: _permissionBlocked,
+                      errorMessage: _errorMessage,
+                      onRetry: _runPipeline,
+                    )
+                  else ...[
+                    const Icon(
+                      Icons.error_outline_rounded,
+                      size: 56,
+                      color: AppTheme.error,
+                    ),
+                    const SizedBox(height: 20),
+                    Text(
+                      _errorMessage ?? 'Check-in could not be completed.',
+                      style: theme.textTheme.bodyLarge,
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+                  const SizedBox(height: 24),
+                  FilledButton(
+                    onPressed: () =>
+                        Navigator.of(context).pop<StudentCheckInProgressResult>(null),
+                    child: const Text('Back'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _CheckInStageList extends StatelessWidget {
+  const _CheckInStageList({
+    required this.labels,
+    required this.activeIndex,
+    this.compact = false,
+    this.suppressActiveSpinner = false,
+  });
+
+  final List<String> labels;
+  final int activeIndex;
+  final bool compact;
+  final bool suppressActiveSpinner;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final gap = compact ? 6.0 : 10.0;
+    return Column(
+      children: [
+        for (var i = 0; i < labels.length; i++) ...[
+          if (i > 0) SizedBox(height: gap),
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 280),
+            child: _CheckInStageRow(
+              key: ValueKey('$i-${i < activeIndex}-${i == activeIndex}'),
+              label: labels[i],
+              state: i < activeIndex || activeIndex >= labels.length
+                  ? _StageRowState.done
+                  : i == activeIndex
+                      ? _StageRowState.active
+                      : _StageRowState.pending,
+              theme: theme,
+              suppressActiveSpinner: suppressActiveSpinner,
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+enum _StageRowState { pending, active, done }
+
+class _CheckInStageRow extends StatelessWidget {
+  const _CheckInStageRow({
+    super.key,
+    required this.label,
+    required this.state,
+    required this.theme,
+    this.suppressActiveSpinner = false,
+  });
+
+  final String label;
+  final _StageRowState state;
+  final ThemeData theme;
+  final bool suppressActiveSpinner;
+
+  @override
+  Widget build(BuildContext context) {
+    final (icon, color) = switch (state) {
+      _StageRowState.done => (Icons.check_circle_rounded, AppTheme.success),
+      _StageRowState.active => (Icons.radio_button_checked_rounded, AppTheme.primary),
+      _StageRowState.pending => (Icons.radio_button_unchecked_rounded, AppTheme.textSecondary),
+    };
+
+    return Row(
+      children: [
+        if (state == _StageRowState.active && !suppressActiveSpinner)
+          SizedBox(
+            width: 22,
+            height: 22,
+            child: CircularProgressIndicator(
+              strokeWidth: 2.5,
+              color: AppTheme.primary,
+            ),
+          )
+        else if (state == _StageRowState.active && suppressActiveSpinner)
+          Icon(Icons.location_searching_rounded, size: 22, color: AppTheme.primary)
+        else
+          Icon(icon, size: 22, color: color),
+        const SizedBox(width: 12),
+        Expanded(
+          child: Text(
+            label,
+            style: theme.textTheme.bodyMedium?.copyWith(
+              color: state == _StageRowState.pending
+                  ? AppTheme.textSecondary
+                  : AppTheme.textPrimary,
+              fontWeight: state == _StageRowState.active
+                  ? FontWeight.w700
+                  : FontWeight.w500,
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

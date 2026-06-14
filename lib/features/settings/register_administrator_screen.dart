@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../core/auth/auth_repository.dart';
+import '../../core/errors/user_facing_errors.dart';
 import '../../core/auth/staff_auth_email.dart';
 import '../../core/theme/app_theme.dart';
 import 'staff_credentials_screen.dart';
@@ -118,9 +119,7 @@ class _RegisterAdministratorScreenState
                 padding: const EdgeInsets.all(24),
                 child: Text(
                   denied
-                      ? 'Firestore blocked reading your admin profile. Deploy rules to '
-                          'the upanel database (`firebase deploy --only firestore:rules`), '
-                          'then reload.'
+                      ? UserFacingErrors.adminProfileUnavailable
                       : 'Only full administrators can grant administrator access. '
                           'QA staff should use Register staff → QA staff instead.',
                   textAlign: TextAlign.center,
@@ -133,7 +132,7 @@ class _RegisterAdministratorScreenState
             padding: const EdgeInsets.all(24),
             children: [
               Text(
-                'Creates a new Firebase account with full administrator role '
+                'Creates a new administrator account with full administrator role '
                 '(not QA staff). Sign-in uses staff ID and the default password, '
                 'same as lecturers and QA staff.',
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(

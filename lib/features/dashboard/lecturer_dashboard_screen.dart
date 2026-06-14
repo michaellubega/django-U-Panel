@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/auth/auth_repository.dart';
 import '../../core/connectivity/app_connectivity.dart';
+import '../../core/navigation/app_navigator.dart';
 import '../../core/navigation/app_section.dart';
 import '../../core/navigation/screen_refresh.dart';
 import '../../core/theme/app_theme.dart';
@@ -15,7 +16,10 @@ import '../attendance/models/attendance_models.dart';
 import '../attendance/pending_sessions_screen.dart';
 import '../notices/data/notices_repository.dart';
 import '../lesson_insights/lesson_insights_dashboard_section.dart';
+import '../attendance/today_attendance_list_filter.dart';
+import '../attendance/today_attendance_lists_screen.dart';
 import 'dashboard_shared_widgets.dart';
+import 'live_sessions_list_screen.dart';
 
 /// Lecturer home: live metrics, tappable actions, and recent notices.
 class LecturerDashboardScreen extends StatefulWidget {
@@ -50,6 +54,7 @@ class _LecturerDashboardScreenState extends State<LecturerDashboardScreen> {
   }
 
   Future<void> _refresh({bool forceNetwork = false}) async {
+    await AttendanceRepository.instance.warmFromLocalSnapshot();
     final blocking = !AttendanceRepository.instance.hasCachedStore;
     setState(() {
       _loading = blocking;
@@ -64,6 +69,7 @@ class _LecturerDashboardScreenState extends State<LecturerDashboardScreen> {
       } else {
         unawaited(AttendanceRepository.instance.bootstrapLoadIfNeeded());
       }
+      AttendanceRepository.instance.prefetchActiveListDetails();
       final raw = await NoticesRepository.instance.fetchRecent(limit: 30);
       final listIds =
           attendanceListsForCurrentStaff().map((l) => l.id).toSet();
@@ -136,27 +142,35 @@ class _LecturerDashboardScreenState extends State<LecturerDashboardScreen> {
     return '${loc.formatShortDate(d)} · ${loc.formatTimeOfDay(TimeOfDay.fromDateTime(d))}';
   }
 
+  void _openLiveSessionsList(BuildContext context) {
+    pushAppPage<void>(
+      context,
+      LiveSessionsListScreen(
+        scopeToStaffLists: true,
+        onSessionTap: (s) => _openSession(context, s),
+      ),
+    );
+  }
+
   void _openSession(BuildContext context, AttendanceSession session) {
     final list = AttendanceStore.listById(session.listId);
     if (list == null) {
       DashboardShellNav.go(context, AppSection.attendance);
       return;
     }
-    Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(
-        builder: (_) => StartSessionScreen(
-          list: list,
-          resumeSession: session,
-        ),
+    pushAppPage<void>(
+      context,
+      StartSessionScreen(
+        list: list,
+        resumeSession: session,
       ),
     );
   }
 
   void _openStartSessionForList(BuildContext context, AttendanceList list) {
-    Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(
-        builder: (_) => StartSessionScreen(list: list),
-      ),
+    pushAppPage<void>(
+      context,
+      StartSessionScreen(list: list),
     ).then((_) {
       if (mounted) unawaited(_refresh());
     });
@@ -228,33 +242,32 @@ class _LecturerDashboardScreenState extends State<LecturerDashboardScreen> {
                 else ...[
                   _LecturerStatsGrid(
                     metrics: m,
-                    onLive: () => DashboardShellNav.go(
-                      context,
-                      AppSection.attendance,
-                    ),
+                    onLive: () => _openLiveSessionsList(context),
                     onLists: () => DashboardShellNav.go(
                       context,
                       AppSection.attendance,
                     ),
-                    onPresent: () => DashboardShellNav.go(
+                    onPresent: () => openTodayRollClassLists(
                       context,
-                      AppSection.attendance,
+                      filter: TodayRollPresenceFilter.present,
+                    ),
+                    onAbsent: () => openTodayRollClassLists(
+                      context,
+                      filter: TodayRollPresenceFilter.absent,
                     ),
                   ),
                   if (dueLists.isNotEmpty) ...[
                     const SizedBox(height: 20),
                     Text(
                       'Start attendance now',
-                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                            fontWeight: FontWeight.w600,
-                          ),
+                      style: DashboardCardText.itemTitle(Theme.of(context).textTheme),
                     ),
                     const SizedBox(height: 8),
                     Text(
                       'These classes are scheduled for today — open a session when class begins.',
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                            color: AppTheme.textSecondary,
-                          ),
+                      style: DashboardCardText.captionSecondary(
+                        Theme.of(context).textTheme,
+                      ),
                     ),
                     const SizedBox(height: 10),
                     for (final list in dueLists)
@@ -270,20 +283,9 @@ class _LecturerDashboardScreenState extends State<LecturerDashboardScreen> {
                   const SizedBox(height: 20),
                   Text(
                     'Quick actions',
-                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                          fontWeight: FontWeight.w600,
-                        ),
+                    style: DashboardCardText.itemTitle(Theme.of(context).textTheme),
                   ),
                   const SizedBox(height: 10),
-                  DashboardQuickAction(
-                    filled: true,
-                    icon: Icons.people_alt_rounded,
-                    label: 'Open attendance',
-                    subtitle: 'Manage lists and start sessions',
-                    onTap: () =>
-                        DashboardShellNav.go(context, AppSection.attendance),
-                  ),
-                  const SizedBox(height: 8),
                   DashboardQuickAction(
                     icon: Icons.add_circle_outline_rounded,
                     label: 'Create class list',
@@ -319,11 +321,21 @@ class _LecturerDashboardScreenState extends State<LecturerDashboardScreen> {
                   ),
                   if (m.liveSessions.isNotEmpty) ...[
                     const SizedBox(height: 24),
-                    Text(
-                      'Live sessions',
-                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                            fontWeight: FontWeight.w600,
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            'Live sessions',
+                            style: DashboardCardText.itemTitle(
+                              Theme.of(context).textTheme,
+                            ),
                           ),
+                        ),
+                        TextButton(
+                          onPressed: () => _openLiveSessionsList(context),
+                          child: const Text('View all'),
+                        ),
+                      ],
                     ),
                     const SizedBox(height: 10),
                     ...m.liveSessions.map((s) {
@@ -350,10 +362,9 @@ class _LecturerDashboardScreenState extends State<LecturerDashboardScreen> {
                     children: [
                       Text(
                         'Recent notices',
-                        style:
-                            Theme.of(context).textTheme.titleSmall?.copyWith(
-                                  fontWeight: FontWeight.w600,
-                                ),
+                        style: DashboardCardText.itemTitle(
+                          Theme.of(context).textTheme,
+                        ),
                       ),
                       const Spacer(),
                       TextButton(
@@ -370,7 +381,9 @@ class _LecturerDashboardScreenState extends State<LecturerDashboardScreen> {
                         padding: const EdgeInsets.all(16),
                         child: Text(
                           'No notices for your classes yet.',
-                          style: Theme.of(context).textTheme.bodyMedium,
+                          style: DashboardCardText.bodySecondary(
+                            Theme.of(context).textTheme,
+                          ),
                         ),
                       ),
                     )
@@ -416,52 +429,53 @@ class _LecturerStatsGrid extends StatelessWidget {
     required this.onLive,
     required this.onLists,
     required this.onPresent,
+    required this.onAbsent,
   });
 
   final _LecturerDashMetrics metrics;
   final VoidCallback onLive;
   final VoidCallback onLists;
   final VoidCallback onPresent;
+  final VoidCallback onAbsent;
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final cross = 2;
-        final aspect = constraints.maxWidth > 520 ? 1.12 : 0.95;
-        return GridView.count(
-          crossAxisCount: cross,
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          mainAxisSpacing: 10,
-          crossAxisSpacing: 10,
-          childAspectRatio: aspect,
-          children: [
-            DashboardStatTile(
-              label: 'Live sessions',
-              value: '${metrics.liveSessions.length}',
-              icon: Icons.sensors_rounded,
-              color: AppTheme.accent,
-              highlight: metrics.liveSessions.isNotEmpty,
-              onTap: onLive,
-            ),
-            DashboardStatTile(
-              label: 'Active lists',
-              value: '${metrics.activeLists}',
-              icon: Icons.class_rounded,
-              color: AppTheme.primary,
-              onTap: onLists,
-            ),
-            DashboardStatTile(
-              label: 'Present today',
-              value: '${metrics.presentToday}',
-              icon: Icons.how_to_reg_rounded,
-              color: AppTheme.success,
-              onTap: onPresent,
-            ),
-          ],
-        );
-      },
+    return DashboardMetricTilesStrip(
+      tiles: [
+        DashboardStatTile(
+          label: 'Live sessions',
+          value: '${metrics.liveSessions.length}',
+          icon: Icons.sensors_rounded,
+          color: AppTheme.accent,
+          highlight: metrics.liveSessions.isNotEmpty,
+          fillHeight: true,
+          onTap: onLive,
+        ),
+        DashboardStatTile(
+          label: 'Active lists',
+          value: '${metrics.activeLists}',
+          icon: Icons.class_rounded,
+          color: AppTheme.primary,
+          fillHeight: true,
+          onTap: onLists,
+        ),
+        DashboardStatTile(
+          label: 'Present today',
+          value: '${metrics.presentToday}',
+          icon: Icons.how_to_reg_rounded,
+          color: AppTheme.success,
+          fillHeight: true,
+          onTap: onPresent,
+        ),
+        DashboardStatTile(
+          label: 'Absent today',
+          value: '${metrics.absentToday}',
+          icon: Icons.person_off_rounded,
+          color: AppTheme.error,
+          fillHeight: true,
+          onTap: onAbsent,
+        ),
+      ],
     );
   }
 }

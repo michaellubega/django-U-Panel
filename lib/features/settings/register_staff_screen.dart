@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../core/auth/auth_repository.dart';
+import '../../core/errors/user_facing_errors.dart';
 import '../../core/auth/staff_auth_email.dart';
 import '../../core/theme/app_theme.dart';
 import 'staff_credentials_screen.dart';
@@ -136,12 +137,8 @@ class _RegisterStaffScreenState extends State<RegisterStaffScreen> {
                 padding: const EdgeInsets.all(24),
                 child: Text(
                   denied
-                      ? 'Firestore blocked reading your admin profile. Deploy rules to '
-                          'the upanel database (`firebase deploy --only firestore:rules`), '
-                          'then reload. If rules are already deployed, add '
-                          'admins/{your Firebase uid} with isAdmin: true in the console.'
-                      : 'Only signed-in admins can register staff. Your account does not '
-                          'have admin access (admins/{uid} with isAdmin: true).',
+                      ? UserFacingErrors.adminProfileUnavailable
+                      : UserFacingErrors.notAdminForStaffCreation,
                   textAlign: TextAlign.center,
                 ),
               ),
@@ -176,8 +173,8 @@ class _RegisterStaffScreenState extends State<RegisterStaffScreen> {
                 kind == null
                     ? 'Select QA staff or lecturer for this account.'
                     : kind == _StaffKind.qaStaff
-                        ? 'QA staff: same operational tools as administrators, shown as QA staff in the app.'
-                        : 'Attendance and class lists scoped to this lecturer.',
+                        ? 'QA staff: KIU-#### sign-in with full operational access (attendance, reports).'
+                        : 'Lecturer: KIU-#### or @kiu.ac.ug — attendance scoped to their classes.',
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
                       color: AppTheme.textSecondary,
                       height: 1.35,

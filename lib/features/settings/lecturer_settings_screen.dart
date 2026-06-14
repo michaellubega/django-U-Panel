@@ -219,6 +219,7 @@ class _LecturerSettingsScreenState extends State<LecturerSettingsScreen> {
                 ),
               const SizedBox(height: 16),
               settingsSecurityCard(
+                context: context,
                 onUpdateProfile: () async {
                   final updated = await Navigator.of(context).push<bool>(
                     MaterialPageRoute<bool>(

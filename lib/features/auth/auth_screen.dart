@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import '../../core/auth/auth_action_result.dart';
 import '../../core/auth/auth_repository.dart';
@@ -9,6 +11,8 @@ import '../../core/auth/student_registration_number.dart';
 import '../../core/connectivity/app_connectivity.dart';
 import '../../core/navigation/app_navigator.dart';
 import '../../core/theme/app_theme.dart';
+import '../../core/widgets/app_brand_logo.dart';
+import '../../core/widgets/dismissible_error_banner.dart';
 import 'forgot_password_screen.dart';
 
 /// Email + password sign-in and registration (Firebase Auth).
@@ -20,6 +24,8 @@ class AuthScreen extends StatefulWidget {
 }
 
 class _AuthScreenState extends State<AuthScreen> {
+  final _scrollC = ScrollController();
+  final _errorKey = GlobalKey();
   final _emailC = TextEditingController();
   final _fullNameC = TextEditingController();
   final _regC = TextEditingController();
@@ -29,9 +35,71 @@ class _AuthScreenState extends State<AuthScreen> {
   bool _busy = false;
   /// When true, password fields show plain text (single toggle for both).
   bool _passwordVisible = false;
+  bool _offlineBannerDismissed = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final draft = AuthRepository.instance.authFormDraft;
+    _emailC.text = draft.email;
+    _fullNameC.text = draft.fullName;
+    _regC.text = draft.registrationNumber;
+    _register = draft.registering;
+    _emailC.addListener(_persistDraft);
+    _fullNameC.addListener(_persistDraft);
+    _regC.addListener(_persistDraft);
+    AppConnectivity.instance.addListener(_onConnectivityChanged);
+    AuthRepository.instance.addListener(_onAuthFormErrorChanged);
+  }
+
+  void _persistDraft() {
+    AuthRepository.instance.updateAuthFormDraft(
+      email: _emailC.text,
+      fullName: _fullNameC.text,
+      registrationNumber: _regC.text,
+      registering: _register,
+    );
+  }
+
+  void _onAuthFormErrorChanged() {
+    if (!mounted) return;
+    final msg = AuthRepository.instance.authFormErrorMessage?.trim();
+    setState(() {});
+    if (msg == null || msg.isEmpty) return;
+    showRootSnackBar(
+      msg,
+      isError: true,
+      duration: const Duration(seconds: 6),
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final ctx = _errorKey.currentContext;
+      if (ctx != null) {
+        Scrollable.ensureVisible(
+          ctx,
+          duration: const Duration(milliseconds: 280),
+          curve: Curves.easeOutCubic,
+          alignment: 0.35,
+        );
+      }
+    });
+  }
+
+  void _onConnectivityChanged() {
+    if (!mounted) return;
+    if (AppConnectivity.instance.isOnline && _offlineBannerDismissed) {
+      setState(() => _offlineBannerDismissed = false);
+    }
+  }
 
   @override
   void dispose() {
+    AppConnectivity.instance.removeListener(_onConnectivityChanged);
+    AuthRepository.instance.removeListener(_onAuthFormErrorChanged);
+    _emailC.removeListener(_persistDraft);
+    _fullNameC.removeListener(_persistDraft);
+    _regC.removeListener(_persistDraft);
+    _scrollC.dispose();
     _emailC.dispose();
     _fullNameC.dispose();
     _regC.dispose();
@@ -84,31 +152,28 @@ class _AuthScreenState extends State<AuthScreen> {
       _passwordC.text == _confirmC.text &&
       !_busy;
 
+  void _clearAuthErrors() {
+    AuthRepository.instance.clearAuthFormError();
+  }
+
   Future<void> _submit() async {
     FocusScope.of(context).unfocus();
+    _persistDraft();
     setState(() => _busy = true);
+    AuthRepository.instance.clearAuthFormError();
     try {
       if (!mounted) return;
-      final AuthActionResult? result =
-          await Navigator.of(context).push<AuthActionResult>(
-        MaterialPageRoute(
-          fullscreenDialog: true,
-          builder: (_) => _LoginVerificationScreen(
-            registering: _register,
-            email: _emailC.text,
-            fullName: _fullNameC.text.trim(),
-            password: _passwordC.text,
-            registrationNumber: _regC.text.trim(),
-          ),
+      await pushAppPage<AuthActionResult>(
+        context,
+        _LoginVerificationScreen(
+          registering: _register,
+          email: _emailC.text,
+          fullName: _fullNameC.text.trim(),
+          password: _passwordC.text,
+          registrationNumber: _regC.text.trim(),
         ),
+        fullscreenDialog: true,
       );
-      if (!mounted) return;
-      final err = result?.error;
-      if (err == null || err.isEmpty) return;
-      if (AuthRepository.instance.studentRegistrationConflictMessage == err) {
-        return;
-      }
-      showRootSnackBar(err, duration: const Duration(seconds: 7), isError: true);
     } finally {
       if (mounted) {
         setState(() => _busy = false);
@@ -141,69 +206,36 @@ class _AuthScreenState extends State<AuthScreen> {
         child: Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 400),
-            child: ListenableBuilder(
-              listenable: AppConnectivity.instance,
-              builder: (context, _) {
-                final offline = AppConnectivity.instance.initialized &&
-                    !AppConnectivity.instance.isOnline;
-                return SingleChildScrollView(
+            child: SingleChildScrollView(
+              controller: _scrollC,
               padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 24),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  if (offline) ...[
-                    Container(
-                      width: double.infinity,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 14,
-                        vertical: 12,
-                      ),
-                      decoration: BoxDecoration(
-                        color: AppTheme.error.withValues(alpha: 0.1),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
-                          color: AppTheme.error.withValues(alpha: 0.35),
-                        ),
-                      ),
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                  ListenableBuilder(
+                    listenable: AppConnectivity.instance,
+                    builder: (context, _) {
+                      final offline = AppConnectivity.instance.initialized &&
+                          !AppConnectivity.instance.isOnline;
+                      if (!offline || _offlineBannerDismissed) {
+                        return const SizedBox.shrink();
+                      }
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                          const Icon(
-                            Icons.wifi_off_rounded,
-                            color: AppTheme.error,
-                            size: 22,
+                          DismissibleErrorBanner(
+                            message: AuthRepository.networkUnavailableMessage,
+                            leadingIcon: Icons.wifi_off_rounded,
+                            onDismiss: () =>
+                                setState(() => _offlineBannerDismissed = true),
                           ),
-                          const SizedBox(width: 10),
-                          Expanded(
-                            child: Text(
-                              AuthRepository.networkUnavailableMessage,
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .bodySmall
-                                  ?.copyWith(
-                                    color: AppTheme.textPrimary,
-                                    height: 1.4,
-                                    fontWeight: FontWeight.w500,
-                                  ),
-                            ),
-                          ),
+                          const SizedBox(height: 16),
                         ],
-                      ),
-                    ),
-                    const SizedBox(height: 16),
-                  ],
-                  Text(
-                    'KIU',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      fontSize: 52,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: 4,
-                      color: AppTheme.accent,
-                      height: 1.0,
-                    ),
+                      );
+                    },
                   ),
-                  const SizedBox(height: 8),
+                  const Center(child: AppBrandLogo(size: 80, borderRadius: 20)),
+                  const SizedBox(height: 16),
                   Text(
                     'Kampala International University',
                     textAlign: TextAlign.center,
@@ -220,13 +252,14 @@ class _AuthScreenState extends State<AuthScreen> {
                     selected: {_register},
                     onSelectionChanged: (s) {
                       setState(() => _register = s.first);
+                      _persistDraft();
                     },
                   ),
                   const SizedBox(height: 20),
                   Text(
                     _register
                         ? 'Use your official KIU student email (${StudentAuthEmail.studentDomainsLabel()}), full name, registration number, and password.'
-                        : 'Sign in with your ${StudentAuthEmail.studentDomainsLabel()} or @kiu.ac.ug email, or KIU-#### staff ID.',
+                        : 'Sign in with your ${StudentAuthEmail.studentDomainsLabel()} email, @kiu.ac.ug (lecturers), or KIU-#### (QA staff / lecturers).',
                     textAlign: TextAlign.center,
                     style: Theme.of(context).textTheme.bodyMedium,
                   ),
@@ -254,7 +287,10 @@ class _AuthScreenState extends State<AuthScreen> {
                           keyboardType: TextInputType.emailAddress,
                           autocorrect: false,
                           textInputAction: TextInputAction.next,
-                          onChanged: (_) => setState(() {}),
+                          onChanged: (_) {
+                            _clearAuthErrors();
+                            setState(() {});
+                          },
                         ),
                         if (_register &&
                             _studentEmailError == null &&
@@ -288,7 +324,10 @@ class _AuthScreenState extends State<AuthScreen> {
                             textCapitalization: TextCapitalization.words,
                             autocorrect: false,
                             textInputAction: TextInputAction.next,
-                            onChanged: (_) => setState(() {}),
+                            onChanged: (_) {
+                            _clearAuthErrors();
+                            setState(() {});
+                          },
                           ),
                           const SizedBox(height: 16),
                           Text(
@@ -309,8 +348,7 @@ class _AuthScreenState extends State<AuthScreen> {
                             autocorrect: false,
                             textInputAction: TextInputAction.next,
                             onChanged: (_) {
-                              AuthRepository.instance
-                                  .clearStudentRegistrationConflictMessage();
+                              _clearAuthErrors();
                               setState(() {});
                             },
                           ),
@@ -323,7 +361,10 @@ class _AuthScreenState extends State<AuthScreen> {
                           textInputAction: _register
                               ? TextInputAction.next
                               : TextInputAction.done,
-                          onChanged: (_) => setState(() {}),
+                          onChanged: (_) {
+                            _clearAuthErrors();
+                            setState(() {});
+                          },
                           onFieldSubmitted: (_) {
                             if (!_register &&
                                 _canSubmitLogin &&
@@ -375,7 +416,10 @@ class _AuthScreenState extends State<AuthScreen> {
                             decoration: _passwordDecoration('Confirm password'),
                             obscureText: obscurePasswords,
                             textInputAction: TextInputAction.done,
-                            onChanged: (_) => setState(() {}),
+                            onChanged: (_) {
+                            _clearAuthErrors();
+                            setState(() {});
+                          },
                           ),
                           const SizedBox(height: 8),
                           Text(
@@ -385,7 +429,28 @@ class _AuthScreenState extends State<AuthScreen> {
                                 ),
                           ),
                         ],
-                        const SizedBox(height: 24),
+                        Builder(
+                          key: _errorKey,
+                          builder: (context) {
+                            final formError = AuthRepository.instance
+                                .authFormErrorMessage
+                                ?.trim();
+                            if (formError == null || formError.isEmpty) {
+                              return const SizedBox.shrink();
+                            }
+                            return Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                const SizedBox(height: 8),
+                                DismissibleErrorBanner(
+                                  message: formError,
+                                  onDismiss: _clearAuthErrors,
+                                ),
+                                const SizedBox(height: 16),
+                              ],
+                            );
+                          },
+                        ),
                         FilledButton(
                           onPressed: _busy
                               ? null
@@ -412,8 +477,6 @@ class _AuthScreenState extends State<AuthScreen> {
                   ),
                 ],
               ),
-            );
-              },
             ),
           ),
         ),
@@ -442,10 +505,13 @@ class _LoginVerificationScreen extends StatefulWidget {
       _LoginVerificationScreenState();
 }
 
-class _LoginVerificationScreenState extends State<_LoginVerificationScreen> {
+class _LoginVerificationScreenState extends State<_LoginVerificationScreen>
+    with SingleTickerProviderStateMixin {
   int _stageIndex = 0;
   bool _done = false;
   String? _error;
+  Timer? _stageTimer;
+  late final AnimationController _progressPulse;
 
   List<String> get _stages => widget.registering
       ? const <String>[
@@ -462,12 +528,39 @@ class _LoginVerificationScreenState extends State<_LoginVerificationScreen> {
   @override
   void initState() {
     super.initState();
+    _progressPulse = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1100),
+    )..repeat(reverse: true);
+    _startStageAnimation();
     WidgetsBinding.instance.addPostFrameCallback((_) => _runAuthFlow());
+  }
+
+  @override
+  void dispose() {
+    _stageTimer?.cancel();
+    _progressPulse.dispose();
+    super.dispose();
+  }
+
+  void _startStageAnimation() {
+    _stageTimer?.cancel();
+    _stageIndex = 0;
+    _stageTimer = Timer.periodic(const Duration(milliseconds: 900), (_) {
+      if (!mounted || _error != null || _done) return;
+      if (_stageIndex < _stages.length - 1) {
+        setState(() => _stageIndex++);
+      }
+    });
+  }
+
+  void _stopStageAnimation() {
+    _stageTimer?.cancel();
+    _stageTimer = null;
   }
 
   Future<void> _runAuthFlow() async {
     if (!mounted) return;
-    setState(() => _stageIndex = _stages.length - 1);
     final auth = AuthRepository.instance;
     final AuthActionResult result = widget.registering
         ? await auth.registerWithEmail(
@@ -482,16 +575,37 @@ class _LoginVerificationScreenState extends State<_LoginVerificationScreen> {
           );
     if (!mounted) return;
     if (!result.ok) {
+      _stopStageAnimation();
+      final message = result.error?.trim();
+      if (message != null && message.isNotEmpty) {
+        AuthRepository.instance.presentAuthFormError(message);
+      }
+      if (widget.registering) {
+        AuthRepository.instance.updateAuthFormDraft(
+          email: widget.email,
+          fullName: widget.fullName,
+          registrationNumber: widget.registrationNumber,
+          registering: true,
+        );
+      }
+      if (!mounted) return;
       setState(() {
-        _error = result.error;
+        _error = message;
         _done = false;
         _stageIndex = _stages.length - 1;
       });
       return;
     }
+    _stopStageAnimation();
     setState(() => _done = true);
     if (!mounted) return;
     Navigator.of(context).pop(result);
+  }
+
+  void _returnToSignIn() {
+    Navigator.of(context).pop(
+      AuthActionResult(error: _error ?? AuthRepository.instance.authFormErrorMessage),
+    );
   }
 
   @override
@@ -526,47 +640,95 @@ class _LoginVerificationScreenState extends State<_LoginVerificationScreen> {
                         if (_error != null) ...[
                           Container(
                             width: double.infinity,
-                            padding: const EdgeInsets.all(12),
+                            padding: const EdgeInsets.all(14),
                             decoration: BoxDecoration(
-                              color: AppTheme.error.withValues(alpha: 0.12),
-                              borderRadius: BorderRadius.circular(10),
+                              color: AppTheme.error.withValues(alpha: 0.1),
+                              borderRadius: BorderRadius.circular(12),
                               border: Border.all(
-                                color: AppTheme.error.withValues(alpha: 0.45),
+                                color: AppTheme.error.withValues(alpha: 0.4),
                               ),
                             ),
-                            child: Text(
-                              _error!,
-                              style: Theme.of(context)
-                                  .textTheme
-                                  .bodySmall
-                                  ?.copyWith(
-                                    color: AppTheme.textPrimary,
-                                    fontWeight: FontWeight.w600,
-                                    height: 1.4,
+                            child: Row(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                const Icon(
+                                  Icons.error_outline_rounded,
+                                  color: AppTheme.error,
+                                  size: 24,
+                                ),
+                                const SizedBox(width: 12),
+                                Expanded(
+                                  child: Text(
+                                    _error!,
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .bodyMedium
+                                        ?.copyWith(
+                                          color: AppTheme.textPrimary,
+                                          fontWeight: FontWeight.w600,
+                                          height: 1.45,
+                                        ),
                                   ),
+                                ),
+                              ],
                             ),
                           ),
                           const SizedBox(height: 14),
+                          Text(
+                            'This message stays on the sign-in form until you dismiss it or try again.',
+                            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                  color: AppTheme.textSecondary,
+                                  height: 1.4,
+                                ),
+                          ),
+                          const SizedBox(height: 16),
                           SizedBox(
                             width: double.infinity,
                             child: FilledButton(
-                              onPressed: () => Navigator.of(context).pop(
-                                AuthActionResult(error: _error),
-                              ),
+                              onPressed: _returnToSignIn,
                               child: const Text('Back to sign in'),
                             ),
                           ),
                         ] else ...[
-                          LinearProgressIndicator(
-                            minHeight: 5,
-                            value: _done ? 1 : null,
+                          FadeTransition(
+                            opacity: Tween<double>(begin: 0.6, end: 1.0).animate(
+                              CurvedAnimation(
+                                parent: _progressPulse,
+                                curve: Curves.easeInOut,
+                              ),
+                            ),
+                            child: const Icon(
+                              Icons.verified_user_outlined,
+                              size: 48,
+                              color: AppTheme.primary,
+                            ),
+                          ),
+                          const SizedBox(height: 16),
+                          ClipRRect(
+                            borderRadius: BorderRadius.circular(4),
+                            child: LinearProgressIndicator(
+                              minHeight: 5,
+                              value: _done
+                                  ? 1
+                                  : (_stageIndex + 1) / _stages.length,
+                              backgroundColor: AppTheme.softGrey,
+                              color: AppTheme.primary,
+                            ),
                           ),
                           const SizedBox(height: 14),
                           AnimatedSwitcher(
-                            duration: const Duration(milliseconds: 220),
+                            duration: const Duration(milliseconds: 280),
                             child: Text(
                               _stages[_stageIndex],
                               key: ValueKey<int>(_stageIndex),
+                              textAlign: TextAlign.center,
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodyMedium
+                                  ?.copyWith(
+                                    color: AppTheme.textSecondary,
+                                    height: 1.4,
+                                  ),
                             ),
                           ),
                         ],

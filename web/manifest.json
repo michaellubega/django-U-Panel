@@ -7,14 +7,7 @@
     "theme_color": "#0175C2",
     "description": "U-Panel attendance and campus tools for KIU.",
     "orientation": "portrait-primary",
-    "prefer_related_applications": true,
-    "related_applications": [
-        {
-            "platform": "play",
-            "id": "com.u_panel",
-            "url": "https://play.google.com/store/apps/details?id=com.u_panel"
-        }
-    ],
+    "prefer_related_applications": false,
     "icons": [
         {
             "src": "icons/Icon-192.png",

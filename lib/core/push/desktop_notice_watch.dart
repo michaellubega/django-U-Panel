@@ -7,6 +7,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../auth/auth_repository.dart';
 import '../../features/attendance/attendance_list_hierarchy.dart';
 import '../../features/attendance/models/attendance_models.dart';
+import '../../features/notices/create_notice_screen.dart' show NoticeAudienceKind;
 import '../../features/notices/data/notices_repository.dart';
 import 'local_push_display.dart';
 import 'push_message_copy.dart';
@@ -147,6 +148,7 @@ class DesktopNoticeWatch {
           (n) => noticeVisibleToUser(
             n,
             admin: admin,
+            kiuAdmin: auth.isKiuAdmin,
             lecturer: lecturer,
             lecturerListIds: lecturerListIds,
             lecturerFirebaseUid: auth.currentFirebaseUid,
@@ -159,6 +161,9 @@ class DesktopNoticeWatch {
 
   bool _shouldShowPushForNotice(NoticeRecord n) {
     final auth = AuthRepository.instance;
+    if (auth.isKiuAdmin && n.audience == NoticeAudienceKind.kiuAdmins) {
+      return true;
+    }
     if (auth.adminCheckDone && auth.isAdmin) {
       return noticeNotifiesAdmin(n);
     }

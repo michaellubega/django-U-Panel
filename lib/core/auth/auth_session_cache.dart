@@ -18,6 +18,8 @@ class AuthSessionSnapshot {
     this.isKiuAdmin = false,
     this.isLecturer = false,
     this.staffNumber,
+    this.isStudent,
+    this.cachedAt,
   });
 
   final String uid;
@@ -30,9 +32,12 @@ class AuthSessionSnapshot {
   final bool isKiuAdmin;
   final bool isLecturer;
   final String? staffNumber;
+  final bool? isStudent;
+  final DateTime? cachedAt;
 
   Map<String, dynamic> toJson() => <String, dynamic>{
         'uid': uid,
+        if (cachedAt != null) 'cachedAt': cachedAt!.toUtc().toIso8601String(),
         if (registrationNumber != null) 'registrationNumber': registrationNumber,
         if (fullName != null) 'fullName': fullName,
         if (kiuAdminJobTitle != null) 'kiuAdminJobTitle': kiuAdminJobTitle,
@@ -42,19 +47,20 @@ class AuthSessionSnapshot {
         'isKiuAdmin': isKiuAdmin,
         'isLecturer': isLecturer,
         if (staffNumber != null) 'staffNumber': staffNumber,
+        if (isStudent != null) 'isStudent': isStudent,
       };
 
   static AuthSessionSnapshot? fromJson(Map<String, dynamic> json) {
-    final uid = (json['uid'] as String?)?.trim();
+    final uid = _textField(json['uid']);
     if (uid == null || uid.isEmpty) return null;
-    String? text(String key) {
-      final v = (json[key] as String?)?.trim();
-      return (v != null && v.isNotEmpty) ? v : null;
+    String? text(String key) => _textField(json[key]);
+
+    bool flag(String key) {
+      final v = json[key];
+      return v == true || v == 'true' || v == 1 || v == '1';
     }
 
-    bool flag(String key) =>
-        json[key] == true || json[key] == 'true' || json[key] == 1;
-
+    final cachedAtRaw = _textField(json['cachedAt']);
     return AuthSessionSnapshot(
       uid: uid,
       registrationNumber: text('registrationNumber'),
@@ -66,7 +72,17 @@ class AuthSessionSnapshot {
       isKiuAdmin: flag('isKiuAdmin'),
       isLecturer: flag('isLecturer'),
       staffNumber: text('staffNumber'),
+      isStudent: json.containsKey('isStudent') ? flag('isStudent') : null,
+      cachedAt:
+          cachedAtRaw == null ? null : DateTime.tryParse(cachedAtRaw)?.toUtc(),
     );
+  }
+
+  static String? _textField(Object? value) {
+    if (value == null) return null;
+    final v = value is String ? value : value.toString();
+    final t = v.trim();
+    return t.isEmpty ? null : t;
   }
 }
 

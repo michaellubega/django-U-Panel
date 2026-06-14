@@ -1,6 +1,6 @@
 import 'dart:math';
 
-import '../data/pending_retention.dart';
+import '../student_session_grace.dart';
 
 /// Short labels for [DateTime.weekday] (1 = Monday … 7 = Sunday).
 const kAttendanceWeekdayShortLabels = [
@@ -204,6 +204,9 @@ class AttendanceSession {
   /// Long-distance learning: no GPS radius check; no session-code push notice.
   final bool remoteLearning;
 
+  /// Lecturer GPS centre not finalized yet — skip radius until updated.
+  final bool locationMetadataPending;
+
   AttendanceSession({
     required this.id,
     required this.listId,
@@ -216,6 +219,7 @@ class AttendanceSession {
     required this.status,
     required this.createdBy,
     this.remoteLearning = false,
+    this.locationMetadataPending = false,
   });
 
   bool get isExpired => DateTime.now().isAfter(endTime);
@@ -280,6 +284,88 @@ class AttendanceRollStats {
 
   int get percentRounded =>
       total <= 0 ? 0 : ((100 * present) / total).round().clamp(0, 100);
+}
+
+/// Server-published student attendance % mirrored on Realtime Database.
+class StudentRollStatsSnapshot {
+  const StudentRollStatsSnapshot({
+    required this.present,
+    required this.total,
+    required this.percentRounded,
+    this.updatedAt,
+  });
+
+  final int present;
+  final int total;
+  final int percentRounded;
+  final int? updatedAt;
+
+  AttendanceRollStats toRollStats() =>
+      AttendanceRollStats(present: present, total: total);
+
+  static StudentRollStatsSnapshot? fromRtdValue(dynamic value) {
+    if (value is! Map) return null;
+    final map = value.map((k, v) => MapEntry(k.toString(), v));
+    int readInt(dynamic v) {
+      if (v is int) return v;
+      if (v is num) return v.round();
+      return 0;
+    }
+
+    final present = readInt(map['present']);
+    final total = readInt(map['total']);
+    final pct = map.containsKey('percentRounded')
+        ? readInt(map['percentRounded'])
+        : (total <= 0 ? 0 : ((100 * present) / total).round().clamp(0, 100));
+    final updatedRaw = map['updatedAt'];
+    final updatedAt = updatedRaw is int
+        ? updatedRaw
+        : updatedRaw is num
+            ? updatedRaw.round()
+            : null;
+
+    return StudentRollStatsSnapshot(
+      present: present,
+      total: total,
+      percentRounded: pct,
+      updatedAt: updatedAt,
+    );
+  }
+}
+
+/// Server-published session roll counts mirrored on Realtime Database.
+class SessionRollStatsSnapshot {
+  const SessionRollStatsSnapshot({
+    required this.enrolled,
+    required this.present,
+    required this.absent,
+    required this.pending,
+    required this.percentRounded,
+  });
+
+  final int enrolled;
+  final int present;
+  final int absent;
+  final int pending;
+  final int percentRounded;
+
+  static SessionRollStatsSnapshot? fromRtdValue(dynamic value) {
+    if (value is! Map) return null;
+    final map = value.map((k, v) => MapEntry(k.toString(), v));
+    int readInt(dynamic v) {
+      if (v is int) return v;
+      if (v is num) return v.round();
+      return 0;
+    }
+
+    return SessionRollStatsSnapshot(
+      enrolled: readInt(map['enrolled']),
+      present: readInt(map['present']),
+      absent: readInt(map['absent']),
+      pending: readInt(map['pending']),
+      percentRounded: readInt(map['percentRounded']),
+    );
+  }
 }
 
 /// Roll stats for one [AttendanceList] (student profile, per-class breakdown).
@@ -436,6 +522,169 @@ class AttendanceStore {
   static final List<StudentRecord> students = [];
   static final List<SignInRecord> signIns = [];
   static final List<AttendanceRecord> attendanceRecords = [];
+
+  static final Map<String, SessionRollStatsSnapshot> _sessionRollStatsById = {};
+
+  static SessionRollStatsSnapshot? sessionRollStats(String sessionId) =>
+      _sessionRollStatsById[sessionId.trim()];
+
+  static void setSessionRollStats(
+    String sessionId,
+    SessionRollStatsSnapshot stats,
+  ) {
+    final id = sessionId.trim();
+    if (id.isEmpty) return;
+    _sessionRollStatsById[id] = stats;
+  }
+
+  static void clearSessionRollStats() => _sessionRollStatsById.clear();
+
+  static final Map<String, StudentRollStatsSnapshot> _studentRollStatsById = {};
+
+  static StudentRollStatsSnapshot? studentRollStats(String studentId) =>
+      _studentRollStatsById[studentId.trim()];
+
+  static void setStudentRollStats(
+    String studentId,
+    StudentRollStatsSnapshot stats,
+  ) {
+    final id = studentId.trim();
+    if (id.isEmpty) return;
+    _studentRollStatsById[id] = stats;
+  }
+
+  static void clearStudentRollStats() => _studentRollStatsById.clear();
+
+  static final Map<String, StudentRollStatsSnapshot> _studentListRollStatsByKey =
+      {};
+
+  static String _studentListRollStatsKey(String studentId, String listId) =>
+      '${studentId.trim()}::${listId.trim()}';
+
+  static StudentRollStatsSnapshot? studentListRollStats(
+    String studentId,
+    String listId,
+  ) =>
+      _studentListRollStatsByKey[_studentListRollStatsKey(studentId, listId)];
+
+  static void setStudentListRollStats(
+    String studentId,
+    String listId,
+    StudentRollStatsSnapshot stats,
+  ) {
+    final key = _studentListRollStatsKey(studentId, listId);
+    if (!key.contains('::') || key.startsWith('::') || key.endsWith('::')) {
+      return;
+    }
+    final existing = _studentListRollStatsByKey[key];
+    if (existing != null &&
+        existing.updatedAt != null &&
+        stats.updatedAt != null &&
+        stats.updatedAt! < existing.updatedAt! &&
+        stats.present == existing.present &&
+        stats.total == existing.total) {
+      return;
+    }
+    _studentListRollStatsByKey[key] = stats;
+  }
+
+  static void clearStudentListRollStats() => _studentListRollStatsByKey.clear();
+
+  /// Drops cached RTD % for [listId] so profile recomputes from fresh rows.
+  static void invalidateRollStatsForStudentIdsOnList(
+    Iterable<String> studentIds,
+    String listId,
+  ) {
+    final lid = listId.trim();
+    if (lid.isEmpty) return;
+    for (final raw in studentIds) {
+      final sid = raw.trim();
+      if (sid.isEmpty) continue;
+      _studentListRollStatsByKey.remove(_studentListRollStatsKey(sid, lid));
+      _studentRollStatsById.remove(sid);
+    }
+  }
+
+  static int _latestVerifiedRecordMsForList(
+    Set<String> studentIds,
+    String listId,
+  ) {
+    final lid = listId.trim();
+    var maxMs = 0;
+    for (final r in attendanceRecords) {
+      if (!studentIds.contains(r.studentId)) continue;
+      if (!r.verified) continue;
+      final sess = sessionById(r.sessionId);
+      if (sess == null || sess.listId.trim() != lid) continue;
+      final ms = r.timestamp.millisecondsSinceEpoch;
+      if (ms > maxMs) maxMs = ms;
+    }
+    return maxMs;
+  }
+
+  static Map<String, dynamic> rollStatsForLocalSnapshot() {
+    Map<String, dynamic> statsToJson(StudentRollStatsSnapshot s) => {
+          'present': s.present,
+          'total': s.total,
+          'percentRounded': s.percentRounded,
+          if (s.updatedAt != null) 'updatedAt': s.updatedAt,
+        };
+
+    return {
+      'overall': {
+        for (final e in _studentRollStatsById.entries)
+          e.key: statsToJson(e.value),
+      },
+      'perList': {
+        for (final e in _studentListRollStatsByKey.entries)
+          e.key: statsToJson(e.value),
+      },
+    };
+  }
+
+  static void restoreRollStatsFromLocalSnapshot(Map<String, dynamic>? raw) {
+    if (raw == null || raw.isEmpty) return;
+    StudentRollStatsSnapshot statsFromJson(Map<String, dynamic> m) {
+      final present = (m['present'] as num?)?.round() ?? 0;
+      final total = (m['total'] as num?)?.round() ?? 0;
+      final pct = m.containsKey('percentRounded')
+          ? ((m['percentRounded'] as num?)?.round() ?? 0)
+          : (total <= 0 ? 0 : ((100 * present) / total).round().clamp(0, 100));
+      final updatedAt = (m['updatedAt'] as num?)?.round();
+      return StudentRollStatsSnapshot(
+        present: present,
+        total: total,
+        percentRounded: pct,
+        updatedAt: updatedAt,
+      );
+    }
+
+    final overall = raw['overall'];
+    if (overall is Map) {
+      for (final entry in overall.entries) {
+        final id = entry.key?.toString().trim() ?? '';
+        if (id.isEmpty || entry.value is! Map) continue;
+        setStudentRollStats(
+          id,
+          statsFromJson(Map<String, dynamic>.from(entry.value as Map)),
+        );
+      }
+    }
+
+    final perList = raw['perList'];
+    if (perList is Map) {
+      for (final entry in perList.entries) {
+        final key = entry.key?.toString() ?? '';
+        final sep = key.indexOf('::');
+        if (sep <= 0 || sep >= key.length - 2 || entry.value is! Map) continue;
+        setStudentListRollStats(
+          key.substring(0, sep),
+          key.substring(sep + 2),
+          statsFromJson(Map<String, dynamic>.from(entry.value as Map)),
+        );
+      }
+    }
+  }
 
   /// Built lazily; cleared by [invalidateLookupCaches] and targeted updates.
   static Map<String, AttendanceSession>? _sessionByIdMemo;
@@ -735,13 +984,16 @@ class AttendanceStore {
   }
 
   static Set<String> _studentIdsForRegistrationNormalized(String reg) {
-    final key = reg.trim().toUpperCase();
+    final trimmed = reg.trim();
+    final key = trimmed.toUpperCase();
     if (key.isEmpty) return {};
-    final ids = students
-        .where((s) => s.registrationNumber.trim().toUpperCase() == key)
-        .map((s) => s.id.trim())
-        .where((id) => id.isNotEmpty)
-        .toSet();
+    final ids = <String>{key, trimmed};
+    ids.addAll(
+      students
+          .where((s) => s.registrationNumber.trim().toUpperCase() == key)
+          .map((s) => s.id.trim())
+          .where((id) => id.isNotEmpty),
+    );
     // Sign-ins may carry registration metadata before the roster row is hydrated.
     for (final si in signIns) {
       if (si.registrationNumber?.trim().toUpperCase() != key) continue;
@@ -796,6 +1048,33 @@ class AttendanceStore {
     return enrolledListIds;
   }
 
+  /// List ids with server-published per-list roll stats in the local cache.
+  static Set<String> _listIdsWithCachedRtdStatsForStudentIds(
+    Set<String> studentIds,
+  ) {
+    if (studentIds.isEmpty) return const {};
+    final out = <String>{};
+    for (final entry in _studentListRollStatsByKey.entries) {
+      final sep = entry.key.indexOf('::');
+      if (sep <= 0 || sep >= entry.key.length - 2) continue;
+      final sid = entry.key.substring(0, sep);
+      if (!studentIds.contains(sid)) continue;
+      final listId = entry.key.substring(sep + 2).trim();
+      if (listId.isNotEmpty) out.add(listId);
+    }
+    return out;
+  }
+
+  /// All list ids the student has joined (sign-ins + attendance rows + RTD stats).
+  static Set<String> enrolledListIdsForRegistrationNormalized(String reg) {
+    final ids = _studentIdsForRegistrationNormalized(reg);
+    if (ids.isEmpty) return const {};
+    return {
+      ..._enrolledListIdsForStudentIds(ids),
+      ..._listIdsWithCachedRtdStatsForStudentIds(ids),
+    };
+  }
+
   /// Attendance % for one list: all completed sessions on the list, including
   /// sessions that ended before the student joined (counted as missed/absent).
   static AttendanceRollStats rollStatsForRegistrationOnList(
@@ -808,6 +1087,46 @@ class AttendanceStore {
       return const AttendanceRollStats(present: 0, total: 0);
     }
 
+    final local = _rollStatsFromLocalRecordsForList(listId, ids);
+
+    StudentRollStatsSnapshot? rtd;
+    for (final sid in ids) {
+      final snap = studentListRollStats(sid, listId);
+      if (snap == null) continue;
+      if (rtd == null ||
+          (snap.updatedAt ?? 0) > (rtd.updatedAt ?? 0)) {
+        rtd = snap;
+      }
+    }
+
+    if (rtd != null) {
+      final rtdMs = rtd.updatedAt ?? 0;
+      final localVerifiedMs = _latestVerifiedRecordMsForList(ids, listId);
+      // Server roll stats are authoritative once published; only override with
+      // local when an unverified check-in is ahead of RTD counts.
+      if (local.total > 0 &&
+          local.present > rtd.present &&
+          rtdMs < localVerifiedMs) {
+        return local;
+      }
+      if (rtdMs >= localVerifiedMs ||
+          rtd.total > local.total ||
+          (rtd.total == local.total && rtd.present >= local.present)) {
+        return rtd.toRollStats();
+      }
+      if (local.total > 0 && local.present > rtd.present) {
+        return local;
+      }
+      return rtd.toRollStats();
+    }
+
+    return local;
+  }
+
+  static AttendanceRollStats _rollStatsFromLocalRecordsForList(
+    String listId,
+    Set<String> ids,
+  ) {
     var total = 0;
     var present = 0;
     final enrolledAt = earliestSignInAtForAnyStudentOnList(listId, ids);
@@ -837,10 +1156,19 @@ class AttendanceStore {
         countedSessionIds.add(sess.id);
         continue;
       }
-      final graceExpired = PendingRetention.sessionGraceExpired(sess.endTime, now);
       final missedBeforeJoin =
           enrolledAt != null && sess.endTime.isBefore(enrolledAt);
-      if (!missedBeforeJoin && !graceExpired) continue;
+      if (!missedBeforeJoin &&
+          !registrationSessionGraceExpired(
+            session: sess,
+            listId: listId,
+            studentIds: ids,
+            recordsForStudents: attendanceRecords
+                .where((r) => ids.contains(r.studentId)),
+            now: now,
+          )) {
+        continue;
+      }
       total++;
       countedSessionIds.add(sess.id);
     }
@@ -864,6 +1192,21 @@ class AttendanceStore {
     return AttendanceRollStats(present: present, total: total);
   }
 
+  /// True when server-published RTD roll stats exist for [reg].
+  static bool hasRtdRollStatsForRegistrationNormalized(String reg) {
+    final ids = _studentIdsForRegistrationNormalized(reg);
+    if (ids.isEmpty) return false;
+    for (final sid in ids) {
+      if (studentRollStats(sid) != null) return true;
+    }
+    for (final listId in _listIdsWithCachedRtdStatsForStudentIds(ids)) {
+      for (final sid in ids) {
+        if (studentListRollStats(sid, listId) != null) return true;
+      }
+    }
+    return false;
+  }
+
   /// Per-list attendance breakdown for a registration (profile screen).
   static List<AttendanceListRollStats> rollStatsPerListForRegistrationNormalized(
     String reg,
@@ -871,36 +1214,59 @@ class AttendanceStore {
     final ids = _studentIdsForRegistrationNormalized(reg);
     if (ids.isEmpty) return const [];
 
-    final enrolledListIds = _enrolledListIdsForStudentIds(ids);
+    final enrolledListIds = enrolledListIdsForRegistrationNormalized(reg);
     if (enrolledListIds.isEmpty) return const [];
 
-    final lists = <AttendanceList>[];
+    final rows = <({String listId, AttendanceList? list})>[];
     for (final listId in enrolledListIds) {
-      final list = listById(listId);
-      if (list != null) lists.add(list);
+      rows.add((listId: listId, list: listById(listId)));
     }
-    lists.sort(compareAttendanceListsNewestFirst);
+
+    rows.sort((a, b) {
+      final la = a.list;
+      final lb = b.list;
+      if (la != null && lb != null) {
+        return compareAttendanceListsNewestFirst(la, lb);
+      }
+      if (la != null) return -1;
+      if (lb != null) return 1;
+      return a.listId.compareTo(b.listId);
+    });
 
     return [
-      for (final list in lists)
+      for (final row in rows)
         AttendanceListRollStats(
-          listId: list.id,
-          listTitle: list.displayTitle,
-          listSubtitle: list.displaySubtitle,
-          stats: rollStatsForRegistrationOnList(reg, list.id, studentIds: ids),
+          listId: row.listId,
+          listTitle: row.list?.displayTitle ?? 'Class list',
+          listSubtitle: row.list?.displaySubtitle ?? row.listId,
+          stats: rollStatsForRegistrationOnList(
+            reg,
+            row.listId,
+            studentIds: ids,
+          ),
         ),
     ];
   }
 
   /// Overall attendance % across all lists the student has joined.
+  /// Prefers server-published RTD stats when available and fresh.
   static AttendanceRollStats rollStatsForRegistrationNormalized(String reg) {
+    final perList = rollStatsPerListForRegistrationNormalized(reg);
     var total = 0;
     var present = 0;
-    for (final row in rollStatsPerListForRegistrationNormalized(reg)) {
+    for (final row in perList) {
       total += row.stats.total;
       present += row.stats.present;
     }
-    return AttendanceRollStats(present: present, total: total);
+    if (total > 0) {
+      return AttendanceRollStats(present: present, total: total);
+    }
+
+    for (final sid in _studentIdsForRegistrationNormalized(reg)) {
+      final rtd = studentRollStats(sid);
+      if (rtd != null) return rtd.toRollStats();
+    }
+    return const AttendanceRollStats(present: 0, total: 0);
   }
 
   static List<AttendanceList> listsForYearSem(String year, String sem) {

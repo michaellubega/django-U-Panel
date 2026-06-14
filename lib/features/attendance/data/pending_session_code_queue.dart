@@ -282,23 +282,13 @@ class PendingSessionCodeQueue {
       return;
     }
 
-    if (AppConnectivity.instance.hasNetworkInterface) {
-      final processed = await PendingSessionCodeSync.processOnCreate(entry);
-      if (processed.discardLocal) {
-        notifyPendingWorkQueuesChanged();
-        AttendanceRepository.instance.notifyAttendanceStoreUpdated();
-        return;
-      }
-      if (processed.keepLocal != null) {
-        toSave = processed.keepLocal!;
-      }
-    }
-
     await _persistEntry(toSave);
     if (toSave.status != PendingSessionCodeStatus.deviceBlocked &&
         AttendanceRepository.shouldEnforceDeviceStudentRegistrationLock()) {
-      await DeviceStudentRegistrationLock.bindRegistration(
-        toSave.registrationNumber,
+      unawaited(
+        DeviceStudentRegistrationLock.bindRegistration(
+          toSave.registrationNumber,
+        ),
       );
     }
     notifyPendingWorkEnqueued();
@@ -307,8 +297,32 @@ class PendingSessionCodeQueue {
       PendingSessionCodeSync.ensureWatchingSessionPublishForCodes(
         [toSave.sessionCodeRaw],
       );
-      unawaited(PendingSessionCodeSync.drainUrgent());
+      unawaited(_uploadMetadataAfterEnqueue(toSave));
     }
+  }
+
+  /// Persists the queue row first, then uploads metadata / verifies in background.
+  static Future<void> _uploadMetadataAfterEnqueue(
+    PendingSessionCodeEntry entry,
+  ) async {
+    try {
+      final processed = await PendingSessionCodeSync.processOnCreate(entry);
+      if (processed.discardLocal) {
+        final all = await loadAll();
+        all.removeWhere((e) => e.id == entry.id);
+        await saveAll(all);
+        notifyPendingWorkQueuesChanged();
+        AttendanceRepository.instance.notifyAttendanceStoreUpdated();
+        return;
+      }
+      if (processed.keepLocal != null && processed.keepLocal!.id == entry.id) {
+        final updated = processed.keepLocal!;
+        if (updated != entry) {
+          await _persistEntry(updated);
+        }
+      }
+    } catch (_) {}
+    unawaited(PendingSessionCodeSync.drainUrgent());
   }
 
   static Future<void> _persistEntry(PendingSessionCodeEntry entry) async {
