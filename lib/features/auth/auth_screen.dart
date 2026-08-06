@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import '../../core/auth/auth_action_result.dart';
 import '../../core/auth/auth_repository.dart';
@@ -373,6 +374,17 @@ class _AuthScreenState extends State<AuthScreen> {
                             }
                           },
                         ),
+                        if (!_register && kDebugMode) ...[
+                          const SizedBox(height: 10),
+                          Text(
+                            'QA demo: ${StaffAuthEmail.normalizeStaffNumber('KIU-0001')} · '
+                            '${StaffAuthEmail.defaultLecturerPassword}',
+                            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                  color: AppTheme.textSecondary,
+                                  height: 1.35,
+                                ),
+                          ),
+                        ],
                         if (!_register) ...[
                           Align(
                             alignment: Alignment.centerRight,

@@ -148,7 +148,7 @@ class _NoticesScreenState extends State<NoticesScreen>
       kiuAdmin: AuthRepository.instance.isKiuAdmin,
       lecturer: _isLecturerUser(),
       lecturerListIds: _lecturerListIds(),
-      lecturerFirebaseUid: AuthRepository.instance.currentFirebaseUid,
+      lecturerUserId: AuthRepository.instance.currentUserId,
       studentId: student?.id,
       signedListIds: signedListIds,
     );
@@ -173,7 +173,7 @@ class _NoticesScreenState extends State<NoticesScreen>
   }
 
   String _userSeenKey() {
-    final uid = AuthRepository.instance.currentFirebaseUid?.trim();
+    final uid = AuthRepository.instance.currentUserId?.trim();
     if (uid != null && uid.isNotEmpty) return uid;
     final reg = AuthRepository.instance.currentRegistrationNumber?.trim();
     if (reg != null && reg.isNotEmpty) return 'reg:${reg.toUpperCase()}';

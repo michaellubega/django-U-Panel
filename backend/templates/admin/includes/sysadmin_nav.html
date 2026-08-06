@@ -1,0 +1,30 @@
+{% load i18n %}
+<nav class="upanel-sysnav" aria-label="System admin shortcuts">
+  <a class="upanel-sysnav-item{% if request.path == '/admin/' %} is-active{% endif %}" href="{% url 'admin:index' %}">
+    <span class="upanel-sysnav-icon">◉</span> Dashboard
+  </a>
+  <a class="upanel-sysnav-item" href="{% url 'admin:accounts_user_changelist' %}">
+    <span class="upanel-sysnav-icon">👤</span> Users
+  </a>
+  <a class="upanel-sysnav-item" href="{% url 'admin:accounts_studentregistration_changelist' %}">
+    <span class="upanel-sysnav-icon">#</span> Registrations
+  </a>
+  <a class="upanel-sysnav-item" href="{% url 'admin:documents_apidocument_changelist' %}?collection__exact=attendance%2Fsessions">
+    <span class="upanel-sysnav-icon">▶</span> Sessions
+  </a>
+  <a class="upanel-sysnav-item" href="{% url 'admin:documents_apidocument_changelist' %}?collection__exact=attendance%2Frecords">
+    <span class="upanel-sysnav-icon">✓</span> Check-ins
+  </a>
+  <a class="upanel-sysnav-item" href="{% url 'admin:documents_apidocument_changelist' %}?collection__exact=notices">
+    <span class="upanel-sysnav-icon">📢</span> Notices
+  </a>
+  <a class="upanel-sysnav-item" href="{% url 'admin:documents_apidocument_changelist' %}">
+    <span class="upanel-sysnav-icon">{ }</span> All documents
+  </a>
+  <a class="upanel-sysnav-item" href="{% url 'admin:accounts_emailverificationtoken_changelist' %}">
+    <span class="upanel-sysnav-icon">✉</span> Email tokens
+  </a>
+  <a class="upanel-sysnav-item upanel-sysnav-external" href="/api/health/" target="_blank" rel="noopener">
+    <span class="upanel-sysnav-icon">⚡</span> API health
+  </a>
+</nav>

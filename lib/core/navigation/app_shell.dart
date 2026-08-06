@@ -68,9 +68,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   UserRole? _sectionCacheRole;
   final Map<AppSection, Widget> _sectionWidgets = {};
   final Set<AppSection> _builtSections = {};
-  PageController? _mobileSectionPageController;
-  int _mobileSectionPageCount = 0;
-  bool _mobilePageTransitionFromTap = false;
+  bool _navPrewarmScheduled = false;
 
   @override
   void initState() {
@@ -86,13 +84,13 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
                   ? AppSection.attendance
                   : AppSection.dashboard,
     );
-    _currentSection.addListener(_syncMobileSectionPage);
     AuthRepository.instance.addListener(_onAuthRepo);
     AppConnectivity.instance.addListener(_onConnectivityChanged);
     _wasOnline = AppConnectivity.instance.isOnline;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _builtSections.add(_currentSection.value);
       _applyDefaultSectionForRole();
+      _scheduleNavSectionPrewarm();
       unawaited(AttendanceRepository.instance.warmFromLocalSnapshot());
       unawaited(_bootstrapAttendanceStore());
       WebFastBoot.afterFirstFrame(() {
@@ -117,8 +115,6 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     PendingOfflineCoordinator.instance.stop();
     _authRepoSideEffectsDebounce?.cancel();
-    _currentSection.removeListener(_syncMobileSectionPage);
-    _mobileSectionPageController?.dispose();
     _currentSection.dispose();
     _refreshHost.dispose();
     AuthRepository.instance.removeListener(_onAuthRepo);
@@ -169,7 +165,6 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
           : auth.isLikelyStudent;
       if (student) {
         unawaited(StudentAttendanceLiveSync.activate());
-        unawaited(AttendanceRtdRecordWatch.instance.start());
         unawaited(
           AttendanceRepository.instance.loadStudentAttendanceForProfile(
             force: false,
@@ -200,6 +195,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
 
   /// Upload pending offline work first, then one [loadAll] inside the drain pipeline.
   Future<void> _onConnectivityRestored() async {
+    unawaited(AuthRepository.instance.resumeStudentRegistrationLinkIfOnline());
     await AttendanceOfflineSync.drainSessionValidationFirst();
     unawaited(AttendanceOfflineSync.drainAllInOrder());
   }
@@ -252,13 +248,15 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     final role = _resolvedRole();
     final allowed = _navSectionsForRole(role);
     final roleChanged = _sectionCacheRole != role;
-    final roleDenied = AuthRepository.instance.firestoreRoleCheckDenied;
+    final roleDenied = AuthRepository.instance.apiRoleCheckDenied;
     if (roleChanged) {
       _sectionWidgets.clear();
       _builtSections
         ..clear()
         ..add(_currentSection.value);
       _sectionCacheRole = role;
+      _navPrewarmScheduled = false;
+      _scheduleNavSectionPrewarm();
     }
     if (!allowed.contains(_currentSection.value)) {
       _currentSection.value = _defaultSectionForRole(role);
@@ -358,14 +356,35 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     _builtSections
       ..clear()
       ..add(_currentSection.value);
-    _mobileSectionPageController?.dispose();
-    _mobileSectionPageController = null;
-    _mobileSectionPageCount = 0;
     _sectionCacheRole = role;
+    _navPrewarmScheduled = false;
+  }
+
+  /// Mounts inactive tabs after first paint so switching feels instant.
+  void _scheduleNavSectionPrewarm() {
+    if (_navPrewarmScheduled) return;
+    _navPrewarmScheduled = true;
+    WebFastBoot.afterFirstFrame(() {
+      Future<void>.delayed(const Duration(milliseconds: 500), () {
+        if (!mounted) return;
+        _prewarmNavSections();
+      });
+    });
+  }
+
+  void _prewarmNavSections() {
+    final role = _resolvedRole();
+    final sections = _navSectionsForRole(role);
+    var changed = false;
+    for (final s in sections) {
+      if (_builtSections.add(s)) changed = true;
+      _sectionWidget(s, role);
+    }
+    if (changed && mounted) setState(() {});
   }
 
   String _noticeUserKey() {
-    final uid = AuthRepository.instance.currentFirebaseUid?.trim();
+    final uid = AuthRepository.instance.currentUserId?.trim();
     if (uid != null && uid.isNotEmpty) return uid;
     final reg = AuthRepository.instance.currentRegistrationNumber?.trim();
     if (reg != null && reg.isNotEmpty) return 'reg:${reg.toUpperCase()}';
@@ -398,7 +417,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
           kiuAdmin: AuthRepository.instance.isKiuAdmin,
           lecturer: lecturer,
           lecturerListIds: lecturerListIds,
-          lecturerFirebaseUid: AuthRepository.instance.currentFirebaseUid,
+          lecturerUserId: AuthRepository.instance.currentUserId,
           studentId: student?.id,
           signedListIds: signedListIds,
         );
@@ -442,7 +461,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
         kiuAdmin: AuthRepository.instance.isKiuAdmin,
         lecturer: lecturer,
         lecturerListIds: lecturerListIds,
-        lecturerFirebaseUid: AuthRepository.instance.currentFirebaseUid,
+        lecturerUserId: AuthRepository.instance.currentUserId,
         studentId: student?.id,
         signedListIds: signedListIds,
       );
@@ -450,7 +469,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     } catch (_) {}
   }
 
-  void _setSection(AppSection s, {bool fromPageSwipe = false}) {
+  void _setSection(AppSection s) {
     _popShellContentToRoot();
     if (_currentSection.value == s) {
       if (s == AppSection.settings) {
@@ -463,53 +482,6 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     if (s == AppSection.notices) {
       unawaited(_markNoticesSeenNow());
     }
-    if (!fromPageSwipe && mounted && !_isDesktop) {
-      final sections = _navSectionsForRole(_resolvedRole());
-      final index = sections.indexOf(s);
-      final controller = _mobileSectionPageController;
-      if (index >= 0 &&
-          controller != null &&
-          controller.hasClients &&
-          controller.page?.round() != index) {
-        _mobilePageTransitionFromTap = true;
-        controller
-            .animateToPage(
-              index,
-              duration: const Duration(milliseconds: 280),
-              curve: Curves.easeOutCubic,
-            )
-            .whenComplete(() => _mobilePageTransitionFromTap = false);
-      }
-    }
-  }
-
-  void _onMobileSectionPageChanged(int index, List<AppSection> sections) {
-    if (index < 0 || index >= sections.length) return;
-    final section = sections[index];
-    _builtSections.add(section);
-    if (_currentSection.value == section) return;
-    _setSection(section, fromPageSwipe: true);
-  }
-
-  void _ensureMobileSectionPageController(List<AppSection> sections) {
-    final index = sections.indexOf(_currentSection.value);
-    final safeIndex = index >= 0 ? index : 0;
-    if (_mobileSectionPageController == null ||
-        _mobileSectionPageCount != sections.length) {
-      _mobileSectionPageController?.dispose();
-      _mobileSectionPageController = PageController(initialPage: safeIndex);
-      _mobileSectionPageCount = sections.length;
-    }
-  }
-
-  void _syncMobileSectionPage() {
-    if (!mounted || _isDesktop || _mobilePageTransitionFromTap) return;
-    final sections = _navSectionsForRole(_resolvedRole());
-    final index = sections.indexOf(_currentSection.value);
-    final controller = _mobileSectionPageController;
-    if (index < 0 || controller == null || !controller.hasClients) return;
-    if (controller.page?.round() == index) return;
-    controller.jumpToPage(index);
   }
 
   void _popShellContentToRoot() {
@@ -858,74 +830,27 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   }
 
   /// Lazily mounts tabs, then keeps them alive so switching back does not replay
-  /// heavy [initState] / loading work. Mobile uses a [PageView] for swipe; desktop
-  /// uses an [IndexedStack].
+  /// heavy [initState] / loading work. All form factors use [IndexedStack] for
+  /// instant tab changes (mobile, web, and Windows).
   Widget _buildSectionStack() {
-    return ValueListenableBuilder<AppSection>(
-      valueListenable: _currentSection,
-      builder: (context, section, _) {
-        final role = _resolvedRole();
-        _ensureSectionCacheForRole(role);
-        final sections = _navSectionsForRole(role);
-        final index = sections.indexOf(section);
-        if (index < 0) {
-          return RepaintBoundary(
-            key: ValueKey('tab_${role.name}_${section.name}'),
-            child: _sectionWidget(section, role),
-          );
-        }
-
-        _builtSections.add(section);
-
-        if (!_isDesktop) {
-          _ensureMobileSectionPageController(sections);
-          final pageController = _mobileSectionPageController!;
-          return PageView.builder(
-            controller: pageController,
-            onPageChanged: (i) => _onMobileSectionPageChanged(i, sections),
-            itemCount: sections.length,
-            itemBuilder: (context, i) {
-              final s = sections[i];
-              if ((i - index).abs() <= 1) {
-                _builtSections.add(s);
-              }
-              return RepaintBoundary(
-                key: ValueKey('tab_${role.name}_${s.name}'),
-                child: _builtSections.contains(s)
-                    ? TickerMode(
-                        enabled: s == section,
-                        child: _sectionWidget(s, role),
-                      )
-                    : const SizedBox.expand(),
-              );
-            },
-          );
-        }
-
-        return IndexedStack(
-          index: index,
-          sizing: StackFit.expand,
-          children: [
-            for (final s in sections)
-              RepaintBoundary(
-                key: ValueKey('tab_${role.name}_${s.name}'),
-                child: _builtSections.contains(s)
-                    ? TickerMode(
-                        enabled: s == section,
-                        child: _sectionWidget(s, role),
-                      )
-                    : const SizedBox.expand(),
-              ),
-          ],
-        );
-      },
+    final role = _resolvedRole();
+    _ensureSectionCacheForRole(role);
+    final sections = _navSectionsForRole(role);
+    return _ShellSectionStack(
+      currentSection: _currentSection,
+      role: role,
+      sections: sections,
+      builtSections: _builtSections,
+      sectionFor: _sectionWidget,
     );
   }
 
   Widget _buildMainPane({required EdgeInsets padding}) {
     return Padding(
       padding: padding,
-      child: _buildSectionStack(),
+      child: RepaintBoundary(
+        child: _buildSectionStack(),
+      ),
     );
   }
 
@@ -971,8 +896,8 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
                   Text(
                     AppConstants.appName,
                     style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.w700,
+                      fontSize: 16,
+                      fontWeight: FontWeight.w600,
                       color: Colors.white,
                       letterSpacing: -0.3,
                     ),
@@ -1177,7 +1102,8 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   Widget _buildBottomNav() {
     final sections = _mobileBottomSections();
 
-    return Container(
+    return RepaintBoundary(
+      child: Container(
       decoration: BoxDecoration(
         color: Colors.white,
         boxShadow: [
@@ -1235,6 +1161,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
           ),
         ),
       ),
+    ),
     );
   }
 
@@ -1357,7 +1284,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   }
 
   Widget _roleRulesBanner() {
-    if (!AuthRepository.instance.firestoreRoleCheckDenied ||
+    if (!AuthRepository.instance.apiRoleCheckDenied ||
         _roleRulesBannerDismissed) {
       return const SizedBox.shrink();
     }
@@ -1454,8 +1381,8 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
                               Text(
                                 AppConstants.appName,
                                 style: const TextStyle(
-                                  fontSize: 20,
-                                  fontWeight: FontWeight.w700,
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w600,
                                   color: Colors.white,
                                 ),
                               ),
@@ -1554,6 +1481,58 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
               ),
         ),
       ),
+    );
+  }
+}
+
+/// Instant tab stack shared by mobile, web, and desktop shell layouts.
+class _ShellSectionStack extends StatelessWidget {
+  const _ShellSectionStack({
+    required this.currentSection,
+    required this.role,
+    required this.sections,
+    required this.builtSections,
+    required this.sectionFor,
+  });
+
+  final ValueNotifier<AppSection> currentSection;
+  final UserRole role;
+  final List<AppSection> sections;
+  final Set<AppSection> builtSections;
+  final Widget Function(AppSection section, UserRole role) sectionFor;
+
+  @override
+  Widget build(BuildContext context) {
+    return ListenableBuilder(
+      listenable: currentSection,
+      builder: (context, _) {
+        final section = currentSection.value;
+        builtSections.add(section);
+        final index = sections.indexOf(section);
+        if (index < 0) {
+          return RepaintBoundary(
+            key: ValueKey('tab_${role.name}_${section.name}'),
+            child: sectionFor(section, role),
+          );
+        }
+
+        return IndexedStack(
+          index: index,
+          sizing: StackFit.expand,
+          children: [
+            for (final s in sections)
+              RepaintBoundary(
+                key: ValueKey('tab_${role.name}_${s.name}'),
+                child: builtSections.contains(s)
+                    ? TickerMode(
+                        enabled: s == section,
+                        child: sectionFor(s, role),
+                      )
+                    : const SizedBox.expand(),
+              ),
+          ],
+        );
+      },
     );
   }
 }

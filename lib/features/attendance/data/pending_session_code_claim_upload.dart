@@ -1,10 +1,12 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import '../../../core/auth/auth_repository.dart';
 import '../../../core/connectivity/app_connectivity.dart';
-import '../../../core/firebase/firestore_collections.dart';
-import '../../../core/firebase/u_panel_firestore.dart';
+import '../../../core/api/rtd_stubs.dart';
+import '../../../core/api/api_collections.dart';
+import '../../../core/api/api_store.dart';
 import '../check_in_rejection.dart';
 import '../models/attendance_models.dart';
 import 'attendance_repository.dart';
@@ -19,9 +21,8 @@ enum PendingClaimServerState {
   rejected,
 }
 
-/// Uploads student session-code + GPS evidence to Firestore.
-/// When the lecturer session already exists, verifies presence immediately.
-/// Otherwise keeps [awaitingSession] for up to [PendingRetention.unverifiedPending].
+/// Uploads student session-code + GPS evidence to RTD first; Firestore is mirrored
+/// by Cloud Functions (client may best-effort mirror when reachable).
 class PendingSessionCodeClaimUpload {
   PendingSessionCodeClaimUpload._();
 
@@ -46,6 +47,57 @@ class PendingSessionCodeClaimUpload {
     if (student == null) return false;
 
     return uploadForEntryWithStudent(entry: entry, studentId: student.id);
+  }
+
+  /// RTD upload only — defers session linking and verification to a later drain pass.
+  static Future<bool> uploadClaimMetadataOnly({
+    required PendingSessionCodeEntry entry,
+    required String studentId,
+  }) async {
+    if (!await _isOnlineForUpload()) return false;
+    if (entry.hasLocalUploadEvidence) return true;
+
+    final canonicalStudentId = AttendanceRepository.instance
+        .canonicalStudentIdForUpload(studentId);
+
+    final code = normalizeSessionCodeInput(entry.sessionCodeRaw);
+    if (!isValidJoinCodeFormat(code)) return false;
+    if (entry.deviceId.trim().isEmpty) return false;
+
+    final blockReason = await localDeviceBlockReason(
+      entry,
+      studentId: canonicalStudentId,
+    );
+    if (blockReason != null) return false;
+
+    final docId = claimDocId(normalizedCode: code, studentId: canonicalStudentId);
+    final existingRtd = await CheckInRtdAttemptPublish.readStatusOnRtd(docId);
+    if (existingRtd != null) {
+      await PendingSessionCodeQueue.markUploaded(entry.id);
+      return true;
+    }
+
+    final uid = AuthRepository.instance.currentUserId?.trim();
+    final rtdOk = await CheckInRtdAttemptPublish.uploadPending(
+      recordId: docId,
+      studentId: canonicalStudentId,
+      deviceId: entry.deviceId.trim(),
+      capturedAt: entry.capturedAt,
+      latitude: entry.latitude,
+      longitude: entry.longitude,
+      sessionId: null,
+      listId: null,
+      course: '—',
+      sessionCodeRaw: code,
+      registrationNumber: entry.registrationNumber.trim().toUpperCase(),
+      submittedByUid: uid,
+      awaitingSession: true,
+      pendingUntil: entry.pendingSince.add(PendingRetention.unverifiedPending),
+    );
+    if (!rtdOk) return false;
+
+    await PendingSessionCodeQueue.markUploaded(entry.id);
+    return true;
   }
 
   /// Local-only guard before student roster id is resolved.
@@ -122,26 +174,46 @@ class PendingSessionCodeClaimUpload {
     required String studentId,
   }) async {
     final state = await claimServerState(entry: entry, studentId: studentId);
-    return state == PendingClaimServerState.pending ||
-        state == PendingClaimServerState.accepted;
+    if (state == PendingClaimServerState.pending ||
+        state == PendingClaimServerState.accepted) {
+      return true;
+    }
+    if (entry.hasLocalUploadEvidence) {
+      final code = normalizeSessionCodeInput(entry.sessionCodeRaw);
+      if (!isValidJoinCodeFormat(code)) return false;
+      final docId = claimDocId(normalizedCode: code, studentId: studentId);
+      return CheckInRtdAttemptPublish.existsOnRtd(docId);
+    }
+    return false;
   }
 
-  /// Reads authoritative claim status from Firestore (not cache).
+  /// Reads authoritative claim status — RTD first, then Firestore.
   static Future<PendingClaimServerState> claimServerState({
     required PendingSessionCodeEntry entry,
     required String studentId,
   }) async {
-    if (!AppConnectivity.instance.hasNetworkInterface) {
-      return PendingClaimServerState.missing;
-    }
     final code = normalizeSessionCodeInput(entry.sessionCodeRaw);
     if (!isValidJoinCodeFormat(code)) return PendingClaimServerState.missing;
     final docId = claimDocId(normalizedCode: code, studentId: studentId);
+
+    final rtdStatus = await CheckInRtdAttemptPublish.readStatusOnRtd(docId);
+    if (rtdStatus != null) {
+      return switch (rtdStatus) {
+        'accepted' => PendingClaimServerState.accepted,
+        'rejected' => PendingClaimServerState.rejected,
+        'pending' => PendingClaimServerState.pending,
+        _ => PendingClaimServerState.pending,
+      };
+    }
+
+    if (!AppConnectivity.instance.hasNetworkInterface) {
+      return PendingClaimServerState.missing;
+    }
     try {
-      final doc = await uPanelFirestore()
-          .collection(FirestoreCollections.checkInAttempts)
+      final doc = await apiStore()
+          .collection(ApiCollections.checkInAttempts)
           .doc(docId)
-          .get(const GetOptions(source: Source.server))
+          .get(const ApiGetOptions(source: ApiSource.server))
           .timeout(_lookupTimeout);
       if (!doc.exists) return PendingClaimServerState.missing;
       final status = (doc.data()?['status'] as String?)?.trim().toLowerCase();
@@ -157,9 +229,8 @@ class PendingSessionCodeClaimUpload {
   }
 
   static Future<bool> _isOnlineForUpload() async {
-    if (!AppConnectivity.instance.hasNetworkInterface) return false;
-    if (AppConnectivity.instance.isOnline) return true;
-    return AppConnectivity.instance.ensureReachable(timeout: _lookupTimeout);
+    // RTD is the primary upload path — do not require Firestore reachability.
+    return AppConnectivity.instance.hasNetworkInterface;
   }
 
   static Future<AttendanceSession?> _resolvePublishedSession(
@@ -186,31 +257,14 @@ class PendingSessionCodeClaimUpload {
     final code = normalizeSessionCodeInput(entry.sessionCodeRaw);
     if (!isValidJoinCodeFormat(code)) return false;
     final docId = claimDocId(normalizedCode: code, studentId: studentId);
-    try {
-      await uPanelFirestore()
-          .collection(FirestoreCollections.checkInAttempts)
-          .doc(docId)
-          .set(
-            <String, dynamic>{
-              'studentId': studentId,
-              'registrationNumber': entry.registrationNumber.trim().toUpperCase(),
-              'sessionCodeRaw': code,
-              'sessionId': session.id,
-              'listId': session.listId,
-              'awaitingSession': false,
-              'pendingUntil': FieldValue.delete(),
-              'clientSubmittedAt': FieldValue.serverTimestamp(),
-            },
-            SetOptions(merge: true),
-          )
-          .timeout(_uploadTimeout);
-      return true;
-    } catch (e) {
-      if (kDebugMode) {
-        debugPrint('PendingSessionCodeClaimUpload: patch $docId: $e');
-      }
-      return false;
-    }
+    return CheckInRtdAttemptPublish.patchLinkedSession(
+      recordId: docId,
+      studentId: studentId,
+      sessionId: session.id,
+      listId: session.listId,
+      sessionCodeRaw: code,
+      registrationNumber: entry.registrationNumber.trim().toUpperCase(),
+    );
   }
 
   /// Links an existing or new awaiting claim to a published lecturer session.
@@ -219,9 +273,13 @@ class PendingSessionCodeClaimUpload {
     required String studentId,
     required AttendanceSession session,
   }) async {
-    if (!await AttendanceRepository.instance.ensureStudentDocOnServer(studentId)) {
+    if (!await AttendanceRepository.instance
+        .isLecturerSessionPublishedOnServer(session.id)) {
       return false;
     }
+    unawaited(
+      AttendanceRepository.instance.ensureStudentDocOnServer(studentId),
+    );
     if (await isClaimOnServer(entry: entry, studentId: studentId)) {
       final patched = await _patchClaimWithSession(
         entry: entry,
@@ -253,6 +311,20 @@ class PendingSessionCodeClaimUpload {
     if (!isValidJoinCodeFormat(code)) return false;
     if (entry.deviceId.trim().isEmpty) return false;
 
+    // Persist before upload so Check-ins lists the attempt even when the
+    // lecturer session is not on the device yet.
+    await PendingSessionCodeQueue.updateStoredEntry(
+      entry.copyWith(
+        status: entry.status == PendingSessionCodeStatus.approved
+            ? entry.status
+            : PendingSessionCodeStatus.queued,
+        note: entry.note?.trim().isNotEmpty == true
+            ? entry.note
+            : 'Saved on this device — uploading session metadata.',
+        invalidMarkedAt: null,
+      ),
+    );
+
     final blockReason = await localDeviceBlockReason(
       entry,
       studentId: canonicalStudentId,
@@ -264,15 +336,10 @@ class PendingSessionCodeClaimUpload {
       return false;
     }
 
-    if (!await AttendanceRepository.instance
-        .ensureStudentDocOnServer(canonicalStudentId)) {
-      if (kDebugMode) {
-        debugPrint(
-          'PendingSessionCodeClaimUpload: student doc not on server ($canonicalStudentId)',
-        );
-      }
-      return false;
-    }
+    unawaited(
+      AttendanceRepository.instance
+          .ensureStudentDocOnServer(canonicalStudentId),
+    );
 
     final lecturerSession = await _resolvePublishedSession(entry);
     final bothEndsPresent = lecturerSession != null;
@@ -296,56 +363,39 @@ class PendingSessionCodeClaimUpload {
       return true;
     }
 
-    final uid = AuthRepository.instance.currentFirebaseUid?.trim();
+    final uid = AuthRepository.instance.currentUserId?.trim();
     final docId = claimDocId(normalizedCode: code, studentId: canonicalStudentId);
 
-    try {
-      await uPanelFirestore()
-          .collection(FirestoreCollections.checkInAttempts)
-          .doc(docId)
-          .set(
-            <String, dynamic>{
-              'studentId': canonicalStudentId,
-              'registrationNumber': entry.registrationNumber.trim().toUpperCase(),
-              'sessionCodeRaw': code,
-              'sessionId': bothEndsPresent ? lecturerSession.id : '',
-              'listId': bothEndsPresent ? lecturerSession.listId : '',
-              'course': '—',
-              'capturedAt': Timestamp.fromDate(entry.capturedAt),
-              'latitude': entry.latitude,
-              'longitude': entry.longitude,
-              'deviceId': entry.deviceId.trim(),
-              'status': 'pending',
-              'awaitingSession': !bothEndsPresent,
-              if (!bothEndsPresent)
-                'pendingUntil': Timestamp.fromDate(
-                  entry.pendingSince.add(PendingRetention.unverifiedPending),
-                ),
-              if (uid != null && uid.isNotEmpty) 'submittedByUid': uid,
-              'clientSubmittedAt': FieldValue.serverTimestamp(),
-            },
-            SetOptions(merge: true),
-          )
-          .timeout(_uploadTimeout);
-      final persisted = await isClaimOnServer(
+    final rtdOk = await CheckInRtdAttemptPublish.uploadPending(
+      recordId: docId,
+      studentId: canonicalStudentId,
+      deviceId: entry.deviceId.trim(),
+      capturedAt: entry.capturedAt,
+      latitude: entry.latitude,
+      longitude: entry.longitude,
+      sessionId: bothEndsPresent ? lecturerSession.id : null,
+      listId: bothEndsPresent ? lecturerSession.listId : null,
+      course: '—',
+      sessionCodeRaw: code,
+      registrationNumber: entry.registrationNumber.trim().toUpperCase(),
+      submittedByUid: uid,
+      awaitingSession: !bothEndsPresent,
+      pendingUntil: !bothEndsPresent
+          ? entry.pendingSince.add(PendingRetention.unverifiedPending)
+          : null,
+    );
+    if (!rtdOk) return false;
+
+    await PendingSessionCodeQueue.markUploaded(entry.id);
+
+    if (bothEndsPresent) {
+      await awaitImmediateVerificationWhenBothEndsPresent(
         entry: entry,
         studentId: canonicalStudentId,
+        session: lecturerSession,
       );
-      if (!persisted) return false;
-      if (bothEndsPresent) {
-        await awaitImmediateVerificationWhenBothEndsPresent(
-          entry: entry,
-          studentId: canonicalStudentId,
-          session: lecturerSession,
-        );
-      }
-      return true;
-    } catch (e) {
-      if (kDebugMode) {
-        debugPrint('PendingSessionCodeClaimUpload: failed $docId: $e');
-      }
-      return false;
     }
+    return true;
   }
 
   /// Both lecturer session + student claim are on the server — verify now.
@@ -376,10 +426,10 @@ class PendingSessionCodeClaimUpload {
     if (!isValidJoinCodeFormat(code)) return false;
     final docId = claimDocId(normalizedCode: code, studentId: studentId);
     try {
-      final doc = await uPanelFirestore()
-          .collection(FirestoreCollections.checkInAttempts)
+      final doc = await apiStore()
+          .collection(ApiCollections.checkInAttempts)
           .doc(docId)
-          .get(const GetOptions(source: Source.server))
+          .get(const ApiGetOptions(source: ApiSource.server))
           .timeout(_lookupTimeout);
       if (!doc.exists) return false;
       final data = doc.data();
@@ -389,7 +439,7 @@ class PendingSessionCodeClaimUpload {
       final sessionId = (data['sessionId'] as String?)?.trim() ?? '';
       if (sessionId.isEmpty) return false;
       final result =
-          await AttendanceRepository.instance.refreshOfficialRecordFromFirebase(
+          await AttendanceRepository.instance.refreshOfficialRecordFromApi(
         sessionId: sessionId,
         studentId: studentId,
       );

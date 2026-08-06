@@ -11,10 +11,9 @@ import 'pending_retention.dart';
 import 'pending_session_code_claim_upload.dart';
 import 'pending_session_code_sync.dart';
 
-const _maxEntries = 200;
-
 enum PendingSessionCodeStatus {
   queued,
+  approved,
   needsRegistration,
   invalidOrExpired,
   deviceBlocked,
@@ -38,6 +37,7 @@ class PendingSessionCodeEntry {
     this.note,
     this.invalidMarkedAt,
     DateTime? pendingSince,
+    this.uploadedAt,
   }) : pendingSince = PendingRetention.pendingSinceOr(capturedAt, pendingSince);
 
   /// When waiting for session verification (or upload).
@@ -59,6 +59,9 @@ class PendingSessionCodeEntry {
   final PendingSessionCodeStatus status;
   final String? note;
   final DateTime? invalidMarkedAt;
+  final DateTime? uploadedAt;
+
+  bool get hasLocalUploadEvidence => uploadedAt != null;
 
   PendingSessionCodeEntry copyWith({
     String? sessionId,
@@ -70,6 +73,7 @@ class PendingSessionCodeEntry {
     String? note,
     DateTime? invalidMarkedAt,
     DateTime? pendingSince,
+    DateTime? uploadedAt,
   }) {
     return PendingSessionCodeEntry(
       id: id,
@@ -88,6 +92,7 @@ class PendingSessionCodeEntry {
       note: note ?? this.note,
       invalidMarkedAt: invalidMarkedAt ?? this.invalidMarkedAt,
       pendingSince: pendingSince ?? this.pendingSince,
+      uploadedAt: uploadedAt ?? this.uploadedAt,
     );
   }
 
@@ -108,6 +113,7 @@ class PendingSessionCodeEntry {
         'note': note,
         'invalidMarkedAt': invalidMarkedAt?.toIso8601String(),
         'pendingSince': pendingSince.toIso8601String(),
+        if (uploadedAt != null) 'uploadedAt': uploadedAt!.toIso8601String(),
       };
 
   static PendingSessionCodeEntry? fromJson(Map<String, dynamic> m) {
@@ -157,6 +163,9 @@ class PendingSessionCodeEntry {
             ? DateTime.tryParse(m['invalidMarkedAt'] as String)
             : null,
         pendingSince: PendingRetention.pendingSinceOr(captured, since),
+        uploadedAt: (m['uploadedAt'] as String?) != null
+            ? DateTime.tryParse(m['uploadedAt'] as String)
+            : null,
       );
     } catch (_) {
       return null;
@@ -222,6 +231,37 @@ class PendingSessionSyncResult {
 class PendingSessionCodeQueue {
   PendingSessionCodeQueue._();
 
+  static Future<void>? _writeTail;
+
+  /// Serializes read-modify-write so enqueue and drain cannot clobber each other.
+  static Future<T> withSerializedWrites<T>(Future<T> Function() body) async {
+    final previous = _writeTail;
+    final gate = Completer<void>();
+    _writeTail = gate.future;
+    if (previous != null) {
+      await previous;
+    }
+    try {
+      return await body();
+    } finally {
+      gate.complete();
+    }
+  }
+
+  /// Atomically loads, transforms, and saves the queue.
+  static Future<List<PendingSessionCodeEntry>> mutate(
+    Future<List<PendingSessionCodeEntry>> Function(
+      List<PendingSessionCodeEntry> current,
+    ) transform,
+  ) {
+    return withSerializedWrites(() async {
+      final current = await loadAll();
+      final next = await transform(List<PendingSessionCodeEntry>.from(current));
+      await _saveAllUnlocked(next);
+      return next;
+    });
+  }
+
   static Future<List<PendingSessionCodeEntry>> loadAll() async {
     final raw = await AttendanceLocalQueues.readString(
       AttendanceLocalQueues.sessionCodesJsonKey,
@@ -246,12 +286,13 @@ class PendingSessionCodeQueue {
   }
 
   static Future<void> saveAll(List<PendingSessionCodeEntry> items) async {
-    final trimmed = items.length > _maxEntries
-        ? items.sublist(items.length - _maxEntries)
-        : items;
+    await withSerializedWrites(() => _saveAllUnlocked(items));
+  }
+
+  static Future<void> _saveAllUnlocked(List<PendingSessionCodeEntry> items) async {
     await AttendanceLocalQueues.writeString(
       AttendanceLocalQueues.sessionCodesJsonKey,
-      jsonEncode(trimmed.map((e) => e.toJson()).toList()),
+      jsonEncode(items.map((e) => e.toJson()).toList()),
     );
   }
 
@@ -308,9 +349,7 @@ class PendingSessionCodeQueue {
     try {
       final processed = await PendingSessionCodeSync.processOnCreate(entry);
       if (processed.discardLocal) {
-        final all = await loadAll();
-        all.removeWhere((e) => e.id == entry.id);
-        await saveAll(all);
+        await removeById(entry.id);
         notifyPendingWorkQueuesChanged();
         AttendanceRepository.instance.notifyAttendanceStoreUpdated();
         return;
@@ -322,21 +361,70 @@ class PendingSessionCodeQueue {
         }
       }
     } catch (_) {}
-    unawaited(PendingSessionCodeSync.drainUrgent());
+    if (!PendingSessionCodeSync.isDraining) {
+      unawaited(PendingSessionCodeSync.drainUrgent());
+    }
+  }
+
+  /// Persists without scheduling upload/drain — use during an active drain pass.
+  static Future<void> updateStoredEntry(PendingSessionCodeEntry entry) async {
+    await _persistEntry(entry);
+    notifyPendingWorkQueuesChanged();
+  }
+
+  static PendingSessionCodeEntry _withPreservedUploadAt(
+    PendingSessionCodeEntry incoming,
+    PendingSessionCodeEntry? existing,
+  ) {
+    if (incoming.uploadedAt != null) return incoming;
+    final prior = existing?.uploadedAt;
+    if (prior == null) return incoming;
+    return incoming.copyWith(uploadedAt: prior);
   }
 
   static Future<void> _persistEntry(PendingSessionCodeEntry entry) async {
-    final all = await loadAll();
-    all.removeWhere((e) => e.id == entry.id);
-    all.add(entry);
-    await saveAll(all);
+    await mutate((all) async {
+      PendingSessionCodeEntry? existing;
+      for (final row in all) {
+        if (row.id == entry.id) {
+          existing = row;
+          break;
+        }
+      }
+      final toWrite = _withPreservedUploadAt(entry, existing);
+      all.removeWhere((e) => e.id == entry.id);
+      all.add(toWrite);
+      return all;
+    });
   }
 
   static Future<void> removeById(String id) async {
-    final all = await loadAll();
-    all.removeWhere((e) => e.id == id);
-    await saveAll(all);
+    await mutate((all) async {
+      all.removeWhere((e) => e.id == id);
+      return all;
+    });
     notifyPendingWorkQueuesChanged();
+  }
+
+  /// Caches that upload evidence reached RTD (survives Firestore read denials).
+  static Future<void> markUploaded(String id, {DateTime? at}) async {
+    final trimmed = id.trim();
+    if (trimmed.isEmpty) return;
+    final stamp = at ?? DateTime.now();
+    var changed = false;
+    await mutate((all) async {
+      for (var i = 0; i < all.length; i++) {
+        if (all[i].id != trimmed) continue;
+        if (all[i].uploadedAt != null) return all;
+        all[i] = all[i].copyWith(uploadedAt: stamp);
+        changed = true;
+        break;
+      }
+      return all;
+    });
+    if (changed) {
+      notifyPendingWorkQueuesChanged();
+    }
   }
 
   static Future<void> saveLastSyncResult(PendingSessionSyncResult result) async {

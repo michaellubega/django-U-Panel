@@ -661,7 +661,7 @@ class _ClassListMetricTile extends StatelessWidget {
           Text(
             '${metric.value}',
             style: theme.textTheme.titleLarge?.copyWith(
-              fontWeight: FontWeight.w800,
+              fontWeight: FontWeight.w600,
               color: AppTheme.primary,
               height: 1.1,
               fontSize: DashboardCardText.metricValueSize,

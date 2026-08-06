@@ -17,13 +17,15 @@ class EmailVerificationScreen extends StatefulWidget {
       _EmailVerificationScreenState();
 }
 
-class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
+class _EmailVerificationScreenState extends State<EmailVerificationScreen>
+    with WidgetsBindingObserver {
   bool _busy = false;
   String? _status;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     AuthRepository.instance.addListener(_onAuthChanged);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(_tryAlreadyVerified(silent: true));
@@ -32,8 +34,16 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     AuthRepository.instance.removeListener(_onAuthChanged);
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_tryAlreadyVerified(silent: true));
+    }
   }
 
   void _onAuthChanged() {

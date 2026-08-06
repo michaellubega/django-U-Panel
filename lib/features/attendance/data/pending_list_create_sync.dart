@@ -1,8 +1,8 @@
 import 'package:flutter/foundation.dart';
 
 import '../../../core/connectivity/app_connectivity.dart';
-import '../../../core/firebase/firestore_collections.dart';
-import '../../../core/firebase/u_panel_firestore.dart';
+import '../../../core/api/api_collections.dart';
+import '../../../core/api/api_store.dart';
 import '../models/attendance_models.dart';
 import 'attendance_repository.dart';
 import 'pending_list_create_queue.dart';
@@ -23,7 +23,7 @@ class PendingListCreateSync {
       if (!AppConnectivity.instance.hasNetworkInterface) return;
       if (!await AppConnectivity.instance.ensureReachable()) return;
 
-      final firestore = uPanelFirestore();
+      final firestore = apiStore();
       final now = DateTime.now();
       final keep = <PendingListCreateEntry>[];
 
@@ -73,7 +73,7 @@ class PendingListCreateSync {
           }
 
           await firestore
-              .collection(FirestoreCollections.attendanceLists)
+              .collection(ApiCollections.attendanceLists)
               .doc(list.id)
               .set(AttendanceRepository.listToFirestoreMapForSync(list))
               .timeout(AttendanceRepository.listPublishTimeout);

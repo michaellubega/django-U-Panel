@@ -3,13 +3,11 @@
 #
 
 list(APPEND FLUTTER_PLUGIN_LIST
-  cloud_firestore
   connectivity_plus
-  firebase_auth
-  firebase_core
   flutter_timezone
   geolocator_windows
   printing
+  sentry_flutter
   windows_notification
 )
 

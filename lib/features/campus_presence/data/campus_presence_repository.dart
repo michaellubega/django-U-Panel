@@ -1,22 +1,24 @@
 import 'dart:convert';
 
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_core/firebase_core.dart';
 
 import '../../../core/auth/auth_repository.dart';
 import '../../../core/auth/kiu_admin_job_title.dart';
 import '../../../core/connectivity/app_connectivity.dart';
 import '../../../core/device/device_identity.dart';
 import '../../../core/errors/user_facing_errors.dart';
-import '../../../core/firebase/firestore_collections.dart';
-import '../../../core/firebase/u_panel_firestore.dart';
+import '../../../core/api/api_collections.dart';
+import '../../../core/api/api_store.dart';
 import '../../../core/storage/attendance_local_queues.dart';
 import '../campus_geofence_validation.dart';
 import '../campus_presence_grouping.dart';
 import '../campus_presence_policy.dart';
 import '../models/campus_presence_models.dart';
 import 'pending_campus_presence_queue.dart';
+import '../../../core/api/api_field_value.dart';
+import '../../../core/api/api_datetime.dart';
+import '../../../core/api/api_exceptions.dart';
+import '../../../core/api/api_auth.dart';
+import '../../../core/api/api_config.dart';
 
 enum CampusPresenceSubmitOutcome {
   success,
@@ -26,7 +28,7 @@ enum CampusPresenceSubmitOutcome {
   geofenceNotConfigured,
   outsideCampus,
   invalidTransition,
-  firebaseError,
+  apiError,
 }
 
 enum CampusGeofenceSaveOutcome {
@@ -34,18 +36,18 @@ enum CampusGeofenceSaveOutcome {
   notQaStaff,
   offline,
   invalidRadius,
-  firebaseError,
+  apiError,
 }
 
 class CampusPresenceRepository {
   CampusPresenceRepository._();
   static final CampusPresenceRepository instance = CampusPresenceRepository._();
 
-  FirebaseFirestore get _db => uPanelFirestore();
+  ApiStore get _db => apiStore();
 
-  bool get _firebaseReady {
+  bool get _apiReady {
     try {
-      return Firebase.apps.isNotEmpty;
+      return isApiConfigured;
     } catch (_) {
       return false;
     }
@@ -53,7 +55,7 @@ class CampusPresenceRepository {
 
   Future<CampusGeofence?> fetchCampusGeofence({bool forceServer = false}) async {
     final cached = await _readCachedGeofence();
-    if (!_firebaseReady) return cached;
+    if (!_apiReady) return cached;
 
     final online = AppConnectivity.instance.isOnline;
     if (!online && !forceServer) return cached;
@@ -62,10 +64,10 @@ class CampusPresenceRepository {
 
     try {
       final ref = _db
-          .collection(FirestoreCollections.meta)
-          .doc(FirestoreCollections.campusGeofenceDocId);
+          .collection(ApiCollections.meta)
+          .doc(ApiCollections.campusGeofenceDocId);
       final snap = forceServer || online
-          ? await ref.get(const GetOptions(source: Source.server))
+          ? await ref.get(const ApiGetOptions(source: ApiSource.server))
           : await ref.get();
       if (!snap.exists) return cached;
       final fence =
@@ -74,7 +76,7 @@ class CampusPresenceRepository {
         await _cacheGeofence(fence);
       }
       return fence ?? cached;
-    } on FirebaseException catch (e) {
+    } on ApiException catch (e) {
       if (e.code == 'permission-denied') {
         throw StateError(
           UserFacingErrors.campusAreaLoadFailed,
@@ -116,7 +118,7 @@ class CampusPresenceRepository {
   }
 
   Future<AdminCampusDayStatus> fetchTodayStatusForCurrentAdmin() async {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
+    final uid = ApiAuth.instance.currentUser?.uid;
     if (uid == null || uid.isEmpty) {
       return AdminCampusDayStatus(
         localDateKey: localDateKeyFor(DateTime.now()),
@@ -132,18 +134,18 @@ class CampusPresenceRepository {
   }) async {
     final key = localDateKeyFor(localDate);
     var serverEvents = <CampusPresenceEvent>[];
-    if (_firebaseReady) {
+    if (_apiReady) {
       try {
         final online = AppConnectivity.instance.isOnline;
         final snap = await _db
-            .collection(FirestoreCollections.adminCampusPresence)
+            .collection(ApiCollections.adminCampusPresence)
             .where('adminUid', isEqualTo: adminUid)
             .where('localDateKey', isEqualTo: key)
             .orderBy('capturedAt')
             .get(
               online
-                  ? const GetOptions()
-                  : const GetOptions(source: Source.cache),
+                  ? const ApiGetOptions()
+                  : const ApiGetOptions(source: ApiSource.serverAndCache),
             );
         serverEvents = [
           for (final d in snap.docs)
@@ -177,7 +179,7 @@ class CampusPresenceRepository {
 
   /// Loads KIU administrators who must record campus presence ([isKiuAdmin]).
   Future<List<AdminCampusRosterEntry>> fetchKiuAdminRoster() async {
-    if (!_firebaseReady) return const [];
+    if (!_apiReady) return const [];
 
     final byUid = <String, AdminCampusRosterEntry>{};
 
@@ -186,15 +188,15 @@ class CampusPresenceRepository {
         final snap = await _db.collection(collection).get();
         for (final d in snap.docs) {
           final data = d.data();
-          if (!_isKiuAdminDoc(data)) continue;
+          if (data == null || !_isKiuAdminDoc(data)) continue;
           final entry = _rosterEntryFromAdminDoc(d.id, data);
           byUid.putIfAbsent(entry.uid, () => entry);
         }
       } catch (_) {}
     }
 
-    await mergeCollection(FirestoreCollections.admins);
-    await mergeCollection(FirestoreCollections.adminsLegacy);
+    await mergeCollection(ApiCollections.admins);
+    await mergeCollection(ApiCollections.adminsLegacy);
 
     final out = byUid.values.toList()
       ..sort((a, b) => a.displayName.compareTo(b.displayName));
@@ -255,7 +257,7 @@ class CampusPresenceRepository {
       presentToday: 0,
       absentToday: 0,
     );
-    if (!_firebaseReady) return empty;
+    if (!_apiReady) return empty;
 
     final roster = await fetchAdminRoster();
     if (roster.isEmpty) return empty;
@@ -330,7 +332,7 @@ class CampusPresenceRepository {
     required DateTime rangeEnd,
     int limit = 500,
   }) async {
-    if (!_firebaseReady) return const [];
+    if (!_apiReady) return const [];
     final start = DateTime(
       rangeStart.year,
       rangeStart.month,
@@ -347,14 +349,14 @@ class CampusPresenceRepository {
     );
     try {
       final snap = await _db
-          .collection(FirestoreCollections.adminCampusPresence)
+          .collection(ApiCollections.adminCampusPresence)
           .where(
             'capturedAt',
-            isGreaterThanOrEqualTo: Timestamp.fromDate(start),
+            isGreaterThanOrEqualTo: apiDateToField(start),
           )
           .where(
             'capturedAt',
-            isLessThanOrEqualTo: Timestamp.fromDate(end),
+            isLessThanOrEqualTo: apiDateToField(end),
           )
           .orderBy('capturedAt', descending: true)
           .limit(limit)
@@ -372,10 +374,10 @@ class CampusPresenceRepository {
     required String adminUid,
     int limit = 100,
   }) async {
-    if (!_firebaseReady || adminUid.trim().isEmpty) return const [];
+    if (!_apiReady || adminUid.trim().isEmpty) return const [];
     try {
       final snap = await _db
-          .collection(FirestoreCollections.adminCampusPresence)
+          .collection(ApiCollections.adminCampusPresence)
           .where('adminUid', isEqualTo: adminUid.trim())
           .orderBy('capturedAt', descending: true)
           .limit(limit)
@@ -404,10 +406,10 @@ class CampusPresenceRepository {
       );
     }
 
-    final uid = FirebaseAuth.instance.currentUser?.uid;
+    final uid = ApiAuth.instance.currentUser?.uid;
     if (uid == null || uid.isEmpty) {
       return (
-        outcome: CampusPresenceSubmitOutcome.firebaseError,
+        outcome: CampusPresenceSubmitOutcome.apiError,
         message: 'You must be signed in.',
       );
     }
@@ -474,7 +476,7 @@ class CampusPresenceRepository {
     );
 
     final online = AppConnectivity.instance.isOnline;
-    if (online && _firebaseReady) {
+    if (online && _apiReady) {
       try {
         final uploaded = await _writePresenceDoc(pending);
         if (uploaded) {
@@ -486,16 +488,16 @@ class CampusPresenceRepository {
               ? 'You already checked in on campus today.'
               : 'You already checked out for today.',
         );
-      } on FirebaseException catch (e) {
+      } on ApiException catch (e) {
         if (e.code == 'permission-denied') {
           return (
-            outcome: CampusPresenceSubmitOutcome.firebaseError,
+            outcome: CampusPresenceSubmitOutcome.apiError,
             message: UserFacingErrors.campusCheckInFailed,
           );
         }
         if (e.code != 'unavailable') {
           return (
-            outcome: CampusPresenceSubmitOutcome.firebaseError,
+            outcome: CampusPresenceSubmitOutcome.apiError,
             message: UserFacingErrors.campusCheckInFailed,
           );
         }
@@ -511,7 +513,7 @@ class CampusPresenceRepository {
 
   /// Uploads one queued row (used by [PendingCampusPresenceSync]).
   Future<bool> uploadQueuedPresence(PendingCampusPresenceEntry entry) async {
-    if (!_firebaseReady) return false;
+    if (!_apiReady) return false;
     return _writePresenceDoc(entry);
   }
 
@@ -590,7 +592,7 @@ class CampusPresenceRepository {
 
   Future<bool> _writePresenceDoc(PendingCampusPresenceEntry entry) async {
     final ref = _db
-        .collection(FirestoreCollections.adminCampusPresence)
+        .collection(ApiCollections.adminCampusPresence)
         .doc(entry.id);
     final existing = await ref.get();
     if (existing.exists) return false;
@@ -598,7 +600,7 @@ class CampusPresenceRepository {
     await ref.set({
       'adminUid': entry.adminUid,
       'kind': entry.kind.firestoreValue,
-      'capturedAt': Timestamp.fromDate(entry.capturedAt),
+      'capturedAt': apiDateToField(entry.capturedAt),
       'localDateKey': entry.localDateKey,
       'latitude': entry.latitude,
       'longitude': entry.longitude,
@@ -645,9 +647,9 @@ class CampusPresenceRepository {
         message: 'Connect to the internet to update the campus location.',
       );
     }
-    if (!_firebaseReady) {
+    if (!_apiReady) {
       return (
-        outcome: CampusGeofenceSaveOutcome.firebaseError,
+        outcome: CampusGeofenceSaveOutcome.apiError,
         message: UserFacingErrors.backendNotReady,
       );
     }
@@ -661,10 +663,10 @@ class CampusPresenceRepository {
       );
     }
 
-    final uid = FirebaseAuth.instance.currentUser?.uid;
+    final uid = ApiAuth.instance.currentUser?.uid;
     if (uid == null || uid.isEmpty) {
       return (
-        outcome: CampusGeofenceSaveOutcome.firebaseError,
+        outcome: CampusGeofenceSaveOutcome.apiError,
         message: 'You must be signed in.',
       );
     }
@@ -676,36 +678,36 @@ class CampusPresenceRepository {
 
     try {
       await _db
-          .collection(FirestoreCollections.meta)
-          .doc(FirestoreCollections.campusGeofenceDocId)
+          .collection(ApiCollections.meta)
+          .doc(ApiCollections.campusGeofenceDocId)
           .set(
         {
           'latitude': latitude,
           'longitude': longitude,
           'radiusMeters': radiusMeters,
           'label': label.trim().isEmpty ? 'Campus' : label.trim(),
-          'updatedAt': FieldValue.serverTimestamp(),
+          'updatedAt': ApiFieldValue.serverTimestamp(),
           'updatedByUid': uid,
           if (displayName != null && displayName.isNotEmpty)
             'updatedByName': displayName,
         },
-        SetOptions(merge: true),
+        ApiSetOptions(merge: true),
       );
       return (outcome: CampusGeofenceSaveOutcome.success, message: null);
-    } on FirebaseException catch (e) {
+    } on ApiException catch (e) {
       if (e.code == 'permission-denied') {
         return (
-          outcome: CampusGeofenceSaveOutcome.firebaseError,
+          outcome: CampusGeofenceSaveOutcome.apiError,
           message: UserFacingErrors.campusAreaSaveFailed,
         );
       }
       return (
-        outcome: CampusGeofenceSaveOutcome.firebaseError,
+        outcome: CampusGeofenceSaveOutcome.apiError,
         message: UserFacingErrors.campusAreaSaveFailed,
       );
     } catch (e) {
       return (
-        outcome: CampusGeofenceSaveOutcome.firebaseError,
+        outcome: CampusGeofenceSaveOutcome.apiError,
         message: UserFacingErrors.campusAreaSaveFailed,
       );
     }

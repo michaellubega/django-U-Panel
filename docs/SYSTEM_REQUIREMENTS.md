@@ -8,15 +8,15 @@ This guide explains what phones, computers, browsers, and internet you need to u
 |-------------|------------|
 | **Student or lecturer** | [What every user needs](#what-every-user-needs), then your device section ([phone](#android-phones-and-tablets), [computer](#windows-pc), or [browser](#web-in-a-browser)) |
 | **QA or admin staff** | Same as above; a **tablet or laptop with a wide screen** makes attendance lists and reports easier |
-| **IT or technical staff** | [For installers and developers](#for-installers-and-developers) — setup, builds, and Firebase |
+| **IT or technical staff** | [For installers and developers](#for-installers-and-developers) — setup, builds, and Django API |
 
-For how the product works day to day, see [PROJECT_OVERVIEW.md](./PROJECT_OVERVIEW.md). For cloud setup steps, see [FIREBASE_SETUP.md](../FIREBASE_SETUP.md).
+For how the product works day to day, see [PROJECT_OVERVIEW.md](./PROJECT_OVERVIEW.md). For cloud setup steps, see [backend/README.md](../backend/README.md).
 
 ---
 
 ## In short
 
-- U-Panel is a **university attendance and notices app**. It stores data in the cloud (Google Firebase), not only on your device.
+- U-Panel is a **university attendance and notices app**. It stores data on a **Django REST API** backend, not only on your device.
 - You need **internet** for sign-in, syncing attendance, notices, and most uploads. Some attendance actions can **wait on your device** and send later when you are back online.
 - You need a **valid U-Panel account** from your institution.
 - **Phones are best for students checking in** (location and notices). **Laptops or tablets with a wide screen** are best for staff managing class lists and sessions.

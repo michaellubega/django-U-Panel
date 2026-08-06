@@ -45,7 +45,13 @@ Future<bool> studentHasUnexpiredPendingEvidenceForSession({
     if (e.status == PendingSessionCodeStatus.invalidOrExpired) continue;
     if (e.status == PendingSessionCodeStatus.deviceBlocked) continue;
     final sid = e.sessionId?.trim();
-    if (sid != null && sid.isNotEmpty && sid == sessionId) return true;
+    if (sid != null && sid.isNotEmpty && sid == sessionId) {
+      return offlineQueuedSessionCodeTrustsPresent(
+        entry: e,
+        session: session,
+        studentRegistrationNumber: reg,
+      );
+    }
     if (offlineQueuedSessionCodeTrustsPresent(
       entry: e,
       session: session,

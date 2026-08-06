@@ -1,6 +1,8 @@
 import 'dart:math';
 
 import '../student_session_grace.dart';
+import '../../../core/api/api_store.dart';
+import '../../../core/api/api_collections.dart';
 
 /// Short labels for [DateTime.weekday] (1 = Monday … 7 = Sunday).
 const kAttendanceWeekdayShortLabels = [
@@ -270,7 +272,7 @@ class AttendanceRecord {
 
 /// Stable Firestore document id / in-app id: one row per student per session.
 /// Same composite-key idea as `{sessionId}_{studentId}` in textbook schemas
-/// (see `FirestoreCollections.attendanceRecords`).
+/// (see `ApiCollections.attendanceRecords`).
 String attendanceRecordIdForSessionStudent(String sessionId, String studentId) {
   return '${sessionId}_$studentId';
 }

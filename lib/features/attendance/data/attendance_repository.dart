@@ -2,8 +2,6 @@ import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
-import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:firebase_auth/firebase_auth.dart';
 import '../../../core/auth/auth_repository.dart';
 import '../../../core/auth/staff_auth_email.dart';
 import '../../../core/auth/student_registration_number.dart';
@@ -11,13 +9,13 @@ import '../../../core/cache/smart_cache_policy.dart';
 import '../../../core/connectivity/app_connectivity.dart';
 import '../../../core/device/device_student_registration_lock.dart';
 import '../../../core/connectivity/online_first_persist.dart';
-import '../../../core/firebase/check_in_rtd_confirmation.dart';
-import '../../../core/firebase/attendance_record_rtd_sync.dart';
-import '../../../core/firebase/firestore_collections.dart';
-import '../../../core/firebase/session_rtd_sync.dart';
-import '../../../core/firebase/student_rtd_index.dart';
-import '../../../core/firebase/u_panel_firestore.dart';
-import '../../../core/firebase/u_panel_rtd.dart';
+import '../../../core/api/api_auth.dart';
+import '../../../core/api/api_collections.dart';
+import '../../../core/api/api_datetime.dart';
+import '../../../core/api/api_exceptions.dart';
+import '../../../core/api/api_field_value.dart';
+import '../../../core/api/api_store.dart';
+import '../../../core/api/rtd_stubs.dart';
 import '../../../core/notifications/notification_maintenance_coordinator.dart';
 import '../../../core/push/push_controller.dart';
 import '../../../core/storage/attendance_local_snapshot.dart';
@@ -39,6 +37,7 @@ import 'attendance_remote_list_watch.dart';
 import 'attendance_remote_record_watch.dart';
 import 'attendance_rtd_record_watch.dart';
 import 'pending_check_in_queue.dart';
+import 'pending_retention.dart';
 import 'pending_list_create_queue.dart';
 import 'pending_session_code_queue.dart';
 import 'pending_session_code_claim_upload.dart';
@@ -98,7 +97,9 @@ class AttendanceRepository extends ChangeNotifier {
     bool refreshRecordWatch = false,
   }) {
     if (refreshRecordWatch) {
-      unawaited(AttendanceRemoteRecordWatch.instance.refreshIfNeeded());
+      if (!isStudentRecordWatchUser()) {
+        unawaited(AttendanceRemoteRecordWatch.instance.refreshIfNeeded());
+      }
       unawaited(AttendanceRtdRecordWatch.instance.refreshIfNeeded());
     }
     if (immediate) {
@@ -153,10 +154,10 @@ class AttendanceRepository extends ChangeNotifier {
     final a = AuthRepository.instance;
     if (!a.isLoggedIn || !a.adminCheckDone || !a.lecturerCheckDone) return null;
     if (a.isLecturer && !a.isAdmin) {
-      return a.currentFirebaseUid;
+      return a.currentUserId;
     }
     if (a.isKiuAdmin) {
-      return a.currentFirebaseUid;
+      return a.currentUserId;
     }
     return null;
   }
@@ -239,7 +240,7 @@ class AttendanceRepository extends ChangeNotifier {
   final Set<String> _listsPublishedOnServer = <String>{};
 
   /// Live listeners on in-flight check-in attempts (accepted → verify locally).
-  final Map<String, StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>>
+  final Map<String, StreamSubscription<ApiDocumentSnapshot>>
       _checkInAttemptWatchSubs = {};
 
   /// RTD listeners for low-latency check-in confirmation (primary over Firestore).
@@ -247,20 +248,20 @@ class AttendanceRepository extends ChangeNotifier {
       _checkInRtdWatchSubs = {};
 
   /// Prefer Firestore server reads when online; fall back to cache when offline.
-  GetOptions _loadQueryOptions({required bool force}) {
+  ApiGetOptions _loadQueryOptions({required bool force}) {
     final c = AppConnectivity.instance;
     if (force || c.isOnline) {
-      return const GetOptions(source: Source.server);
+      return const ApiGetOptions(source: ApiSource.server);
     }
-    return const GetOptions(source: Source.serverAndCache);
+    return const ApiGetOptions(source: ApiSource.serverAndCache);
   }
 
   /// Shared short timeout for offline-first list/session Firestore writes.
   static Duration get listPublishTimeout => _sessionPublishTimeout;
 
-  FirebaseFirestore? get _firestoreIfReady => tryUPanelFirestore();
+  ApiStore? get _firestoreIfReady => tryApiStore();
 
-  FirebaseFirestore get _firestore {
+  ApiStore get _firestore {
     final db = _firestoreIfReady;
     if (db == null) {
       throw StateError('Firestore is not available');
@@ -688,7 +689,7 @@ class AttendanceRepository extends ChangeNotifier {
       return const {};
     }
 
-    final uid = a.currentFirebaseUid?.trim() ?? '';
+    final uid = a.currentUserId?.trim() ?? '';
     if (uid.isEmpty) return const {};
 
     if (!a.isLecturer) return all;
@@ -718,6 +719,27 @@ class AttendanceRepository extends ChangeNotifier {
   /// Prioritizes this list for realtime record listeners and detail prefetch.
   void touchRecentListDetail(String listId) => _touchRecentListDetail(listId);
 
+  static bool _isRtdPermissionError(Object error) {
+    final message = error.toString().toLowerCase();
+    return message.contains('permission-denied') ||
+        message.contains('permission_denied');
+  }
+
+  /// Republish student RTD index once, then retry a read blocked by rules.
+  Future<T?> _rtdReadWithStudentIndexRetry<T>(Future<T> Function() read) async {
+    try {
+      return await read();
+    } catch (e) {
+      if (!_isRtdPermissionError(e)) rethrow;
+      await StudentRtdIndex.publishCurrentStudentRegistration();
+      try {
+        return await read();
+      } catch (_) {
+        return null;
+      }
+    }
+  }
+
   /// Lists recently opened in detail UI — used for student RTD stats listeners.
   List<String> recentListDetailIdsForWatch() =>
       List<String>.unmodifiable(_recentListDetailIds);
@@ -727,7 +749,7 @@ class AttendanceRepository extends ChangeNotifier {
     if (!isStudentRecordWatchUser()) return false;
     final lid = listId.trim();
     if (lid.isEmpty) return false;
-    final db = tryUPanelDatabase();
+    final db = null /* RTD disabled */;
     if (db == null) return false;
     final reg = studentRegistrationForRtdWatch();
     if (reg == null || reg.isEmpty) return false;
@@ -753,11 +775,13 @@ class AttendanceRepository extends ChangeNotifier {
 
     for (final studentId in {reg}) {
       try {
-        final snap = await db
-            .ref(AttendanceRecordRtdSync.studentRecordsPath(studentId))
-            .get()
-            .timeout(const Duration(seconds: 4));
-        final value = snap.value;
+        final snap = await _rtdReadWithStudentIndexRetry(
+          () => db
+              .ref(AttendanceRecordRtdSync.studentRecordsPath(studentId))
+              .get()
+              .timeout(const Duration(seconds: 4)),
+        );
+        final value = snap?.value;
         if (value is Map) {
           for (final entry in value.entries) {
             final sessionId = entry.key?.toString().trim() ?? '';
@@ -794,14 +818,16 @@ class AttendanceRepository extends ChangeNotifier {
       } catch (_) {}
 
       try {
-        final statsSnap = await db
-            .ref(AttendanceRecordRtdSync.studentListRollStatsPath(
-              studentId,
-              lid,
-            ))
-            .get()
-            .timeout(const Duration(seconds: 3));
-        if (statsSnap.exists) {
+        final statsSnap = await _rtdReadWithStudentIndexRetry(
+          () => db
+              .ref(AttendanceRecordRtdSync.studentListRollStatsPath(
+                studentId,
+                lid,
+              ))
+              .get()
+              .timeout(const Duration(seconds: 3)),
+        );
+        if (statsSnap != null && statsSnap.exists) {
           final stats =
               StudentRollStatsSnapshot.fromRtdValue(statsSnap.value);
           if (stats != null) {
@@ -822,7 +848,7 @@ class AttendanceRepository extends ChangeNotifier {
   /// Profile screen: pull overall + per-list stats and session rows from RTD.
   Future<bool> refreshStudentProfileFromRtd() async {
     if (!isStudentRecordWatchUser()) return false;
-    final db = tryUPanelDatabase();
+    final db = null /* RTD disabled */;
     if (db == null) return false;
 
     await AuthRepository.instance.ensureStudentRegistrationHydrated();
@@ -834,11 +860,13 @@ class AttendanceRepository extends ChangeNotifier {
     var applied = false;
 
     try {
-      final overallSnap = await db
-          .ref(AttendanceRecordRtdSync.studentRollStatsPath(reg))
-          .get()
-          .timeout(const Duration(seconds: 4));
-      if (overallSnap.exists) {
+      final overallSnap = await _rtdReadWithStudentIndexRetry(
+        () => db
+            .ref(AttendanceRecordRtdSync.studentRollStatsPath(reg))
+            .get()
+            .timeout(const Duration(seconds: 4)),
+      );
+      if (overallSnap != null && overallSnap.exists) {
         final stats = StudentRollStatsSnapshot.fromRtdValue(overallSnap.value);
         if (stats != null) {
           AttendanceStore.setStudentRollStats(reg, stats);
@@ -852,11 +880,13 @@ class AttendanceRepository extends ChangeNotifier {
     };
 
     try {
-      final byListSnap = await db
-          .ref('${AttendanceRecordRtdSync.statsRoot}/by_student/$reg/by_list')
-          .get()
-          .timeout(const Duration(seconds: 4));
-      final value = byListSnap.value;
+      final byListSnap = await _rtdReadWithStudentIndexRetry(
+        () => db
+            .ref('${AttendanceRecordRtdSync.statsRoot}/by_student/$reg/by_list')
+            .get()
+            .timeout(const Duration(seconds: 4)),
+      );
+      final value = byListSnap?.value;
       if (value is Map) {
         for (final key in value.keys) {
           final lid = key?.toString().trim() ?? '';
@@ -1193,7 +1223,7 @@ class AttendanceRepository extends ChangeNotifier {
     if (id.isEmpty) return false;
     try {
       final doc = await _firestore
-          .collection(FirestoreCollections.attendanceLists)
+          .collection(ApiCollections.attendanceLists)
           .doc(id)
           .get(_loadQueryOptions(force: true));
       return !doc.exists;
@@ -1307,8 +1337,10 @@ class AttendanceRepository extends ChangeNotifier {
     if (id.isEmpty) return;
     await warmFromLocalSnapshot();
     _touchRecentListDetail(id);
-    unawaited(AttendanceRemoteRecordWatch.instance.start());
     unawaited(AttendanceRtdRecordWatch.instance.start());
+    if (!isStudentRecordWatchUser()) {
+      unawaited(AttendanceRemoteRecordWatch.instance.start());
+    }
     if (isStudentRecordWatchUser()) {
       unawaited(refreshStudentListAttendanceFromRtd(id));
     }
@@ -1547,6 +1579,219 @@ class AttendanceRepository extends ChangeNotifier {
     return exists;
   }
 
+  /// True when upload should use an `await_{code}` claim (lecturer session not on
+  /// server). False when the session is already known locally — use
+  /// [PendingCheckInQueue] and a direct [check_in_attempts] write on reconnect.
+  Future<bool> _shouldUseAwaitingSessionClaimPath(String sessionId) async {
+    final id = sessionId.trim();
+    if (id.isEmpty) return true;
+
+    final awaitingUpload = await _sessionIdsAwaitingUpload();
+    if (awaitingUpload.contains(id)) return true;
+
+    final localSession = AttendanceStore.sessionById(id);
+    if (localSession == null) {
+      if (!AppConnectivity.instance.hasNetworkInterface) return true;
+      return !await isLecturerSessionPublishedOnServer(id);
+    }
+
+    // Offline with a cached session that is not waiting on lecturer upload:
+    // queue a direct check-in attempt, not a session-code claim.
+    if (!AppConnectivity.instance.hasNetworkInterface) {
+      return false;
+    }
+
+    return !await isLecturerSessionPublishedOnServer(id);
+  }
+
+  Future<void> _enqueuePendingCheckInRow({
+    required AttendanceRecord localRow,
+    required String listId,
+    required String course,
+    PendingCheckInQueueStatus status = PendingCheckInQueueStatus.queued,
+  }) async {
+    await _upsertPendingCheckInFromRecord(
+      record: localRow,
+      listId: listId,
+      course: course,
+      status: status,
+    );
+  }
+
+  /// Ensures every check-in appears on the Check-ins screen for 7-day retention.
+  Future<void> _upsertPendingCheckInFromRecord({
+    required AttendanceRecord record,
+    required String listId,
+    required String course,
+    PendingCheckInQueueStatus status = PendingCheckInQueueStatus.queued,
+    String? sessionCodeRaw,
+  }) async {
+    final all = await PendingCheckInQueue.loadAll();
+    PendingCheckInEntry? existing;
+    for (final e in all) {
+      if (e.id == record.id) {
+        existing = e;
+        break;
+      }
+    }
+    var resolvedStatus = status;
+    if (status == PendingCheckInQueueStatus.queued &&
+        existing?.status == PendingCheckInQueueStatus.approved) {
+      resolvedStatus = PendingCheckInQueueStatus.approved;
+    }
+    final code = sessionCodeRaw?.trim().isNotEmpty == true
+        ? normalizeSessionCodeInput(sessionCodeRaw!.trim())
+        : existing?.sessionCodeRaw;
+    await PendingCheckInQueue.enqueue(
+      PendingCheckInEntry(
+        id: record.id,
+        sessionId: record.sessionId,
+        studentId: record.studentId,
+        listId: listId,
+        course: course,
+        capturedAt: record.timestamp,
+        latitude: record.latitude,
+        longitude: record.longitude,
+        deviceId: record.deviceId?.trim() ?? '',
+        pendingSince: existing?.pendingSince ?? record.timestamp,
+        status: resolvedStatus,
+        sessionCodeRaw: code,
+        uploadedAt: existing?.uploadedAt,
+      ),
+    );
+  }
+
+  Future<void> _ensureCheckInListedInQueue({
+    required AttendanceRecord record,
+    String? listIdOverride,
+    required String course,
+    PendingCheckInQueueStatus? status,
+    String? sessionCodeRaw,
+  }) async {
+    if (!record.present) return;
+    final session = AttendanceStore.sessionById(record.sessionId);
+    final listId = (listIdOverride?.trim().isNotEmpty == true
+            ? listIdOverride!.trim()
+            : null) ??
+        session?.listId ??
+        '';
+    final code = sessionCodeRaw?.trim().isNotEmpty == true
+        ? normalizeSessionCodeInput(sessionCodeRaw!.trim())
+        : (session != null
+            ? normalizeSessionCodeInput(session.sessionCode)
+            : null);
+    var resolvedStatus = status;
+    if (resolvedStatus == null && AppConnectivity.instance.hasNetworkInterface) {
+      final entry = PendingCheckInEntry(
+        id: record.id,
+        sessionId: record.sessionId,
+        studentId: record.studentId,
+        listId: listId,
+        course: course,
+        capturedAt: record.timestamp,
+        latitude: record.latitude,
+        longitude: record.longitude,
+        deviceId: record.deviceId?.trim() ?? '',
+        sessionCodeRaw: code,
+      );
+      final approved = await pendingCheckInIsApproved(
+        entry: entry,
+        session: session,
+      );
+      resolvedStatus = approved
+          ? PendingCheckInQueueStatus.approved
+          : PendingCheckInQueueStatus.queued;
+    } else {
+      resolvedStatus ??= record.verified
+          ? PendingCheckInQueueStatus.approved
+          : PendingCheckInQueueStatus.queued;
+    }
+    await _upsertPendingCheckInFromRecord(
+      record: record,
+      listId: listId,
+      course: course,
+      status: resolvedStatus,
+      sessionCodeRaw: code,
+    );
+  }
+
+  Future<void> _upsertPendingSessionCodeEntry(
+    PendingSessionCodeEntry entry, {
+    PendingSessionCodeStatus? status,
+  }) async {
+    final all = await PendingSessionCodeQueue.loadAll();
+    PendingSessionCodeEntry? existing;
+    for (final e in all) {
+      if (e.id == entry.id) {
+        existing = e;
+        break;
+      }
+    }
+    await PendingSessionCodeQueue.enqueue(
+      entry.copyWith(
+        status: status ?? entry.status,
+        pendingSince: existing?.pendingSince ?? entry.pendingSince,
+        uploadedAt: existing?.uploadedAt ?? entry.uploadedAt,
+      ),
+    );
+  }
+
+  /// Backfills present local rows missing from the Check-ins queue (7-day retention).
+  Future<void> recoverUnqueuedLocalPresentCheckIns({bool resolveOnline = true}) async {
+    if (!isStudentScopedUser() && !isStudentRecordWatchUser()) return;
+    final now = DateTime.now();
+    final queued = await PendingCheckInQueue.loadAll();
+    final queuedIds = queued.map((e) => e.id.trim()).toSet();
+    for (final row in AttendanceStore.attendanceRecords) {
+      if (!row.present) continue;
+      if (!PendingRetention.isWithinRetention(row.timestamp, now)) continue;
+      if (row.deviceId?.trim().isEmpty ?? true) continue;
+      if (queuedIds.contains(row.id.trim())) continue;
+      if (await PendingCheckInQueue.containsRecordId(row.id)) continue;
+      final session = AttendanceStore.sessionById(row.sessionId);
+      final listId = session?.listId ?? '';
+      final sessionCode = session != null
+          ? normalizeSessionCodeInput(session.sessionCode)
+          : null;
+      var approved = false;
+      if (resolveOnline && row.verified) {
+        approved = await pendingCheckInIsApproved(
+          entry: PendingCheckInEntry(
+            id: row.id,
+            sessionId: row.sessionId,
+            studentId: row.studentId,
+            listId: listId,
+            course: row.course,
+            capturedAt: row.timestamp,
+            latitude: row.latitude,
+            longitude: row.longitude,
+            deviceId: row.deviceId?.trim() ?? '',
+            sessionCodeRaw: sessionCode,
+          ),
+          session: session,
+        );
+      } else if (row.verified) {
+        approved = true;
+      }
+      await _upsertPendingCheckInFromRecord(
+        record: row,
+        listId: listId,
+        course: row.course.trim().isNotEmpty
+            ? row.course
+            : _resolvePresentCourseForSession(
+                row.sessionId,
+                row.studentId,
+                row.course,
+              ),
+        status: approved
+            ? PendingCheckInQueueStatus.approved
+            : PendingCheckInQueueStatus.queued,
+        sessionCodeRaw: sessionCode,
+      );
+      queuedIds.add(row.id.trim());
+    }
+  }
+
   void _invalidateSessionPublishedCache([String? sessionId]) {
     if (sessionId != null) {
       _sessionPublishedOnServerCache.remove(sessionId.trim());
@@ -1621,6 +1866,7 @@ class AttendanceRepository extends ChangeNotifier {
     PendingCheckInEntry entry,
     AttendanceSession session,
   ) {
+    if (entry.sessionId.trim() != session.id) return false;
     if (offlineOrMetadataQueuedCheckInTrustsPresent(entry, session)) {
       return true;
     }
@@ -1683,7 +1929,7 @@ class AttendanceRepository extends ChangeNotifier {
       batch.add(() async {
         try {
           final doc = await _firestore
-              .collection(FirestoreCollections.checkInAttempts)
+              .collection(ApiCollections.checkInAttempts)
               .doc(id)
               .get()
               .timeout(_onlineFirestoreTimeout);
@@ -1709,7 +1955,7 @@ class AttendanceRepository extends ChangeNotifier {
     if (id.isEmpty) return null;
     try {
       final doc = await _firestore
-          .collection(FirestoreCollections.checkInAttempts)
+          .collection(ApiCollections.checkInAttempts)
           .doc(id)
           .get()
           .timeout(_onlineFirestoreTimeout);
@@ -1954,10 +2200,12 @@ class AttendanceRepository extends ChangeNotifier {
     _invalidateRollStatsAfterRecordMerge(localRow);
     _notifyStoreUpdated(immediate: true);
     _schedulePersistScopedLocalSnapshot();
+    final session = AttendanceStore.sessionById(sessionId);
     watchCheckInAttemptForStudent(
       recordId: localRow.id,
       sessionId: sessionId,
       studentId: studentId,
+      sessionCodeRaw: session?.sessionCode,
     );
     unawaited(AttendanceRemoteRecordWatch.instance.start());
     unawaited(AttendanceRtdRecordWatch.instance.start());
@@ -2047,12 +2295,12 @@ class AttendanceRepository extends ChangeNotifier {
     final rejectedIds =
         await _fetchRejectedCheckInRecordIds(pendingRecordIds);
     if (rejectedIds.isNotEmpty) {
-      final keptCheckIns =
-          pendingCheckIns.where((e) => !rejectedIds.contains(e.id)).toList();
-      if (keptCheckIns.length != pendingCheckIns.length) {
-        await PendingCheckInQueue.saveAll(keptCheckIns);
-        pendingCheckIns = keptCheckIns;
-      }
+      pendingCheckIns = [
+        for (final e in pendingCheckIns)
+          rejectedIds.contains(e.id)
+              ? e.copyWith(status: PendingCheckInQueueStatus.queued)
+              : e,
+      ];
     }
 
     final freshRecords =
@@ -2357,13 +2605,13 @@ class AttendanceRepository extends ChangeNotifier {
       final sessionAndSignInDocs = await Future.wait([
         _queryDocsWhereFieldEquals(
           collection:
-              _firestore.collection(FirestoreCollections.attendanceSessions),
+              _firestore.collection(ApiCollections.attendanceSessions),
           field: 'listId',
           values: [listId],
           options: queryOptions,
         ),
         _queryDocsWhereFieldEquals(
-          collection: _firestore.collection(FirestoreCollections.signIns),
+          collection: _firestore.collection(ApiCollections.signIns),
           field: 'listId',
           values: [listId],
           options: queryOptions,
@@ -2498,13 +2746,13 @@ class AttendanceRepository extends ChangeNotifier {
       final sessionAndSignInDocs = await Future.wait([
         _queryDocsWhereFieldEquals(
           collection:
-              _firestore.collection(FirestoreCollections.attendanceSessions),
+              _firestore.collection(ApiCollections.attendanceSessions),
           field: 'listId',
           values: targetListIds.toList(),
           options: queryOptions,
         ),
         _queryDocsWhereFieldEquals(
-          collection: _firestore.collection(FirestoreCollections.signIns),
+          collection: _firestore.collection(ApiCollections.signIns),
           field: 'listId',
           values: targetListIds.toList(),
           options: queryOptions,
@@ -2655,12 +2903,12 @@ class AttendanceRepository extends ChangeNotifier {
   }
 
   /// Chunked [whereIn] queries with per-value fallback when rules reject a chunk.
-  static Future<List<QueryDocumentSnapshot<Map<String, dynamic>>>>
+  static Future<List<ApiDocumentSnapshot>>
       _queryDocsWhereFieldIn({
-    required CollectionReference<Map<String, dynamic>> collection,
+    required ApiCollectionRef collection,
     required String field,
     required List<String> values,
-    GetOptions? options,
+    ApiGetOptions? options,
   }) async {
     final trimmed = [
       for (final value in values)
@@ -2669,10 +2917,10 @@ class AttendanceRepository extends ChangeNotifier {
     if (trimmed.isEmpty) return const [];
 
     const chunkSize = 10;
-    final out = <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+    final out = <ApiDocumentSnapshot>[];
     final seenDocIds = <String>{};
 
-    void addDocs(Iterable<QueryDocumentSnapshot<Map<String, dynamic>>> docs) {
+    void addDocs(Iterable<ApiDocumentSnapshot> docs) {
       for (final doc in docs) {
         if (seenDocIds.add(doc.id)) out.add(doc);
       }
@@ -2687,7 +2935,7 @@ class AttendanceRepository extends ChangeNotifier {
             ? await query.get().timeout(_onlineFirestoreTimeout)
             : await query.get(options).timeout(_onlineFirestoreTimeout);
         addDocs(snap.docs);
-      } on FirebaseException catch (e) {
+      } on ApiException catch (e) {
         if (e.code == 'permission-denied') {
           usedFallback = true;
         } else if (kDebugMode) {
@@ -2711,16 +2959,16 @@ class AttendanceRepository extends ChangeNotifier {
   }
 
   /// Per-value equality fallback when [whereIn] is denied for a chunk.
-  static Future<List<QueryDocumentSnapshot<Map<String, dynamic>>>>
+  static Future<List<ApiDocumentSnapshot>>
       _queryDocsWhereFieldEqualsFallback({
-    required CollectionReference<Map<String, dynamic>> collection,
+    required ApiCollectionRef collection,
     required String field,
     required List<String> values,
-    GetOptions? options,
+    ApiGetOptions? options,
   }) async {
     if (values.isEmpty) return const [];
     const batchSize = 10;
-    final out = <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+    final out = <ApiDocumentSnapshot>[];
     for (var i = 0; i < values.length; i += batchSize) {
       final chunk = values.skip(i).take(batchSize).toList();
       final snaps = await Future.wait(
@@ -2744,12 +2992,12 @@ class AttendanceRepository extends ChangeNotifier {
   }
 
   /// Loads docs matching any of [values] for [field] (prefers [whereIn]).
-  static Future<List<QueryDocumentSnapshot<Map<String, dynamic>>>>
+  static Future<List<ApiDocumentSnapshot>>
       _queryDocsWhereFieldEquals({
-    required CollectionReference<Map<String, dynamic>> collection,
+    required ApiCollectionRef collection,
     required String field,
     required List<String> values,
-    GetOptions? options,
+    ApiGetOptions? options,
   }) =>
       _queryDocsWhereFieldIn(
         collection: collection,
@@ -2759,7 +3007,7 @@ class AttendanceRepository extends ChangeNotifier {
       );
 
   String? _snapshotUserId() =>
-      AuthRepository.instance.currentFirebaseUid?.trim();
+      AuthRepository.instance.currentUserId?.trim();
 
   String? _normalizedStudentRegistrationForCache() {
     final scoped = _loadScopeStudentReg?.trim();
@@ -2806,12 +3054,12 @@ class AttendanceRepository extends ChangeNotifier {
   Future<List<AttendanceRecord>> _fetchAttendanceRecordsForDetailLoad({
     required List<String> sessionIds,
     required Set<String>? scopedStudentIds,
-    required GetOptions queryOptions,
+    required ApiGetOptions queryOptions,
   }) async {
     if (scopedStudentIds != null && scopedStudentIds.isNotEmpty) {
       final recordDocs = await _queryDocsWhereFieldEquals(
         collection:
-            _firestore.collection(FirestoreCollections.attendanceRecords),
+            _firestore.collection(ApiCollections.attendanceRecords),
         field: 'studentId',
         values: scopedStudentIds.toList(),
         options: queryOptions,
@@ -2830,7 +3078,7 @@ class AttendanceRepository extends ChangeNotifier {
     }
     if (sessionIds.isEmpty) return [];
     final recordDocs = await _queryDocsWhereFieldEquals(
-      collection: _firestore.collection(FirestoreCollections.attendanceRecords),
+      collection: _firestore.collection(ApiCollections.attendanceRecords),
       field: 'sessionId',
       values: sessionIds,
       options: queryOptions,
@@ -2924,7 +3172,7 @@ class AttendanceRepository extends ChangeNotifier {
     Future<void> mergeAssigned() async {
       try {
         final assignedSnap = await _firestore
-            .collection(FirestoreCollections.attendanceLists)
+            .collection(ApiCollections.attendanceLists)
             .where('lecturerUid', isEqualTo: uid)
             .get(queryOptions);
         for (final d in assignedSnap.docs) {
@@ -2944,7 +3192,7 @@ class AttendanceRepository extends ChangeNotifier {
     Future<void> mergeCreated() async {
       try {
         final createdSnap = await _firestore
-            .collection(FirestoreCollections.attendanceLists)
+            .collection(ApiCollections.attendanceLists)
             .where('createdBy', isEqualTo: uid)
             .get(queryOptions);
         for (final d in createdSnap.docs) {
@@ -3012,13 +3260,13 @@ class AttendanceRepository extends ChangeNotifier {
             roster.map((s) => s.id).where((id) => id.isNotEmpty);
         if (studentIds.isEmpty) return withLocalEnrollment({});
         final signInDocs = await _queryDocsWhereFieldEquals(
-          collection: _firestore.collection(FirestoreCollections.signIns),
+          collection: _firestore.collection(ApiCollections.signIns),
           field: 'studentId',
           values: studentIds.toList(),
           options: options,
         );
         final signInListIds = signInDocs
-            .map((d) => (d.data()['listId'] as String?)?.trim() ?? '')
+            .map((d) => (d.data()?['listId'] as String?)?.trim() ?? '')
             .where((id) => id.isNotEmpty)
             .toSet();
         if (signInListIds.isEmpty) return withLocalEnrollment({});
@@ -3048,7 +3296,7 @@ class AttendanceRepository extends ChangeNotifier {
     if (auth.adminCheckDone && auth.isAdmin) {
       try {
         final snap = await _firestore
-            .collection(FirestoreCollections.attendanceLists)
+            .collection(ApiCollections.attendanceLists)
             .get(options);
         return withLocalEnrollment(snap.docs.map((d) => d.id).toSet());
       } catch (e, st) {
@@ -3079,7 +3327,7 @@ class AttendanceRepository extends ChangeNotifier {
       ids.map((trimmed) async {
         try {
           final d = await _firestore
-              .collection(FirestoreCollections.attendanceLists)
+              .collection(ApiCollections.attendanceLists)
               .doc(trimmed)
               .get(options);
           if (!d.exists) return null;
@@ -3104,7 +3352,7 @@ class AttendanceRepository extends ChangeNotifier {
       if (trimmed.isEmpty) continue;
       try {
         final d = await _firestore
-            .collection(FirestoreCollections.attendanceSessions)
+            .collection(ApiCollections.attendanceSessions)
             .doc(trimmed)
             .get(options);
         if (d.exists) out.add(_sessionFromDoc(d));
@@ -3127,7 +3375,7 @@ class AttendanceRepository extends ChangeNotifier {
   Future<StudentRecord?> _fetchStudentDocByIdOrReg(
     String studentId, {
     String? registrationNumber,
-    required GetOptions? options,
+    required ApiGetOptions? options,
   }) async {
     final trimmedId = studentId.trim();
     if (trimmedId.isEmpty) return null;
@@ -3140,7 +3388,7 @@ class AttendanceRepository extends ChangeNotifier {
       if (reg != ownReg) return null;
       try {
         final byReg = await _firestore
-            .collection(FirestoreCollections.students)
+            .collection(ApiCollections.students)
             .doc(reg)
             .get(options);
         if (byReg.exists) return _studentFromDoc(byReg);
@@ -3152,7 +3400,7 @@ class AttendanceRepository extends ChangeNotifier {
     if (regHint.isNotEmpty) {
       try {
         final byReg = await _firestore
-            .collection(FirestoreCollections.students)
+            .collection(ApiCollections.students)
             .doc(regHint)
             .get(options);
         if (byReg.exists) return _studentFromDoc(byReg);
@@ -3162,7 +3410,7 @@ class AttendanceRepository extends ChangeNotifier {
     if (StudentRegistrationNumber.isCanonicalFormat(trimmedId)) {
       try {
         final byIdReg = await _firestore
-            .collection(FirestoreCollections.students)
+            .collection(ApiCollections.students)
             .doc(trimmedId)
             .get(options);
         if (byIdReg.exists) return _studentFromDoc(byIdReg);
@@ -3172,7 +3420,7 @@ class AttendanceRepository extends ChangeNotifier {
 
     try {
       final primary = await _firestore
-          .collection(FirestoreCollections.students)
+          .collection(ApiCollections.students)
           .doc(trimmedId)
           .get(options);
       if (primary.exists) return _studentFromDoc(primary);
@@ -3269,12 +3517,13 @@ class AttendanceRepository extends ChangeNotifier {
     if (!AuthRepository.instance.isStudentAuthIdentity) return true;
     final reg = AuthRepository.instance.currentRegistrationNumber?.trim();
     if (reg == null || reg.isEmpty) return false;
-    final uid = AuthRepository.instance.currentFirebaseUid?.trim();
+    if (!AppConnectivity.instance.isOnline) return true;
+    final uid = AuthRepository.instance.currentUserId?.trim();
     if (uid == null || uid.isEmpty) return false;
     if (_firestoreIfReady == null) return false;
     try {
       final doc = await _firestore
-          .collection(FirestoreCollections.appUsers)
+          .collection(ApiCollections.appUsers)
           .doc(uid)
           .get(_loadQueryOptions(force: true));
       final serverReg =
@@ -3293,7 +3542,7 @@ class AttendanceRepository extends ChangeNotifier {
     if (normalized.isEmpty) return const [];
     try {
       final snap = await _firestore
-          .collection(FirestoreCollections.students)
+          .collection(ApiCollections.students)
           .where('registrationNumber', isEqualTo: normalized)
           .get(_loadQueryOptions(force: force));
       return snap.docs.map(_studentFromDoc).toList();
@@ -3641,7 +3890,7 @@ class AttendanceRepository extends ChangeNotifier {
 
       final queryOptions = _loadQueryOptions(force: force);
       final signInDocs = await _queryDocsWhereFieldEquals(
-        collection: _firestore.collection(FirestoreCollections.signIns),
+        collection: _firestore.collection(ApiCollections.signIns),
         field: 'studentId',
         values: studentIds.toList(),
         options: queryOptions,
@@ -3652,7 +3901,7 @@ class AttendanceRepository extends ChangeNotifier {
 
       final recordDocs = await _queryDocsWhereFieldEquals(
         collection:
-            _firestore.collection(FirestoreCollections.attendanceRecords),
+            _firestore.collection(ApiCollections.attendanceRecords),
         field: 'studentId',
         values: studentIds.toList(),
         options: queryOptions,
@@ -3679,7 +3928,7 @@ class AttendanceRepository extends ChangeNotifier {
       if (listIds.isNotEmpty) {
         final sessionDocs = await _queryDocsWhereFieldEquals(
           collection:
-              _firestore.collection(FirestoreCollections.attendanceSessions),
+              _firestore.collection(ApiCollections.attendanceSessions),
           field: 'listId',
           values: listIds.toList(),
           options: queryOptions,
@@ -3710,7 +3959,7 @@ class AttendanceRepository extends ChangeNotifier {
       if (listIdsNeedingFullSessions.isNotEmpty) {
         final extraListSessionDocs = await _queryDocsWhereFieldEquals(
           collection:
-              _firestore.collection(FirestoreCollections.attendanceSessions),
+              _firestore.collection(ApiCollections.attendanceSessions),
           field: 'listId',
           values: listIdsNeedingFullSessions.toList(),
           options: queryOptions,
@@ -3833,7 +4082,7 @@ class AttendanceRepository extends ChangeNotifier {
     try {
       final queryOptions = _loadQueryOptions(force: force);
       final listsSnap = await _firestore
-          .collection(FirestoreCollections.attendanceLists)
+          .collection(ApiCollections.attendanceLists)
           .get(queryOptions);
       final remoteLists = listsSnap.docs.map((d) => _listFromDoc(d)).toList();
 
@@ -3878,13 +4127,13 @@ class AttendanceRepository extends ChangeNotifier {
       final sessionAndSignInDocs = await Future.wait([
         _queryDocsWhereFieldEquals(
           collection:
-              _firestore.collection(FirestoreCollections.attendanceSessions),
+              _firestore.collection(ApiCollections.attendanceSessions),
           field: 'listId',
           values: listIds,
           options: queryOptions,
         ),
         _queryDocsWhereFieldEquals(
-          collection: _firestore.collection(FirestoreCollections.signIns),
+          collection: _firestore.collection(ApiCollections.signIns),
           field: 'listId',
           values: listIds,
           options: queryOptions,
@@ -3898,7 +4147,7 @@ class AttendanceRepository extends ChangeNotifier {
       final sessionIds = sessions.map((s) => s.id).toList();
       final recordDocs = await _queryDocsWhereFieldEquals(
         collection:
-            _firestore.collection(FirestoreCollections.attendanceRecords),
+            _firestore.collection(ApiCollections.attendanceRecords),
         field: 'sessionId',
         values: sessionIds,
         options: queryOptions,
@@ -4056,13 +4305,13 @@ class AttendanceRepository extends ChangeNotifier {
       final sessionAndSignInDocs = await Future.wait([
         _queryDocsWhereFieldEquals(
           collection:
-              _firestore.collection(FirestoreCollections.attendanceSessions),
+              _firestore.collection(ApiCollections.attendanceSessions),
           field: 'listId',
           values: listIds,
           options: queryOptions,
         ),
         _queryDocsWhereFieldEquals(
-          collection: _firestore.collection(FirestoreCollections.signIns),
+          collection: _firestore.collection(ApiCollections.signIns),
           field: 'listId',
           values: listIds,
           options: queryOptions,
@@ -4075,7 +4324,7 @@ class AttendanceRepository extends ChangeNotifier {
       final sessionIds = sessions.map((s) => s.id).toList();
       final recordDocs = await _queryDocsWhereFieldEquals(
         collection:
-            _firestore.collection(FirestoreCollections.attendanceRecords),
+            _firestore.collection(ApiCollections.attendanceRecords),
         field: 'sessionId',
         values: sessionIds,
         options: queryOptions,
@@ -4150,14 +4399,14 @@ class AttendanceRepository extends ChangeNotifier {
     return AttendanceListStatus.draft;
   }
 
-  static AttendanceList _listFromDoc(DocumentSnapshot<Map<String, dynamic>> d) {
+  static AttendanceList _listFromDoc(ApiDocumentSnapshot d) {
     final data = d.data()!;
-    final date = (data['date'] as Timestamp?)?.toDate() ?? DateTime.now();
+    final date = apiDateFromField(data['date']) ?? DateTime.now();
     final courses = data['courses'] as List<dynamic>?;
     final rawLc = (data['lecturerSignCode'] as String?)?.trim() ?? '';
     final lecturerCode =
         rawLc.isEmpty ? null : normalizeSessionCodeInput(rawLc);
-    final signedTs = data['lecturerSignedAt'] as Timestamp?;
+    final signedTs = apiDateFromField(data['lecturerSignedAt']);
     return AttendanceList(
       id: d.id,
       time: data['time'] as String? ?? '',
@@ -4173,7 +4422,7 @@ class AttendanceRepository extends ChangeNotifier {
       expectedParticipants: data['expectedParticipants'] as int?,
       status: _listStatusFrom(data['status'] as String?),
       lecturerSignCode: lecturerCode,
-      lecturerSignedAt: signedTs?.toDate(),
+      lecturerSignedAt: signedTs,
       courseUnitName: (data['courseUnitName'] as String?)?.trim().isEmpty == true
           ? null
           : (data['courseUnitName'] as String?)?.trim(),
@@ -4186,10 +4435,10 @@ class AttendanceRepository extends ChangeNotifier {
   }
 
   static AttendanceSession _sessionFromDoc(
-      DocumentSnapshot<Map<String, dynamic>> d) {
+      ApiDocumentSnapshot d) {
     final data = d.data()!;
-    final start = (data['startTime'] as Timestamp?)?.toDate() ?? DateTime.now();
-    final end = (data['endTime'] as Timestamp?)?.toDate() ?? start;
+    final start = apiDateFromField(data['startTime']) ?? DateTime.now();
+    final end = apiDateFromField(data['endTime']) ?? start;
     return AttendanceSession(
       id: d.id,
       listId: data['listId'] as String? ?? '',
@@ -4207,12 +4456,12 @@ class AttendanceRepository extends ChangeNotifier {
   }
 
   static AttendanceRecord _recordFromDoc(
-      DocumentSnapshot<Map<String, dynamic>> d) {
+      ApiDocumentSnapshot d) {
     return recordFromFirestoreDoc(d);
   }
 
   static AttendanceRecord? _tryRecordFromDoc(
-    DocumentSnapshot<Map<String, dynamic>> d,
+    ApiDocumentSnapshot d,
   ) {
     try {
       if (!d.exists || d.data() == null) return null;
@@ -4226,7 +4475,7 @@ class AttendanceRepository extends ChangeNotifier {
   }
 
   static SignInRecord? _trySignInFromDoc(
-    DocumentSnapshot<Map<String, dynamic>> d,
+    ApiDocumentSnapshot d,
   ) {
     try {
       if (!d.exists || d.data() == null) return null;
@@ -4240,7 +4489,7 @@ class AttendanceRepository extends ChangeNotifier {
   }
 
   static AttendanceSession? _trySessionFromDoc(
-    DocumentSnapshot<Map<String, dynamic>> d,
+    ApiDocumentSnapshot d,
   ) {
     try {
       if (!d.exists || d.data() == null) return null;
@@ -4253,17 +4502,21 @@ class AttendanceRepository extends ChangeNotifier {
     }
   }
 
+  /// Public parser for REST / realtime session listeners.
+  static AttendanceSession? trySessionFromApiDoc(ApiDocumentSnapshot d) =>
+      _trySessionFromDoc(d);
+
   /// Public parser for realtime attendance record listeners.
   static AttendanceRecord? tryRecordFromFirestoreDoc(
-    DocumentSnapshot<Map<String, dynamic>> d,
+    ApiDocumentSnapshot d,
   ) => _tryRecordFromDoc(d);
 
   /// Public parser for realtime attendance record listeners.
   static AttendanceRecord recordFromFirestoreDoc(
-    DocumentSnapshot<Map<String, dynamic>> d,
+    ApiDocumentSnapshot d,
   ) {
     final data = d.data()!;
-    final ts = (data['timestamp'] as Timestamp?)?.toDate() ?? DateTime.now();
+    final ts = apiDateFromField(data['timestamp']) ?? DateTime.now();
     return AttendanceRecord(
       id: d.id,
       sessionId: data['sessionId'] as String? ?? '',
@@ -4279,7 +4532,7 @@ class AttendanceRepository extends ChangeNotifier {
   }
 
   static StudentRecord _studentFromDoc(
-      DocumentSnapshot<Map<String, dynamic>> d) {
+      ApiDocumentSnapshot d) {
     final data = d.data()!;
     final name = data['name'] as String? ?? '';
     final rawIni = data['initials'] as String?;
@@ -4295,10 +4548,10 @@ class AttendanceRepository extends ChangeNotifier {
     );
   }
 
-  static SignInRecord _signInFromDoc(DocumentSnapshot<Map<String, dynamic>> d) {
+  static SignInRecord _signInFromDoc(ApiDocumentSnapshot d) {
     final data = d.data()!;
     final signedInAt =
-        (data['signedInAt'] as Timestamp?)?.toDate() ?? DateTime.now();
+        apiDateFromField(data['signedInAt']) ?? DateTime.now();
     return SignInRecord(
       id: d.id,
       listId: data['listId'] as String? ?? '',
@@ -4480,17 +4733,17 @@ class AttendanceRepository extends ChangeNotifier {
     try {
       await _persistStudentRecord(student, awaitWhenOnline: true);
       final snap = await _firestore
-          .collection(FirestoreCollections.students)
+          .collection(ApiCollections.students)
           .doc(student.id)
-          .get(const GetOptions(source: Source.server))
+          .get(const ApiGetOptions(source: ApiSource.server))
           .timeout(_sessionPublishFastTimeout);
       if (snap.exists) return true;
       final reg = student.registrationNumber.trim().toUpperCase();
       if (reg.isNotEmpty && reg != student.id.trim()) {
         final regSnap = await _firestore
-            .collection(FirestoreCollections.students)
+            .collection(ApiCollections.students)
             .doc(reg)
-            .get(const GetOptions(source: Source.server))
+            .get(const ApiGetOptions(source: ApiSource.server))
             .timeout(_sessionPublishFastTimeout);
         if (regSnap.exists) return true;
       }
@@ -4523,14 +4776,14 @@ class AttendanceRepository extends ChangeNotifier {
 
     Future<void> upload() async {
       await _firestore
-          .collection(FirestoreCollections.students)
+          .collection(ApiCollections.students)
           .doc(record.id)
-          .set(payload, SetOptions(merge: true));
+          .set(payload, ApiSetOptions(merge: true));
       if (reg.isNotEmpty && reg != record.id.trim()) {
         await _firestore
-            .collection(FirestoreCollections.students)
+            .collection(ApiCollections.students)
             .doc(reg)
-            .set(payload, SetOptions(merge: true));
+            .set(payload, ApiSetOptions(merge: true));
       }
     }
 
@@ -4631,7 +4884,7 @@ class AttendanceRepository extends ChangeNotifier {
     if (normalized.isEmpty) return null;
     try {
       final snap = await _firestore
-          .collection(FirestoreCollections.studentRegistrations)
+          .collection(ApiCollections.studentRegistrations)
           .doc(normalized)
           .get();
       if (!snap.exists || snap.data() == null) return null;
@@ -4651,7 +4904,7 @@ class AttendanceRepository extends ChangeNotifier {
       'time': list.time,
       'room': list.room,
       'whoTaught': list.whoTaught,
-      'date': Timestamp.fromDate(list.date),
+      'date': apiDateToField(list.date),
       'program': list.program.name,
       'courses': list.courses ?? list.coursesSafe.toList(),
       'year': list.year,
@@ -4667,7 +4920,7 @@ class AttendanceRepository extends ChangeNotifier {
     }
     map['lecturerSignCode'] = list.lecturerSignCode ?? '';
     map['lecturerSignedAt'] = list.lecturerSignedAt != null
-        ? Timestamp.fromDate(list.lecturerSignedAt!)
+        ? apiDateToField(list.lecturerSignedAt!)
         : null;
     final unit = list.effectiveCourseUnitName;
     if (unit.isNotEmpty) {
@@ -4685,7 +4938,7 @@ class AttendanceRepository extends ChangeNotifier {
       timeout: _sessionPublishTimeout,
       persistOnline: () async {
         await _firestore
-            .collection(FirestoreCollections.attendanceLists)
+            .collection(ApiCollections.attendanceLists)
             .doc(list.id)
             .set(_listToMap(list));
         _markListPublishedOnServer(list.id);
@@ -4708,7 +4961,7 @@ class AttendanceRepository extends ChangeNotifier {
     AttendanceStore.updateList(list);
     try {
       await _firestore
-          .collection(FirestoreCollections.attendanceLists)
+          .collection(ApiCollections.attendanceLists)
           .doc(list.id)
           .set(_listToMap(list));
     } catch (_) {}
@@ -4737,13 +4990,13 @@ class AttendanceRepository extends ChangeNotifier {
 
     final offline = !AppConnectivity.instance.isOnline;
     final cacheOptions =
-        const GetOptions(source: Source.serverAndCache);
+        const ApiGetOptions(source: ApiSource.serverAndCache);
 
     try {
       final staffSnap = await _firestore
-          .collection(FirestoreCollections.staffNumbers)
+          .collection(ApiCollections.staffNumbers)
           .doc(sn)
-          .get(offline ? cacheOptions : const GetOptions());
+          .get(offline ? cacheOptions : const ApiGetOptions());
       final fromStaff = (staffSnap.data()?['uid'] as String?)?.trim();
       if (fromStaff != null && fromStaff.isNotEmpty) {
         unawaited(StaffNumberDirectoryCache.remember(sn, fromStaff));
@@ -4753,10 +5006,10 @@ class AttendanceRepository extends ChangeNotifier {
 
     try {
       final lectSnap = await _firestore
-          .collection(FirestoreCollections.lecturers)
+          .collection(ApiCollections.lecturers)
           .where('staffNumber', isEqualTo: sn)
           .limit(1)
-          .get(offline ? cacheOptions : const GetOptions());
+          .get(offline ? cacheOptions : const ApiGetOptions());
       if (lectSnap.docs.isNotEmpty) {
         final uid = lectSnap.docs.first.id;
         unawaited(StaffNumberDirectoryCache.remember(sn, uid));
@@ -4766,10 +5019,10 @@ class AttendanceRepository extends ChangeNotifier {
 
     try {
       final lectByRegSnap = await _firestore
-          .collection(FirestoreCollections.lecturers)
+          .collection(ApiCollections.lecturers)
           .where('registrationNumber', isEqualTo: sn)
           .limit(1)
-          .get(offline ? cacheOptions : const GetOptions());
+          .get(offline ? cacheOptions : const ApiGetOptions());
       if (lectByRegSnap.docs.isNotEmpty) {
         final uid = lectByRegSnap.docs.first.id;
         unawaited(StaffNumberDirectoryCache.remember(sn, uid));
@@ -4970,7 +5223,7 @@ class AttendanceRepository extends ChangeNotifier {
     // Closed/archived sessions remain in Firestore for replay and roll history.
     if (byId.length < limit) {
       final snap = await _firestore
-          .collection(FirestoreCollections.attendanceSessions)
+          .collection(ApiCollections.attendanceSessions)
           .where('sessionCode', isEqualTo: normalizedCode)
           .limit(limit)
           .get(_loadQueryOptions(force: true));
@@ -5043,9 +5296,9 @@ class AttendanceRepository extends ChangeNotifier {
     }
     try {
       final snap = await _firestore
-          .collection(FirestoreCollections.attendanceSessions)
+          .collection(ApiCollections.attendanceSessions)
           .doc(id)
-          .get(const GetOptions(source: Source.server))
+          .get(const ApiGetOptions(source: ApiSource.server))
           .timeout(_sessionPublishFastTimeout);
       if (!snap.exists) return false;
       final status =
@@ -5069,8 +5322,8 @@ class AttendanceRepository extends ChangeNotifier {
       'latitude': session.latitude,
       'longitude': session.longitude,
       'radiusMeters': session.radiusMeters,
-      'startTime': Timestamp.fromDate(session.startTime),
-      'endTime': Timestamp.fromDate(session.endTime),
+      'startTime': apiDateToField(session.startTime),
+      'endTime': apiDateToField(session.endTime),
       'status': SessionStatus.active.name,
       'createdBy': session.createdBy,
     };
@@ -5118,9 +5371,9 @@ class AttendanceRepository extends ChangeNotifier {
     if (_isListKnownOnServer(id)) return;
     try {
       final snap = await _firestore
-          .collection(FirestoreCollections.attendanceLists)
+          .collection(ApiCollections.attendanceLists)
           .doc(id)
-          .get(const GetOptions(source: Source.server))
+          .get(const ApiGetOptions(source: ApiSource.server))
           .timeout(_sessionPublishFastTimeout);
       if (snap.exists) {
         _markListPublishedOnServer(id);
@@ -5207,8 +5460,8 @@ class AttendanceRepository extends ChangeNotifier {
       'latitude': latitude,
       'longitude': longitude,
       'radiusMeters': radiusMeters,
-      'startTime': Timestamp.fromDate(startTime),
-      'endTime': Timestamp.fromDate(endTime),
+      'startTime': apiDateToField(startTime),
+      'endTime': apiDateToField(endTime),
       'status': SessionStatus.active.name,
       'createdBy': createdBy,
     };
@@ -5397,7 +5650,7 @@ class AttendanceRepository extends ChangeNotifier {
       if (AppConnectivity.instance.hasNetworkInterface) {
         unawaited(
           _firestore
-              .collection(FirestoreCollections.attendanceLists)
+              .collection(ApiCollections.attendanceLists)
               .doc(listId)
               .set(_listToMap(updated))
               .timeout(_sessionPublishTimeout)
@@ -5406,7 +5659,7 @@ class AttendanceRepository extends ChangeNotifier {
         );
       }
     }
-    final creatorUid = AuthRepository.instance.currentFirebaseUid?.trim();
+    final creatorUid = AuthRepository.instance.currentUserId?.trim();
     final pendingEntry = PendingSessionCreateEntry(
       sessionId: id,
       listId: listId,
@@ -5550,7 +5803,7 @@ class AttendanceRepository extends ChangeNotifier {
     if (!isValidJoinCodeFormat(code)) return null;
     try {
       final snap = await _firestore
-          .collection(FirestoreCollections.attendanceSessions)
+          .collection(ApiCollections.attendanceSessions)
           .where('sessionCode', isEqualTo: code)
           .limit(16)
           .get(_loadQueryOptions(force: true));
@@ -5670,7 +5923,7 @@ class AttendanceRepository extends ChangeNotifier {
     );
     try {
       final doc = await _firestore
-          .collection(FirestoreCollections.checkInAttempts)
+          .collection(ApiCollections.checkInAttempts)
           .doc(docId)
           .get(_loadQueryOptions(force: false));
       if (!doc.exists) return false;
@@ -5678,8 +5931,8 @@ class AttendanceRepository extends ChangeNotifier {
       if (data == null) return false;
       final status = (data['status'] as String?)?.trim().toLowerCase();
       if (status != 'pending' || data['awaitingSession'] != true) return false;
-      final until = data['pendingUntil'];
-      if (until is Timestamp && DateTime.now().isAfter(until.toDate())) {
+      final until = apiDateFromField(data['pendingUntil']);
+      if (until != null && DateTime.now().isAfter(until)) {
         return false;
       }
       return true;
@@ -5759,11 +6012,17 @@ class AttendanceRepository extends ChangeNotifier {
     final pending = await PendingSessionCodeQueue.loadAll();
     if (pending.isEmpty) return;
     final codes = pending
+        .where((e) => !e.hasLocalUploadEvidence)
         .map((e) => normalizeSessionCodeInput(e.sessionCodeRaw))
         .where((c) => c.isNotEmpty)
         .toSet();
-    for (final code in codes) {
-      await resolveSessionByCode(code);
+    const chunkSize = 4;
+    final codeList = codes.toList();
+    for (var i = 0; i < codeList.length; i += chunkSize) {
+      final end = i + chunkSize > codeList.length ? codeList.length : i + chunkSize;
+      await Future.wait(
+        codeList.sublist(i, end).map(resolveSessionByCode),
+      );
     }
   }
 
@@ -5832,7 +6091,7 @@ class AttendanceRepository extends ChangeNotifier {
     if (AttendanceStore.listById(listId) != null) return;
     try {
       final doc = await _firestore
-          .collection(FirestoreCollections.attendanceLists)
+          .collection(ApiCollections.attendanceLists)
           .doc(listId)
           .get(_loadQueryOptions(force: true));
       if (!doc.exists) return;
@@ -5874,21 +6133,21 @@ class AttendanceRepository extends ChangeNotifier {
       'latitude': session.latitude,
       'longitude': session.longitude,
       'radiusMeters': session.radiusMeters,
-      'startTime': Timestamp.fromDate(session.startTime),
-      'endTime': Timestamp.fromDate(session.endTime),
+      'startTime': apiDateToField(session.startTime),
+      'endTime': apiDateToField(session.endTime),
       'status': SessionStatus.closed.name,
       'createdBy': session.createdBy,
       'finalized': false,
       if (session.remoteLearning) 'remoteLearning': true,
     };
-    final creatorUid = AuthRepository.instance.currentFirebaseUid?.trim();
+    final creatorUid = AuthRepository.instance.currentUserId?.trim();
     if (creatorUid != null && creatorUid.isNotEmpty) {
       sessionMap['createdByUid'] = creatorUid;
     }
     await _firestore
-        .collection(FirestoreCollections.attendanceSessions)
+        .collection(ApiCollections.attendanceSessions)
         .doc(session.id)
-        .set(sessionMap, SetOptions(merge: true))
+        .set(sessionMap, ApiSetOptions(merge: true))
         .timeout(_sessionPublishTimeout);
   }
 
@@ -5911,7 +6170,7 @@ class AttendanceRepository extends ChangeNotifier {
           remoteLearning: beforeClose.remoteLearning,
         ),
       );
-      unawaited(SessionRtdSync.removeRunningSession(beforeClose));
+      unawaited(SessionRtdSync.removeRunningSession(beforeClose.id));
     } catch (_) {}
   }
 
@@ -5999,14 +6258,7 @@ class AttendanceRepository extends ChangeNotifier {
             entry: e,
             session: session,
             studentRegistrationNumber: student.registrationNumber,
-          ) ||
-          (e.sessionId == sessionId &&
-              isTimestampWithinSessionBounds(session, e.capturedAt) &&
-              pendingReplayLocationOk(
-                session,
-                e.latitude,
-                e.longitude,
-              ))) {
+          )) {
         presentStudentIds.add(student.id);
       }
     }
@@ -6022,12 +6274,12 @@ class AttendanceRepository extends ChangeNotifier {
     if (AppConnectivity.instance.isOnline) {
       try {
         final snap = await _firestore
-            .collection(FirestoreCollections.attendanceRecords)
+            .collection(ApiCollections.attendanceRecords)
             .where('sessionId', isEqualTo: sessionId)
             .get();
         for (final d in snap.docs) {
           final data = d.data();
-          if (data['present'] != true) continue;
+          if (data == null || data['present'] != true) continue;
           final sid = (data['studentId'] as String?)?.trim();
           if (sid != null && sid.isNotEmpty) {
             presentStudentIds.add(sid);
@@ -6111,16 +6363,17 @@ class AttendanceRepository extends ChangeNotifier {
     // Keep local absent rows only for offline roll display.
   }
 
-  /// True when a pending or accepted check-in attempt doc exists on Firestore.
+  /// True when a pending or accepted check-in attempt exists on RTD or Firestore.
   Future<bool> checkInAttemptExistsOnServer(String recordId) async {
-    if (_firestoreIfReady == null) return false;
     final id = recordId.trim();
     if (id.isEmpty) return false;
+    if (await CheckInRtdAttemptPublish.existsOnRtd(id)) return true;
+    if (_firestoreIfReady == null) return false;
     try {
       final doc = await _firestore
-          .collection(FirestoreCollections.checkInAttempts)
+          .collection(ApiCollections.checkInAttempts)
           .doc(id)
-          .get(const GetOptions(source: Source.server))
+          .get(const ApiGetOptions(source: ApiSource.server))
           .timeout(_sessionPublishFastTimeout);
       return doc.exists;
     } catch (_) {
@@ -6128,24 +6381,140 @@ class AttendanceRepository extends ChangeNotifier {
     }
   }
 
+  /// Whether a pending or accepted check-in attempt exists on Firestore.
+  Future<bool> pendingSessionCodeHasServerEvidence({
+    required PendingSessionCodeEntry entry,
+    required String studentId,
+    AttendanceSession? session,
+  }) async {
+    if (entry.hasLocalUploadEvidence) return true;
+    final sid = canonicalStudentIdForUpload(studentId);
+    if (sid.isEmpty) return false;
+
+    final sessionId = entry.sessionId?.trim() ??
+        session?.id.trim() ??
+        '';
+    if (sessionId.isNotEmpty) {
+      final recordId = attendanceRecordIdForSessionStudent(sessionId, sid);
+      if (await checkInAttemptExistsOnServer(recordId)) return true;
+    }
+
+    final code = normalizeSessionCodeInput(entry.sessionCodeRaw);
+    if (isValidJoinCodeFormat(code)) {
+      if (await PendingSessionCodeClaimUpload.isClaimOnServer(
+        entry: entry,
+        studentId: sid,
+      )) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /// Accepted attempt or official present row on Firestore — safe to drop local queue.
+  Future<bool> pendingSessionCodeResolvedOnServer({
+    required PendingSessionCodeEntry entry,
+    required String studentId,
+    AttendanceSession? session,
+  }) async {
+    final sid = canonicalStudentIdForUpload(studentId);
+    if (sid.isEmpty) return false;
+
+    final sess = session ?? AttendanceStore.sessionById(entry.sessionId ?? '');
+    if (sess == null) return false;
+
+    if (await isCheckInAttemptAcceptedForSessionStudent(
+      sessionId: sess.id,
+      studentId: sid,
+    )) {
+      return true;
+    }
+    final recordId = attendanceRecordIdForSessionStudent(sess.id, sid);
+    final remotePresent = await _remoteRecordIsPresent(recordId);
+    return remotePresent;
+  }
+
   /// Whether queued GPS check-in evidence reached Firestore (full or awaiting claim).
   Future<bool> pendingCheckInHasServerEvidence({
+    required PendingCheckInEntry entry,
+    AttendanceSession? session,
+  }) async {
+    if (entry.hasLocalUploadEvidence) return true;
+    final canonicalId = canonicalStudentIdForUpload(entry.studentId);
+    final recordId =
+        attendanceRecordIdForSessionStudent(entry.sessionId, canonicalId);
+    if (await checkInAttemptExistsOnServer(recordId)) return true;
+    final sess = session ?? AttendanceStore.sessionById(entry.sessionId);
+    final code = entry.sessionCodeRaw?.trim().isNotEmpty == true
+        ? normalizeSessionCodeInput(entry.sessionCodeRaw!.trim())
+        : (sess != null ? normalizeSessionCodeInput(sess.sessionCode) : null);
+    if (code != null && code.isNotEmpty) {
+      final claimId = PendingSessionCodeClaimUpload.claimDocId(
+        normalizedCode: code,
+        studentId: canonicalId,
+      );
+      if (await checkInAttemptExistsOnServer(claimId)) return true;
+    }
+    return false;
+  }
+
+  /// Whether the server accepted the attempt — upload alone stays queued.
+  Future<bool> pendingCheckInIsApproved({
     required PendingCheckInEntry entry,
     AttendanceSession? session,
   }) async {
     final canonicalId = canonicalStudentIdForUpload(entry.studentId);
     final recordId =
         attendanceRecordIdForSessionStudent(entry.sessionId, canonicalId);
-    if (await checkInAttemptExistsOnServer(recordId)) return true;
+    if (await _isCheckInAttemptAccepted(recordId)) return true;
+
+    final rtdStatus = await CheckInRtdAttemptPublish.readStatusOnRtd(recordId);
+    if (rtdStatus == 'accepted') return true;
+
     final sess = session ?? AttendanceStore.sessionById(entry.sessionId);
-    if (sess == null) return false;
-    final code = normalizeSessionCodeInput(sess.sessionCode);
-    if (code.isEmpty) return false;
-    final claimId = PendingSessionCodeClaimUpload.claimDocId(
-      normalizedCode: code,
-      studentId: canonicalId,
+    final code = entry.sessionCodeRaw?.trim().isNotEmpty == true
+        ? normalizeSessionCodeInput(entry.sessionCodeRaw!.trim())
+        : (sess != null ? normalizeSessionCodeInput(sess.sessionCode) : null);
+    if (code != null && code.isNotEmpty) {
+      final claimId = PendingSessionCodeClaimUpload.claimDocId(
+        normalizedCode: code,
+        studentId: canonicalId,
+      );
+      if (await _isCheckInAttemptAccepted(claimId)) return true;
+      final claimRtd =
+          await CheckInRtdAttemptPublish.readStatusOnRtd(claimId);
+      if (claimRtd == 'accepted') return true;
+    }
+
+    final local = AttendanceStore.attendanceRecordForSessionStudent(
+      entry.sessionId,
+      entry.studentId,
     );
-    return checkInAttemptExistsOnServer(claimId);
+    if (local != null && local.present && local.verified) {
+      return _remoteRecordIsPresent(recordId);
+    }
+    return false;
+  }
+
+  /// Corrects queue rows that were marked approved after upload only.
+  Future<void> reconcilePendingCheckInQueueStatuses() async {
+    final all = await PendingCheckInQueue.loadAll();
+    if (all.isEmpty) return;
+    var changed = false;
+    final next = <PendingCheckInEntry>[];
+    for (final e in all) {
+      final session = AttendanceStore.sessionById(e.sessionId);
+      final approved = await pendingCheckInIsApproved(
+        entry: e,
+        session: session,
+      );
+      final status = approved
+          ? PendingCheckInQueueStatus.approved
+          : PendingCheckInQueueStatus.queued;
+      if (status != e.status) changed = true;
+      next.add(e.copyWith(status: status));
+    }
+    if (changed) await PendingCheckInQueue.saveAll(next);
   }
 
   Future<void> _mergeSessionIntoStoreById(String sessionId) async {
@@ -6183,6 +6552,13 @@ class AttendanceRepository extends ChangeNotifier {
     if (isStudentScopedUser()) {
       await AuthRepository.instance.ensureStudentRegistrationHydrated();
     }
+    if (AppConnectivity.instance.hasNetworkInterface) {
+      await AppConnectivity.instance.ensureReachable(
+        timeout: _sessionPublishFastTimeout,
+      );
+    }
+    await recoverUnqueuedLocalPresentCheckIns();
+    await reconcilePendingCheckInQueueStatuses();
     await prefetchSessionsForPendingCheckIns();
   }
 
@@ -6205,50 +6581,112 @@ class AttendanceRepository extends ChangeNotifier {
       return _CheckInAttemptUploadResult.failed;
     }
     final docId = attendanceRecordIdForSessionStudent(sessionId, canonicalId);
-    final uid = AuthRepository.instance.currentFirebaseUid?.trim();
-    final timeout = _sessionPublishTimeout;
+    final uid = AuthRepository.instance.currentUserId?.trim();
     final code = sessionCodeRaw?.trim();
     await AuthRepository.instance.ensureStudentRegistrationHydrated();
-    await ensureStudentDocOnServer(canonicalId);
     final reg = _registrationForCheckInUpload(canonicalId);
     final student = _studentRecordForId(canonicalId);
     final studentName = student?.name.trim();
+    final sid = sessionId.trim();
+    final lid = listId.trim();
+    final awaiting = lid.isEmpty || sid.isEmpty;
+
+    final rtdUploaded = await CheckInRtdAttemptPublish.uploadPending(
+      recordId: docId,
+      studentId: canonicalId,
+      deviceId: deviceId,
+      capturedAt: capturedAt,
+      latitude: latitude,
+      longitude: longitude,
+      sessionId: sid.isNotEmpty ? sid : null,
+      listId: lid.isNotEmpty ? lid : null,
+      course: course,
+      sessionCodeRaw: code,
+      registrationNumber: reg,
+      studentName: studentName,
+      submittedByUid: uid,
+      awaitingSession: awaiting,
+    );
+    if (!rtdUploaded) {
+      return _CheckInAttemptUploadResult.failed;
+    }
+
+    unawaited(PendingCheckInQueue.markUploaded(docId));
+    unawaited(ensureStudentDocOnServer(canonicalId));
+
+    return _CheckInAttemptUploadResult.submitted;
+  }
+
+  /// Best-effort Firestore mirror when RTD already accepted the attempt.
+  ///
+  /// Normal client uploads use RTD only; [onCheckInAttemptRtdWritten] mirrors to
+  /// Firestore server-side. Kept for tests or manual backfill — not called on
+  /// the hot path after RTD success.
+  Future<void> mirrorCheckInAttemptToFirestore({
+    required String docId,
+    required String sessionId,
+    required String studentId,
+    required String listId,
+    required String course,
+    required DateTime capturedAt,
+    required double latitude,
+    required double longitude,
+    required String deviceId,
+    String? sessionCodeRaw,
+    String? registrationNumber,
+    String? studentName,
+    String? submittedByUid,
+    bool awaitingSession = false,
+    DateTime? pendingUntil,
+  }) async {
+    if (_firestoreIfReady == null) return;
+    final canonicalId = canonicalStudentIdForUpload(studentId);
+    final sid = sessionId.trim();
+    final lid = listId.trim();
+    final code = sessionCodeRaw?.trim().toUpperCase() ?? '';
+    final courseVal = course.trim();
+    final awaiting = awaitingSession || sid.isEmpty || lid.isEmpty;
+    final reg = (registrationNumber?.trim().toUpperCase().isNotEmpty == true
+            ? registrationNumber!.trim().toUpperCase()
+            : null) ??
+        _registrationForCheckInUpload(canonicalId)?.trim().toUpperCase() ??
+        currentStudentLoadRegistration()?.trim().toUpperCase();
     try {
+      final payload = <String, dynamic>{
+        'studentId': canonicalId,
+        'deviceId': deviceId,
+        'status': 'pending',
+        'capturedAt': apiDateToField(capturedAt),
+        'latitude': latitude,
+        'longitude': longitude,
+        'awaitingSession': awaiting,
+        if (pendingUntil != null)
+          'pendingUntil': apiDateToField(pendingUntil),
+        if (reg != null && reg.isNotEmpty) 'registrationNumber': reg,
+        if (studentName != null && studentName.isNotEmpty)
+          'studentName': studentName,
+        if (submittedByUid != null && submittedByUid.isNotEmpty)
+          'submittedByUid': submittedByUid,
+        'clientSubmittedAt': ApiFieldValue.serverTimestamp(),
+      };
+      if (awaiting) {
+        if (code.isNotEmpty) payload['sessionCodeRaw'] = code;
+      } else {
+        payload['sessionId'] = sid;
+        payload['listId'] = lid;
+        payload['course'] = courseVal.isNotEmpty ? courseVal : '—';
+        if (code.isNotEmpty) payload['sessionCodeRaw'] = code;
+      }
       await _firestore
-          .collection(FirestoreCollections.checkInAttempts)
+          .collection(ApiCollections.checkInAttempts)
           .doc(docId)
-          .set(
-            <String, dynamic>{
-              'sessionId': sessionId,
-              'studentId': canonicalId,
-              'listId': listId,
-              'course': course,
-              'capturedAt': Timestamp.fromDate(capturedAt),
-              'latitude': latitude,
-              'longitude': longitude,
-              'deviceId': deviceId,
-              'status': 'pending',
-              if (reg != null && reg.isNotEmpty) 'registrationNumber': reg,
-              if (studentName != null && studentName.isNotEmpty)
-                'studentName': studentName,
-              if (code != null && code.isNotEmpty) 'sessionCodeRaw': code,
-              if (uid != null && uid.isNotEmpty) 'submittedByUid': uid,
-              'clientSubmittedAt': FieldValue.serverTimestamp(),
-            },
-            SetOptions(merge: true),
-          )
-          .timeout(timeout);
-      if (!await checkInAttemptExistsOnServer(docId)) {
-        return _CheckInAttemptUploadResult.failed;
+          .set(payload, ApiSetOptions(merge: true))
+          .timeout(_sessionPublishTimeout);
+    } catch (e, st) {
+      if (kDebugMode) {
+        debugPrint('mirrorCheckInAttemptToFirestore $docId: $e');
+        debugPrint('$st');
       }
-      return _CheckInAttemptUploadResult.submitted;
-    } on FirebaseException catch (e) {
-      if (e.code == 'permission-denied') {
-        return _CheckInAttemptUploadResult.permissionDenied;
-      }
-      return _CheckInAttemptUploadResult.failed;
-    } catch (_) {
-      return _CheckInAttemptUploadResult.failed;
     }
   }
 
@@ -6282,7 +6720,7 @@ class AttendanceRepository extends ChangeNotifier {
   Future<bool> _remoteRecordIsPresent(String recordId) async {
     try {
       final doc = await _firestore
-          .collection(FirestoreCollections.attendanceRecords)
+          .collection(ApiCollections.attendanceRecords)
           .doc(recordId)
           .get();
       if (!doc.exists) return false;
@@ -6302,14 +6740,14 @@ class AttendanceRepository extends ChangeNotifier {
     final out = <String, String>{};
     try {
       final snap = await _firestore
-          .collection(FirestoreCollections.checkInAttempts)
+          .collection(ApiCollections.checkInAttempts)
           .where('listId', isEqualTo: listId)
           .where('studentId', isEqualTo: studentId)
           .get()
           .timeout(_sessionPublishTimeout);
       for (final doc in snap.docs) {
         final data = doc.data();
-        if (data['status'] != 'rejected') continue;
+        if (data == null || data['status'] != 'rejected') continue;
         final sessionId = (data['sessionId'] as String?)?.trim() ?? '';
         final reason = (data['rejectionReason'] as String?)?.trim() ?? '';
         if (sessionId.isNotEmpty && reason.isNotEmpty) {
@@ -6400,14 +6838,12 @@ class AttendanceRepository extends ChangeNotifier {
     final sid = sessionId.trim();
     final stu = studentId.trim();
     if (sid.isEmpty || stu.isEmpty) return;
+    final now = DateTime.now();
 
-    await PendingCheckInQueue.removeById(
-      attendanceRecordIdForSessionStudent(sid, stu),
-    );
     for (final e in await PendingCheckInQueue.loadAll()) {
-      if (e.sessionId == sid && e.studentId == stu) {
-        await PendingCheckInQueue.removeById(e.id);
-      }
+      if (e.sessionId != sid || e.studentId != stu) continue;
+      if (!PendingRetention.isExpired(e.pendingSince, now)) continue;
+      await PendingCheckInQueue.removeById(e.id);
     }
 
     final student = AttendanceStore.students
@@ -6419,6 +6855,7 @@ class AttendanceRepository extends ChangeNotifier {
       if (e.registrationNumber.trim().toUpperCase() != reg) continue;
       final entrySession = e.sessionId?.trim() ?? '';
       if (entrySession.isNotEmpty && entrySession != sid) continue;
+      if (!PendingRetention.isExpired(e.pendingSince, now)) continue;
       await PendingSessionCodeQueue.removeById(e.id);
     }
   }
@@ -6472,10 +6909,24 @@ class AttendanceRepository extends ChangeNotifier {
     required bool accepted,
   }) async {
     if (accepted) {
-      await PendingCheckInQueue.removeById(recordId);
+      final session = AttendanceStore.sessionById(sessionId);
+      final local = AttendanceStore.attendanceRecordForSessionStudent(
+        sessionId,
+        studentId,
+      );
+      if (local != null && local.present && session != null) {
+        unawaited(_upsertPendingCheckInFromRecord(
+          record: local,
+          listId: session.listId,
+          course: local.course,
+          status: PendingCheckInQueueStatus.approved,
+        ));
+      } else {
+        await PendingCheckInQueue.markApproved(recordId);
+      }
       _promoteLocalPresentToVerified(sessionId, studentId);
       unawaited(
-        refreshOfficialRecordFromFirebase(
+        refreshOfficialRecordFromApi(
           sessionId: sessionId,
           studentId: studentId,
         ),
@@ -6493,7 +6944,22 @@ class AttendanceRepository extends ChangeNotifier {
         await _cancelCheckInWatchForRecord(recordId);
         return;
       }
-      await PendingCheckInQueue.removeById(recordId);
+      final session = AttendanceStore.sessionById(sessionId);
+      final local = AttendanceStore.attendanceRecordForSessionStudent(
+        sessionId,
+        studentId,
+      );
+      if (local != null &&
+          local.present &&
+          session != null &&
+          !PendingRetention.isExpired(local.timestamp, DateTime.now())) {
+        await _upsertPendingCheckInFromRecord(
+          record: local,
+          listId: session.listId,
+          course: local.course,
+          sessionCodeRaw: normalizeSessionCodeInput(session.sessionCode),
+        );
+      }
       await clearLocalUnverifiedPresentForCheckIn(recordId, force: true);
     }
     await _cancelCheckInWatchForRecord(recordId);
@@ -6534,13 +7000,39 @@ class AttendanceRepository extends ChangeNotifier {
     required String recordId,
     required String sessionId,
     required String studentId,
+    String? sessionCodeRaw,
   }) {
-    unawaited(_cancelCheckInWatchForRecord(recordId));
+    final canonicalId = canonicalStudentIdForUpload(studentId);
+    final code = normalizeSessionCodeInput(sessionCodeRaw ?? '');
+    final rtdKey = checkInRtdConfirmationKey(
+      sessionId: sessionId,
+      sessionCodeRaw: code.isNotEmpty ? code : null,
+    );
+    final watchKeys = <String>{recordId.trim()};
+    if (isValidJoinCodeFormat(code)) {
+      final claimId = PendingSessionCodeClaimUpload.claimDocId(
+        normalizedCode: code,
+        studentId: canonicalId,
+      );
+      watchKeys.add(claimId);
+    }
 
+    for (final docId in watchKeys) {
+      if (docId.isEmpty) continue;
+      unawaited(_cancelCheckInWatchForRecord(docId));
+      _attachCheckInAttemptFirestoreWatch(
+        docId: docId,
+        recordId: recordId,
+        sessionId: sessionId,
+        studentId: canonicalId,
+      );
+    }
+
+    unawaited(_cancelCheckInRtdWatchForRecord(recordId));
     _checkInRtdWatchSubs[recordId] =
         CheckInRtdConfirmationWatch.watch(
-      sessionId: sessionId,
-      studentId: studentId,
+      sessionId: rtdKey,
+      studentId: canonicalId,
     ).listen(
       (conf) async {
         try {
@@ -6549,14 +7041,14 @@ class AttendanceRepository extends ChangeNotifier {
             await _handleCheckInTerminalStatus(
               recordId: recordId,
               sessionId: sessionId,
-              studentId: studentId,
+              studentId: canonicalId,
               accepted: true,
             );
           } else if (conf.isRejected) {
             await _handleCheckInTerminalStatus(
               recordId: recordId,
               sessionId: sessionId,
-              studentId: studentId,
+              studentId: canonicalId,
               accepted: false,
             );
           }
@@ -6569,11 +7061,18 @@ class AttendanceRepository extends ChangeNotifier {
       },
       onError: (_) {},
     );
+  }
 
+  void _attachCheckInAttemptFirestoreWatch({
+    required String docId,
+    required String recordId,
+    required String sessionId,
+    required String studentId,
+  }) {
     if (_firestoreIfReady == null) return;
-    _checkInAttemptWatchSubs[recordId] = _firestore
-        .collection(FirestoreCollections.checkInAttempts)
-        .doc(recordId)
+    _checkInAttemptWatchSubs[docId] = _firestore
+        .collection(ApiCollections.checkInAttempts)
+        .doc(docId)
         .snapshots()
         .listen(
       (snap) async {
@@ -6598,12 +7097,44 @@ class AttendanceRepository extends ChangeNotifier {
           }
         } catch (e, st) {
           if (kDebugMode) {
-            debugPrint('checkInAttempt watch $recordId: $e');
+            debugPrint('checkInAttempt watch $docId: $e');
             debugPrint('$st');
           }
         }
       },
-      onError: (_) {},
+      onError: (Object e, StackTrace st) {
+        if (kDebugMode) {
+          debugPrint('checkInAttempt watch denied $docId: $e');
+        }
+      },
+    );
+  }
+
+  Future<void> _cancelCheckInRtdWatchForRecord(String recordId) async {
+    await _checkInRtdWatchSubs.remove(recordId)?.cancel();
+  }
+
+  /// Watches awaiting session-code claims and linked session attempts.
+  void watchPendingSessionCodeClaim({
+    required PendingSessionCodeEntry entry,
+    required String studentId,
+  }) {
+    final code = normalizeSessionCodeInput(entry.sessionCodeRaw);
+    if (!isValidJoinCodeFormat(code)) return;
+    final canonicalId = canonicalStudentIdForUpload(studentId);
+    final claimId = PendingSessionCodeClaimUpload.claimDocId(
+      normalizedCode: code,
+      studentId: canonicalId,
+    );
+    final sessionId = entry.sessionId?.trim() ?? '';
+    final recordId = sessionId.isNotEmpty
+        ? attendanceRecordIdForSessionStudent(sessionId, canonicalId)
+        : claimId;
+    watchCheckInAttemptForStudent(
+      recordId: recordId,
+      sessionId: sessionId.isNotEmpty ? sessionId : claimId,
+      studentId: canonicalId,
+      sessionCodeRaw: code,
     );
   }
 
@@ -6628,7 +7159,7 @@ class AttendanceRepository extends ChangeNotifier {
             fromRtd == OfficialRecordRefreshResult.officialAbsent) {
           return;
         }
-        await refreshOfficialRecordFromFirebase(
+        await refreshOfficialRecordFromApi(
           sessionId: s.id,
           studentId: studentId,
         );
@@ -6648,6 +7179,77 @@ class AttendanceRepository extends ChangeNotifier {
         recordId: attendanceRecordIdForSessionStudent(sessionId, studentId),
       );
 
+  /// Waits for server validation after upload (online check-ins), then refreshes stats.
+  Future<bool> awaitCheckInVerificationAfterUpload({
+    required String sessionId,
+    required String studentId,
+    String? sessionCodeRaw,
+    Duration timeout = const Duration(seconds: 5),
+  }) async {
+    final recordId = attendanceRecordIdForSessionStudent(sessionId, studentId);
+    final listId = AttendanceStore.sessionById(sessionId)?.listId;
+    final deadline = DateTime.now().add(timeout);
+
+    while (DateTime.now().isBefore(deadline)) {
+      final local = AttendanceStore.attendanceRecordForSessionStudent(
+        sessionId,
+        studentId,
+      );
+      if (local?.verified == true) {
+        await _refreshProfileStatsAfterCheckIn(
+          sessionId: sessionId,
+          studentId: studentId,
+          listId: listId,
+        );
+        return true;
+      }
+
+      if (await _tryQuickVerifyAfterCheckInUpload(
+        sessionId: sessionId,
+        studentId: studentId,
+        recordId: recordId,
+        sessionCodeRaw: sessionCodeRaw,
+      )) {
+        return true;
+      }
+
+      if (await isCheckInAttemptRejected(recordId)) return false;
+
+      await Future<void>.delayed(const Duration(milliseconds: 350));
+    }
+
+    return AttendanceStore.attendanceRecordForSessionStudent(
+              sessionId,
+              studentId,
+            )?.verified ==
+        true;
+  }
+
+  /// Pulls fresh list roll stats after a verified check-in (RTD + local merge).
+  Future<AttendanceRollStats> listRollStatsAfterVerifiedCheckIn({
+    required String sessionId,
+    required String studentId,
+    required String listId,
+    bool refreshFromServer = true,
+  }) async {
+    if (refreshFromServer) {
+      await _refreshProfileStatsAfterCheckIn(
+        sessionId: sessionId,
+        studentId: studentId,
+        listId: listId,
+      );
+    }
+    final student = _studentRecordForId(studentId);
+    final reg = student?.registrationNumber.trim().toUpperCase() ??
+        _registrationForCheckInUpload(studentId)?.trim().toUpperCase() ??
+        AuthRepository.instance.currentRegistrationNumber?.trim().toUpperCase() ??
+        '';
+    if (reg.isEmpty) {
+      return const AttendanceRollStats(present: 0, total: 0);
+    }
+    return AttendanceStore.rollStatsForRegistrationOnList(reg, listId.trim());
+  }
+
   Future<bool> _applyAcceptedCheckInConfirmation({
     required String sessionId,
     required String studentId,
@@ -6659,26 +7261,22 @@ class AttendanceRepository extends ChangeNotifier {
         studentId: sid,
       );
       if (fromRtd == OfficialRecordRefreshResult.verifiedPresent) {
-        unawaited(
-          _refreshProfileStatsAfterCheckIn(
-            sessionId: sessionId,
-            studentId: studentId,
-            listId: listId,
-          ),
+        await _refreshProfileStatsAfterCheckIn(
+          sessionId: sessionId,
+          studentId: studentId,
+          listId: listId,
         );
         return true;
       }
     }
     _promoteLocalPresentToVerified(sessionId, studentId);
-    unawaited(
-      _refreshProfileStatsAfterCheckIn(
-        sessionId: sessionId,
-        studentId: studentId,
-        listId: listId,
-      ),
+    await _refreshProfileStatsAfterCheckIn(
+      sessionId: sessionId,
+      studentId: studentId,
+      listId: listId,
     );
     unawaited(
-      refreshOfficialRecordFromFirebase(
+      refreshOfficialRecordFromApi(
         sessionId: sessionId,
         studentId: studentId,
       ),
@@ -6690,9 +7288,15 @@ class AttendanceRepository extends ChangeNotifier {
     required String sessionId,
     required String studentId,
     required String recordId,
+    String? sessionCodeRaw,
   }) async {
-    final rtdConf = await CheckInRtdConfirmationWatch.awaitTerminal(
+    final rtdKey = checkInRtdConfirmationKey(
       sessionId: sessionId,
+      sessionCodeRaw: sessionCodeRaw ??
+          AttendanceStore.sessionById(sessionId)?.sessionCode,
+    );
+    final rtdConf = await CheckInRtdConfirmationWatch.awaitTerminal(
+      sessionId: rtdKey,
       studentId: studentId,
       timeout: const Duration(milliseconds: 1800),
     );
@@ -6710,32 +7314,28 @@ class AttendanceRepository extends ChangeNotifier {
     for (var i = 0; i < fastDelaysMs.length; i++) {
       if (await _isCheckInAttemptAccepted(recordId)) {
         _promoteLocalPresentToVerified(sessionId, studentId);
-        unawaited(
-          _refreshProfileStatsAfterCheckIn(
-            sessionId: sessionId,
-            studentId: studentId,
-            listId: AttendanceStore.sessionById(sessionId)?.listId,
-          ),
+        await _refreshProfileStatsAfterCheckIn(
+          sessionId: sessionId,
+          studentId: studentId,
+          listId: AttendanceStore.sessionById(sessionId)?.listId,
         );
         unawaited(
-          refreshOfficialRecordFromFirebase(
+          refreshOfficialRecordFromApi(
             sessionId: sessionId,
             studentId: studentId,
           ),
         );
         return true;
       }
-      final result = await refreshOfficialRecordFromFirebase(
+      final result = await refreshOfficialRecordFromApi(
         sessionId: sessionId,
         studentId: studentId,
       );
       if (result == OfficialRecordRefreshResult.verifiedPresent) {
-        unawaited(
-          _refreshProfileStatsAfterCheckIn(
-            sessionId: sessionId,
-            studentId: studentId,
-            listId: AttendanceStore.sessionById(sessionId)?.listId,
-          ),
+        await _refreshProfileStatsAfterCheckIn(
+          sessionId: sessionId,
+          studentId: studentId,
+          listId: AttendanceStore.sessionById(sessionId)?.listId,
         );
         return true;
       }
@@ -6759,7 +7359,7 @@ class AttendanceRepository extends ChangeNotifier {
     required String studentId,
     required String recordId,
   }) async {
-    final verified = await awaitOfficialRecordFromFirebase(
+    final verified = await awaitOfficialRecordFromApi(
       sessionId: sessionId,
       studentId: studentId,
       timeout: const Duration(seconds: 15),
@@ -6858,12 +7458,17 @@ class AttendanceRepository extends ChangeNotifier {
       } else {
         AttendanceStore.addAttendanceRecord(official);
       }
-      unawaited(PendingCheckInQueue.removeById(official.id));
+      final session = AttendanceStore.sessionById(official.sessionId);
+      unawaited(_upsertPendingCheckInFromRecord(
+        record: official,
+        listId: session?.listId ?? '',
+        course: official.course,
+        status: PendingCheckInQueueStatus.approved,
+      ));
       AttendanceStore.invalidateLookupCaches();
       _invalidateRollStatsAfterRecordMerge(official);
       _schedulePersistScopedLocalSnapshot();
       _notifyStoreUpdated(immediate: true);
-      final session = AttendanceStore.sessionById(official.sessionId);
       if (session != null) {
         unawaited(_backfillPriorSessionsAfterPresentResolved(
           listId: session.listId,
@@ -6901,9 +7506,15 @@ class AttendanceRepository extends ChangeNotifier {
       AttendanceStore.addAttendanceRecord(official);
     }
     if (official.present && official.verified) {
-      unawaited(PendingCheckInQueue.removeById(official.id));
+      final session = AttendanceStore.sessionById(official.sessionId);
+      unawaited(_upsertPendingCheckInFromRecord(
+        record: official,
+        listId: session?.listId ?? '',
+        course: official.course,
+        status: PendingCheckInQueueStatus.approved,
+      ));
     } else if (!official.present && !pendingEvidence) {
-      unawaited(PendingCheckInQueue.removeById(official.id));
+      unawaited(PendingCheckInQueue.markApproved(official.id));
       unawaited(_clearStalePendingEvidenceForOfficialAbsent(
         sessionId: official.sessionId,
         studentId: official.studentId,
@@ -6975,7 +7586,7 @@ class AttendanceRepository extends ChangeNotifier {
     if (_firestoreIfReady == null) return false;
     try {
       final doc = await _firestore
-          .collection(FirestoreCollections.checkInAttempts)
+          .collection(ApiCollections.checkInAttempts)
           .doc(recordId)
           .get()
           .timeout(_sessionPublishTimeout);
@@ -7058,6 +7669,7 @@ class AttendanceRepository extends ChangeNotifier {
     required String sessionId,
     required String studentId,
     String? listId,
+    String? sessionCodeRaw,
   }) async {
     final recordId = attendanceRecordIdForSessionStudent(sessionId, studentId);
     final row = AttendanceStore.attendanceRecordForSessionStudent(
@@ -7069,10 +7681,14 @@ class AttendanceRepository extends ChangeNotifier {
       notifyStoreUpdatedFromRtd();
     }
 
+    final code = sessionCodeRaw?.trim().isNotEmpty == true
+        ? sessionCodeRaw
+        : AttendanceStore.sessionById(sessionId)?.sessionCode;
     watchCheckInAttemptForStudent(
       recordId: recordId,
       sessionId: sessionId,
       studentId: studentId,
+      sessionCodeRaw: code,
     );
 
     unawaited(() async {
@@ -7106,7 +7722,7 @@ class AttendanceRepository extends ChangeNotifier {
     required String sessionId,
     required String studentId,
   }) async {
-    final db = tryUPanelDatabase();
+    final db = null /* RTD disabled */;
     if (db == null) return OfficialRecordRefreshResult.notFound;
     final sid = sessionId.trim();
     final stu = studentId.trim();
@@ -7140,14 +7756,14 @@ class AttendanceRepository extends ChangeNotifier {
   }
 
   /// Pulls one official row from Firebase into [AttendanceStore].
-  Future<OfficialRecordRefreshResult> refreshOfficialRecordFromFirebase({
+  Future<OfficialRecordRefreshResult> refreshOfficialRecordFromApi({
     required String sessionId,
     required String studentId,
   }) async {
     final id = attendanceRecordIdForSessionStudent(sessionId, studentId);
     try {
       final doc = await _firestore
-          .collection(FirestoreCollections.attendanceRecords)
+          .collection(ApiCollections.attendanceRecords)
           .doc(id)
           .get()
           .timeout(_sessionPublishTimeout);
@@ -7192,7 +7808,7 @@ class AttendanceRepository extends ChangeNotifier {
   }
 
   /// Polls Firebase until the official row appears, is rejected, or [timeout] elapses.
-  Future<bool> awaitOfficialRecordFromFirebase({
+  Future<bool> awaitOfficialRecordFromApi({
     required String sessionId,
     required String studentId,
     Duration? timeout,
@@ -7206,8 +7822,12 @@ class AttendanceRepository extends ChangeNotifier {
       effectiveTimeout.inMilliseconds,
       online ? 2500 : 4000,
     );
-    final rtdConf = await CheckInRtdConfirmationWatch.awaitTerminal(
+    final rtdKey = checkInRtdConfirmationKey(
       sessionId: sessionId,
+      sessionCodeRaw: AttendanceStore.sessionById(sessionId)?.sessionCode,
+    );
+    final rtdConf = await CheckInRtdConfirmationWatch.awaitTerminal(
+      sessionId: rtdKey,
       studentId: studentId,
       timeout: Duration(milliseconds: rtdWaitMs),
     );
@@ -7218,7 +7838,6 @@ class AttendanceRepository extends ChangeNotifier {
       );
     }
     if (rtdConf?.isRejected == true) {
-      await PendingCheckInQueue.removeById(id);
       await clearLocalUnverifiedPresentForCheckIn(id, force: true);
       return false;
     }
@@ -7246,7 +7865,7 @@ class AttendanceRepository extends ChangeNotifier {
           fromRtd == OfficialRecordRefreshResult.officialAbsent) {
         return fromRtd;
       }
-      return refreshOfficialRecordFromFirebase(
+      return refreshOfficialRecordFromApi(
         sessionId: sessionId,
         studentId: studentId,
       );
@@ -7266,7 +7885,6 @@ class AttendanceRepository extends ChangeNotifier {
         ),
       );
       if (!retain && !await PendingCheckInQueue.containsRecordId(id)) {
-        await PendingCheckInQueue.removeById(id);
         return false;
       }
       if (retain) {
@@ -7274,11 +7892,10 @@ class AttendanceRepository extends ChangeNotifier {
       }
     }
     if (await isCheckInAttemptRejected(id)) {
-      await refreshOfficialRecordFromFirebase(
+      await refreshOfficialRecordFromApi(
         sessionId: sessionId,
         studentId: studentId,
       );
-      await PendingCheckInQueue.removeById(id);
       await clearLocalUnverifiedPresentForCheckIn(id, force: true);
       return false;
     }
@@ -7305,16 +7922,14 @@ class AttendanceRepository extends ChangeNotifier {
           ),
         );
         if (!retain && !await PendingCheckInQueue.containsRecordId(id)) {
-          await PendingCheckInQueue.removeById(id);
           return false;
         }
       }
       if (await isCheckInAttemptRejected(id)) {
-        await refreshOfficialRecordFromFirebase(
+        await refreshOfficialRecordFromApi(
           sessionId: sessionId,
           studentId: studentId,
         );
-        await PendingCheckInQueue.removeById(id);
         await clearLocalUnverifiedPresentForCheckIn(id, force: true);
         return false;
       }
@@ -7347,6 +7962,15 @@ class AttendanceRepository extends ChangeNotifier {
       }
     }
     if (await _remoteRecordIsPresent(record.id)) {
+      await _ensureCheckInListedInQueue(
+        record: record,
+        listIdOverride: listIdOverride,
+        course: _resolvePresentCourseForSession(
+          record.sessionId,
+          record.studentId,
+          record.course,
+        ),
+      );
       return StudentOfflineCheckInOutcome.duplicate;
     }
     final existing = AttendanceStore.attendanceRecordForSessionStudent(
@@ -7355,6 +7979,16 @@ class AttendanceRepository extends ChangeNotifier {
     );
     if (existing != null) {
       if (existing.present && existing.verified) {
+        await _ensureCheckInListedInQueue(
+          record: existing,
+          listIdOverride: listIdOverride,
+          course: _resolvePresentCourseForSession(
+            record.sessionId,
+            record.studentId,
+            existing.course,
+          ),
+          status: PendingCheckInQueueStatus.approved,
+        );
         return StudentOfflineCheckInOutcome.duplicate;
       }
     }
@@ -7380,8 +8014,49 @@ class AttendanceRepository extends ChangeNotifier {
       false,
     );
 
+    if (record.present) {
+      final sessionForList = AttendanceStore.sessionById(record.sessionId);
+      final listIdForQueue = (listIdOverride?.trim().isNotEmpty == true
+              ? listIdOverride!.trim()
+              : null) ??
+          sessionForList?.listId ??
+          '';
+      final codeForQueue = (sessionCodeRaw?.trim().isNotEmpty == true
+              ? normalizeSessionCodeInput(sessionCodeRaw!.trim())
+              : null) ??
+          (sessionForList != null
+              ? normalizeSessionCodeInput(sessionForList.sessionCode)
+              : null);
+      await _upsertPendingCheckInFromRecord(
+        record: localRow,
+        listId: listIdForQueue,
+        course: resolvedCourse,
+        sessionCodeRaw: codeForQueue,
+      );
+      if (codeForQueue != null &&
+          codeForQueue.isNotEmpty &&
+          (record.deviceId?.trim().isNotEmpty ?? false)) {
+        final student = await _studentForCheckInUpload(record.studentId);
+        if (student != null) {
+          await _upsertPendingSessionCodeEntry(
+            PendingSessionCodeEntry(
+              id: '${codeForQueue}_${student.registrationNumber.trim().toUpperCase()}',
+              registrationNumber: student.registrationNumber,
+              sessionCodeRaw: codeForQueue,
+              capturedAt: record.timestamp,
+              latitude: record.latitude,
+              longitude: record.longitude,
+              deviceId: record.deviceId!.trim(),
+              sessionId: sessionForList?.id,
+              listId: listIdForQueue.isNotEmpty ? listIdForQueue : null,
+            ),
+          );
+        }
+      }
+    }
+
     if (record.present &&
-        !await isLecturerSessionPublishedOnServer(record.sessionId)) {
+        await _shouldUseAwaitingSessionClaimPath(record.sessionId)) {
       final student = await _studentForCheckInUpload(record.studentId);
       final session = AttendanceStore.sessionById(record.sessionId);
       if (student != null && session != null) {
@@ -7404,6 +8079,8 @@ class AttendanceRepository extends ChangeNotifier {
           latitude: record.latitude,
           longitude: record.longitude,
           deviceId: d,
+          sessionId: session.id,
+          listId: session.listId,
         );
         final claimUploaded =
             await PendingSessionCodeClaimUpload.uploadForEntryWithStudent(
@@ -7420,6 +8097,12 @@ class AttendanceRepository extends ChangeNotifier {
             sessionId: record.sessionId,
             studentId: record.studentId,
           );
+          await _upsertPendingSessionCodeEntry(claimEntry);
+          await _upsertPendingCheckInFromRecord(
+            record: localRow,
+            listId: session.listId,
+            course: resolvedCourse,
+          );
           return StudentOfflineCheckInOutcome.submittedPendingVerification;
         }
         _applyLocalPresentCheckInRow(
@@ -7427,6 +8110,12 @@ class AttendanceRepository extends ChangeNotifier {
           existing: existing,
           sessionId: record.sessionId,
           studentId: record.studentId,
+        );
+        await PendingSessionCodeQueue.enqueue(claimEntry);
+        await _enqueuePendingCheckInRow(
+          localRow: localRow,
+          listId: session.listId,
+          course: resolvedCourse,
         );
         return StudentOfflineCheckInOutcome.queuedOffline;
       }
@@ -7492,18 +8181,23 @@ class AttendanceRepository extends ChangeNotifier {
     if (permissionDenied) {
       final student = await _studentForCheckInUpload(record.studentId);
       final session = AttendanceStore.sessionById(record.sessionId);
-      if (student != null && session != null && record.present) {
+      if (student != null && record.present) {
         final d = record.deviceId?.trim() ?? '';
-        if (d.isNotEmpty) {
+        final claimCode = codeForAttempt ??
+            (session != null
+                ? normalizeSessionCodeInput(session.sessionCode)
+                : null);
+        if (d.isNotEmpty && claimCode != null && claimCode.isNotEmpty) {
           final claimEntry = PendingSessionCodeEntry(
-            id:
-                '${normalizeSessionCodeInput(session.sessionCode)}_${student.registrationNumber.trim().toUpperCase()}',
+            id: '${claimCode}_${student.registrationNumber.trim().toUpperCase()}',
             registrationNumber: student.registrationNumber,
-            sessionCodeRaw: session.sessionCode,
+            sessionCodeRaw: claimCode,
             capturedAt: record.timestamp,
             latitude: record.latitude,
             longitude: record.longitude,
             deviceId: d,
+            sessionId: session?.id,
+            listId: listId.isNotEmpty ? listId : session?.listId,
           );
           final claimUploaded =
               await PendingSessionCodeClaimUpload.uploadForEntryWithStudent(
@@ -7511,16 +8205,28 @@ class AttendanceRepository extends ChangeNotifier {
             studentId: student.id,
           );
           if (claimUploaded) {
-            PendingSessionCodeSync.ensureWatchingSessionPublishForCodes(
-              [session.sessionCode],
-            );
+            if (session != null) {
+              PendingSessionCodeSync.ensureWatchingSessionPublishForCodes(
+                [session.sessionCode],
+              );
+            } else {
+              PendingSessionCodeSync.ensureWatchingSessionPublishForCodes(
+                [claimCode],
+              );
+            }
             _applyLocalPresentCheckInRow(
               localRow,
               existing: existing,
               sessionId: record.sessionId,
               studentId: record.studentId,
             );
-            await PendingCheckInQueue.removeById(record.id);
+            await _upsertPendingSessionCodeEntry(claimEntry);
+            await _upsertPendingCheckInFromRecord(
+              record: localRow,
+              listId: listId,
+              course: resolvedCourse,
+              sessionCodeRaw: claimCode,
+            );
             return StudentOfflineCheckInOutcome.submittedPendingVerification;
           }
         }
@@ -7531,19 +8237,11 @@ class AttendanceRepository extends ChangeNotifier {
         sessionId: record.sessionId,
         studentId: record.studentId,
       );
-      await PendingCheckInQueue.enqueue(
-        PendingCheckInEntry(
-          id: localRow.id,
-          sessionId: record.sessionId,
-          studentId: record.studentId,
-          listId: listId,
-          course: resolvedCourse,
-          capturedAt: record.timestamp,
-          latitude: record.latitude,
-          longitude: record.longitude,
-          deviceId: record.deviceId?.trim() ?? '',
-          pendingSince: DateTime.now(),
-        ),
+      await _upsertPendingCheckInFromRecord(
+        record: localRow,
+        listId: listId,
+        course: resolvedCourse,
+        sessionCodeRaw: codeForAttempt,
       );
       return StudentOfflineCheckInOutcome.queuedOffline;
     }
@@ -7554,16 +8252,22 @@ class AttendanceRepository extends ChangeNotifier {
         sessionId: record.sessionId,
         studentId: record.studentId,
       );
-      await PendingCheckInQueue.removeById(record.id);
+      await _upsertPendingCheckInFromRecord(
+        record: localRow,
+        listId: listId,
+        course: resolvedCourse,
+        sessionCodeRaw: codeForAttempt,
+      );
       var verified = false;
       try {
         verified = await _tryQuickVerifyAfterCheckInUpload(
           sessionId: record.sessionId,
           studentId: record.studentId,
           recordId: record.id,
+          sessionCodeRaw: codeForAttempt,
         ).timeout(
           AppConnectivity.instance.isOnline
-              ? const Duration(milliseconds: 1500)
+              ? const Duration(milliseconds: 3500)
               : const Duration(milliseconds: 400),
           onTimeout: () => false,
         );
@@ -7580,39 +8284,18 @@ class AttendanceRepository extends ChangeNotifier {
           sessionId: record.sessionId,
           studentId: record.studentId,
           listId: listId,
+          sessionCodeRaw: codeForAttempt,
         ),
       );
       if (verified) {
+        await _upsertPendingCheckInFromRecord(
+          record: localRow,
+          listId: listId,
+          course: resolvedCourse,
+          status: PendingCheckInQueueStatus.approved,
+          sessionCodeRaw: codeForAttempt,
+        );
         return StudentOfflineCheckInOutcome.success;
-      }
-      final sess = AttendanceStore.sessionById(record.sessionId);
-      final pendingEntry = PendingCheckInEntry(
-        id: record.id,
-        sessionId: record.sessionId,
-        studentId: record.studentId,
-        listId: listId,
-        course: resolvedCourse,
-        capturedAt: record.timestamp,
-        latitude: record.latitude,
-        longitude: record.longitude,
-        deviceId: record.deviceId?.trim() ?? '',
-      );
-      if (sess != null &&
-          offlineOrMetadataQueuedCheckInTrustsPresent(pendingEntry, sess)) {
-        _promoteLocalPresentToVerified(record.sessionId, record.studentId);
-        return StudentOfflineCheckInOutcome.success;
-      }
-      final official = AttendanceStore.attendanceRecordForSessionStudent(
-        record.sessionId,
-        record.studentId,
-      );
-      if (official != null && !official.present) {
-        if (sess != null &&
-            offlineOrMetadataQueuedCheckInTrustsPresent(pendingEntry, sess)) {
-          _promoteLocalPresentToVerified(record.sessionId, record.studentId);
-          return StudentOfflineCheckInOutcome.success;
-        }
-        return StudentOfflineCheckInOutcome.submittedPendingVerification;
       }
       if (await isCheckInAttemptRejected(record.id)) {
         return _outcomeForRejectedAttempt(
@@ -7623,7 +8306,22 @@ class AttendanceRepository extends ChangeNotifier {
           sessionCodeRaw: codeForAttempt,
         );
       }
-      return StudentOfflineCheckInOutcome.submittedPendingVerification;
+      final attemptOnServer = await checkInAttemptExistsOnServer(record.id);
+      if (attemptOnServer) {
+        unawaited(PendingCheckInQueue.markUploaded(record.id));
+        await _upsertPendingCheckInFromRecord(
+          record: localRow,
+          listId: listId,
+          course: resolvedCourse,
+        );
+        return StudentOfflineCheckInOutcome.submittedPendingVerification;
+      }
+      await _enqueuePendingCheckInRow(
+        localRow: localRow,
+        listId: listId,
+        course: resolvedCourse,
+      );
+      return StudentOfflineCheckInOutcome.queuedOffline;
     }
 
     _applyLocalPresentCheckInRow(
@@ -7632,19 +8330,10 @@ class AttendanceRepository extends ChangeNotifier {
       sessionId: record.sessionId,
       studentId: record.studentId,
     );
-    await PendingCheckInQueue.enqueue(
-      PendingCheckInEntry(
-        id: localRow.id,
-        sessionId: record.sessionId,
-        studentId: record.studentId,
-        listId: listId,
-        course: resolvedCourse,
-        capturedAt: record.timestamp,
-        latitude: record.latitude,
-        longitude: record.longitude,
-        deviceId: record.deviceId?.trim() ?? '',
-        pendingSince: DateTime.now(),
-      ),
+    await _enqueuePendingCheckInRow(
+      localRow: localRow,
+      listId: listId,
+      course: resolvedCourse,
     );
     return StudentOfflineCheckInOutcome.queuedOffline;
   }
@@ -7783,7 +8472,7 @@ class AttendanceRepository extends ChangeNotifier {
     if (trimmed.isEmpty) return;
 
     final sessionDocs = await _queryDocsWhereFieldEquals(
-      collection: _firestore.collection(FirestoreCollections.attendanceSessions),
+      collection: _firestore.collection(ApiCollections.attendanceSessions),
       field: 'listId',
       values: [trimmed],
     );
@@ -7793,12 +8482,12 @@ class AttendanceRepository extends ChangeNotifier {
         .toList();
 
     final signInDocs = await _queryDocsWhereFieldEquals(
-      collection: _firestore.collection(FirestoreCollections.signIns),
+      collection: _firestore.collection(ApiCollections.signIns),
       field: 'listId',
       values: [trimmed],
     );
 
-    final noticesCol = _firestore.collection(FirestoreCollections.notices);
+    final noticesCol = _firestore.collection(ApiCollections.notices);
     final noticeByList = await _queryDocsWhereFieldEquals(
       collection: noticesCol,
       field: 'targetListId',
@@ -7853,7 +8542,7 @@ class AttendanceRepository extends ChangeNotifier {
     } catch (_) {}
     try {
       await _firestore
-          .collection(FirestoreCollections.attendanceLists)
+          .collection(ApiCollections.attendanceLists)
           .doc(trimmed)
           .delete();
     } catch (_) {}
@@ -7865,16 +8554,17 @@ class AttendanceRepository extends ChangeNotifier {
   Future<String?> _fullNameFromStudentRegistration(String reg) async {
     final normalized = StudentRegistrationNumber.normalize(reg);
     if (normalized.isEmpty) return null;
+    if (!AppConnectivity.instance.isOnline) return null;
     try {
       final snap = await _firestore
-          .collection(FirestoreCollections.studentRegistrations)
+          .collection(ApiCollections.studentRegistrations)
           .doc(normalized)
           .get();
       if (!snap.exists || snap.data() == null) return null;
       final data = snap.data()!;
       final ownerUid = (data['uid'] as String?)?.trim() ?? '';
       final currentUid =
-          AuthRepository.instance.currentFirebaseUid?.trim() ?? '';
+          AuthRepository.instance.currentUserId?.trim() ?? '';
       if (ownerUid.isNotEmpty &&
           currentUid.isNotEmpty &&
           ownerUid != currentUid) {
@@ -7919,7 +8609,7 @@ class AttendanceRepository extends ChangeNotifier {
     final fromReg = await _fullNameFromStudentRegistration(normalized);
     if (fromReg != null && fromReg.isNotEmpty) return fromReg;
 
-    final displayName = FirebaseAuth.instance.currentUser?.displayName?.trim();
+    final displayName = ApiAuth.instance.currentUser?.displayName?.trim();
     if (displayName != null && displayName.isNotEmpty) return displayName;
 
     return null;
@@ -8168,18 +8858,18 @@ class AttendanceRepository extends ChangeNotifier {
       final name = record.studentName?.trim();
       final reg = record.registrationNumber?.trim().toUpperCase();
       await _firestore
-          .collection(FirestoreCollections.signIns)
+          .collection(ApiCollections.signIns)
           .doc(record.id)
           .set(
             <String, dynamic>{
               'listId': record.listId,
               'studentId': record.studentId,
               'course': record.course,
-              'signedInAt': Timestamp.fromDate(record.signedInAt),
+              'signedInAt': apiDateToField(record.signedInAt),
               if (name != null && name.isNotEmpty) 'studentName': name,
               if (reg != null && reg.isNotEmpty) 'registrationNumber': reg,
             },
-            SetOptions(merge: true),
+            ApiSetOptions(merge: true),
           )
           .timeout(_sessionPublishTimeout);
     } catch (_) {}
@@ -8480,7 +9170,7 @@ class AttendanceRepository extends ChangeNotifier {
           default:
             await _requestServerAbsentBackfill(listId, studentId);
             if (AppConnectivity.instance.hasNetworkInterface) {
-              await awaitOfficialRecordFromFirebase(
+              await awaitOfficialRecordFromApi(
                 sessionId: sess.id,
                 studentId: studentId,
                 timeout: const Duration(seconds: 15),
@@ -8535,7 +9225,7 @@ class AttendanceRepository extends ChangeNotifier {
           continue;
         }
         refreshSessions.add(
-          awaitOfficialRecordFromFirebase(
+          awaitOfficialRecordFromApi(
             sessionId: sess.id,
             studentId: signIn.studentId,
             timeout: const Duration(seconds: 8),
@@ -8554,7 +9244,7 @@ class AttendanceRepository extends ChangeNotifier {
   }
 
   PendingCheckInEntry? _pendingCheckInFromAttemptDoc(
-    DocumentSnapshot<Map<String, dynamic>> doc, {
+    ApiDocumentSnapshot doc, {
     required AttendanceSession session,
     required String listId,
     required String studentId,
@@ -8582,7 +9272,7 @@ class AttendanceRepository extends ChangeNotifier {
         attemptCode != sessionCode) {
       return null;
     }
-    final capturedAt = (data['capturedAt'] as Timestamp?)?.toDate();
+    final capturedAt = apiDateFromField(data['capturedAt']);
     if (capturedAt == null) return null;
     final lat = (data['latitude'] as num?)?.toDouble() ?? 0;
     final lng = (data['longitude'] as num?)?.toDouble() ?? 0;
@@ -8598,12 +9288,14 @@ class AttendanceRepository extends ChangeNotifier {
       deviceId: (data['deviceId'] as String?)?.trim() ?? '',
       pendingSince: DateTime.now(),
     );
-    if (!isTimestampWithinSessionBounds(session, capturedAt) &&
-        !offlineQueuedCheckInTrustsPresent(draft, session)) {
+    // Reused join codes must not backfill other days — require capture window + GPS.
+    if (!isTimestampWithinSessionBounds(session, capturedAt)) {
       return null;
     }
-    if (!pendingReplayLocationOk(session, lat, lng) &&
-        !offlineQueuedCheckInTrustsPresent(draft, session)) {
+    if (!pendingReplayLocationOk(session, lat, lng)) {
+      return null;
+    }
+    if (sid.isNotEmpty && sid != session.id) {
       return null;
     }
     return draft;
@@ -8624,7 +9316,7 @@ class AttendanceRepository extends ChangeNotifier {
           studentId: studentId,
         );
         final direct = await _firestore
-            .collection(FirestoreCollections.checkInAttempts)
+            .collection(ApiCollections.checkInAttempts)
             .doc(awaitId)
             .get(_loadQueryOptions(force: true));
         if (direct.exists) {
@@ -8637,16 +9329,16 @@ class AttendanceRepository extends ChangeNotifier {
           if (matched != null) return matched;
         }
       }
-      final snaps = <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+      final snaps = <ApiDocumentSnapshot>[];
       final byList = await _firestore
-          .collection(FirestoreCollections.checkInAttempts)
+          .collection(ApiCollections.checkInAttempts)
           .where('studentId', isEqualTo: studentId)
           .where('listId', isEqualTo: listId)
           .get(_loadQueryOptions(force: true));
       snaps.addAll(byList.docs);
       if (code.isNotEmpty) {
         final byCode = await _firestore
-            .collection(FirestoreCollections.checkInAttempts)
+            .collection(ApiCollections.checkInAttempts)
             .where('studentId', isEqualTo: studentId)
             .where('sessionCodeRaw', isEqualTo: code)
             .get(_loadQueryOptions(force: true));
@@ -8675,7 +9367,7 @@ class AttendanceRepository extends ChangeNotifier {
     if (!AppConnectivity.instance.isOnline) return;
     try {
       final snap = await _firestore
-          .collection(FirestoreCollections.signIns)
+          .collection(ApiCollections.signIns)
           .where('listId', isEqualTo: listId)
           .where('studentId', isEqualTo: studentId)
           .limit(1)
@@ -8683,7 +9375,7 @@ class AttendanceRepository extends ChangeNotifier {
           .timeout(_sessionPublishTimeout);
       if (snap.docs.isEmpty) return;
       await snap.docs.first.reference.update(<String, dynamic>{
-        'backfillRequestedAt': FieldValue.serverTimestamp(),
+        'backfillRequestedAt': ApiFieldValue.serverTimestamp(),
       });
     } catch (_) {}
   }

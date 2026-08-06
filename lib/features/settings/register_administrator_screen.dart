@@ -113,7 +113,7 @@ class _RegisterAdministratorScreenState
             return const Center(child: CircularProgressIndicator());
           }
           if (!auth.isFullAdministrator) {
-            final denied = auth.firestoreRoleCheckDenied;
+            final denied = auth.apiRoleCheckDenied;
             return Center(
               child: Padding(
                 padding: const EdgeInsets.all(24),

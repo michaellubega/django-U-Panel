@@ -1,0 +1,54 @@
+{% extends "admin/base_site.html" %}
+{% load i18n static log %}
+
+{% block bodyclass %}{{ block.super }} dashboard{% endblock %}
+{% block nav-breadcrumbs %}{% endblock %}
+{% block nav-sidebar %}{% endblock %}
+
+{% block content %}
+<div id="content-main" class="upanel-index-main">
+  {% include "admin/upanel_dashboard.html" %}
+
+  <section class="upanel-modules-section">
+    <div class="upanel-section-head">
+      <h2 class="upanel-section-title">Manage database records</h2>
+      <p class="upanel-section-desc">Direct access to Django models and the JSON document store.</p>
+    </div>
+    <div class="upanel-modules-grid">
+      {% include "admin/app_list.html" with app_list=app_list show_changelinks=True %}
+    </div>
+  </section>
+</div>
+{% endblock %}
+
+{% block sidebar %}
+<aside id="content-related" class="upanel-audit-sidebar">
+  <div class="upanel-panel">
+    <div class="upanel-panel-header">Recent admin actions</div>
+    <div class="upanel-panel-body upanel-audit-log">
+      {% get_admin_log 12 as admin_log for_user user %}
+      {% if not admin_log %}
+      <p class="upanel-empty">No actions logged yet.</p>
+      {% else %}
+      <ul class="upanel-audit-list">
+        {% for entry in admin_log %}
+        <li class="upanel-audit-item type-{{ entry.action_flag }}">
+          <div class="upanel-audit-action">
+            {% if entry.is_deletion or not entry.get_admin_url %}
+              {{ entry.object_repr }}
+            {% else %}
+              <a href="{{ entry.get_admin_url }}">{{ entry.object_repr }}</a>
+            {% endif %}
+          </div>
+          <div class="upanel-audit-meta">
+            {% if entry.content_type %}{{ entry.content_type.name|capfirst }}{% else %}Unknown{% endif %}
+            · {{ entry.action_time|timesince }} ago
+          </div>
+        </li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+    </div>
+  </div>
+</aside>
+{% endblock %}

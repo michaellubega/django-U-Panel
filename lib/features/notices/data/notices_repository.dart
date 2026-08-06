@@ -1,15 +1,16 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../../../core/auth/auth_repository.dart';
 import '../../../core/cache/smart_cache_policy.dart';
 import 'notices_disk_cache.dart';
-import '../../../core/firebase/firestore_collections.dart';
-import '../../../core/firebase/u_panel_firestore.dart';
+import '../../../core/api/api_collections.dart';
+import '../../../core/api/api_store.dart';
 import '../../attendance/attendance_list_hierarchy.dart';
 import '../../attendance/models/attendance_models.dart';
 import '../create_notice_screen.dart';
+import '../../../core/api/api_field_value.dart';
+import '../../../core/api/api_datetime.dart';
 
 const String _seenPrefix = 'notices_last_seen_ms_v1_';
 
@@ -56,16 +57,16 @@ class NoticeRecord {
   final String? kind;
   final DateTime? expiresAt;
 
-  static NoticeRecord? fromDoc(DocumentSnapshot<Map<String, dynamic>> d) {
+  static NoticeRecord? fromDoc(ApiDocumentSnapshot d) {
     final data = d.data();
     if (data == null) return null;
     final title = (data['title'] as String?)?.trim() ?? '';
     final body = (data['body'] as String?)?.trim() ?? '';
     if (title.isEmpty && body.isEmpty) return null;
-    final created = (data['createdAt'] as Timestamp?)?.toDate();
+    final created = apiDateFromField(data['createdAt']);
     if (created == null) return null;
-    final sched = (data['scheduledFor'] as Timestamp?)?.toDate();
-    final expiresAt = (data['expiresAt'] as Timestamp?)?.toDate();
+    final sched = apiDateFromField(data['scheduledFor']);
+    final expiresAt = apiDateFromField(data['expiresAt']);
     final audRaw = (data['audience'] as String?)?.trim().toLowerCase();
     final NoticeAudienceKind audience;
     if (audRaw == 'classlist' || audRaw == 'class_list') {
@@ -92,7 +93,7 @@ class NoticeRecord {
       sessionCode: (data['sessionCode'] as String?)?.trim(),
       sessionId: (data['sessionId'] as String?)?.trim(),
       targetLecturerUid: (data['targetLecturerUid'] as String?)?.trim(),
-      scheduledSlotAt: (data['scheduledSlotAt'] as Timestamp?)?.toDate(),
+      scheduledSlotAt: apiDateFromField(data['scheduledSlotAt']),
       kind: (data['kind'] as String?)?.trim(),
       expiresAt: expiresAt,
     );
@@ -180,7 +181,7 @@ bool noticeAudienceMatchesUser(
   bool kiuAdmin = false,
   bool lecturer = false,
   Set<String> lecturerListIds = const {},
-  String? lecturerFirebaseUid,
+  String? lecturerUserId,
   required String? studentId,
   required Set<String> signedListIds,
 }) {
@@ -195,7 +196,7 @@ bool noticeAudienceMatchesUser(
     final listId = n.targetListId?.trim() ?? '';
     if (k == 'lecturertakeattendance') {
       final target = n.targetLecturerUid?.trim() ?? '';
-      final uid = lecturerFirebaseUid?.trim() ?? '';
+      final uid = lecturerUserId?.trim() ?? '';
       return target.isNotEmpty && uid.isNotEmpty && target == uid;
     }
     // Session codes and missed-lesson alerts are for students only.
@@ -236,7 +237,7 @@ bool noticeVisibleToUser(
   bool kiuAdmin = false,
   bool lecturer = false,
   Set<String> lecturerListIds = const {},
-  String? lecturerFirebaseUid,
+  String? lecturerUserId,
   required String? studentId,
   required Set<String> signedListIds,
 }) {
@@ -246,7 +247,7 @@ bool noticeVisibleToUser(
     kiuAdmin: kiuAdmin,
     lecturer: lecturer,
     lecturerListIds: lecturerListIds,
-    lecturerFirebaseUid: lecturerFirebaseUid,
+    lecturerUserId: lecturerUserId,
     studentId: studentId,
     signedListIds: signedListIds,
   )) {
@@ -261,12 +262,12 @@ bool noticeVisibleToUser(
   );
 }
 
-/// Loads and publishes notices in `FirestoreCollections.notices`.
+/// Loads and publishes notices in `ApiCollections.notices`.
 class NoticesRepository {
   NoticesRepository._();
   static final NoticesRepository instance = NoticesRepository._();
 
-  final FirebaseFirestore _firestore = uPanelFirestore();
+  final ApiStore _firestore = apiStore();
 
   Future<List<NoticeRecord>>? _fetchRecentInFlight;
 
@@ -274,10 +275,10 @@ class NoticesRepository {
 
   /// Stable disk-cache partition per signed-in user (not shared across accounts).
   static String diskCacheUserKeyFrom({
-    String? firebaseUid,
+    String? userId,
     String? registrationNumber,
   }) {
-    final uid = firebaseUid?.trim();
+    final uid = userId?.trim();
     if (uid != null && uid.isNotEmpty) return uid;
     final reg = registrationNumber?.trim();
     if (reg != null && reg.isNotEmpty) return 'reg:${reg.toUpperCase()}';
@@ -285,7 +286,7 @@ class NoticesRepository {
   }
 
   String _diskCacheUserKey() => diskCacheUserKeyFrom(
-        firebaseUid: AuthRepository.instance.currentFirebaseUid,
+        userId: AuthRepository.instance.currentUserId,
         registrationNumber: AuthRepository.instance.currentRegistrationNumber,
       );
 
@@ -332,7 +333,7 @@ class NoticesRepository {
   }
 
   List<NoticeRecord> _parseNoticeDocs(
-    Iterable<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+    Iterable<ApiDocumentSnapshot> docs,
   ) {
     final out = <NoticeRecord>[];
     final now = DateTime.now();
@@ -367,10 +368,10 @@ class NoticesRepository {
         if (newest == null) return cached.notices;
         try {
           final snap = await _firestore
-              .collection(FirestoreCollections.notices)
+              .collection(ApiCollections.notices)
               .where(
                 'createdAt',
-                isGreaterThan: Timestamp.fromDate(newest),
+                isGreaterThan: apiDateToField(newest),
               )
               .orderBy('createdAt', descending: true)
               .limit(limit)
@@ -398,7 +399,7 @@ class NoticesRepository {
 
     try {
       final snap = await _firestore
-          .collection(FirestoreCollections.notices)
+          .collection(ApiCollections.notices)
           .orderBy('createdAt', descending: true)
           .limit(limit)
           .get();
@@ -432,7 +433,7 @@ class NoticesRepository {
     bool kiuAdmin = false,
     bool lecturer = false,
     Set<String> lecturerListIds = const {},
-    String? lecturerFirebaseUid,
+    String? lecturerUserId,
     required String? studentId,
     required Set<String> signedListIds,
     int limit = 100,
@@ -447,7 +448,7 @@ class NoticesRepository {
         kiuAdmin: kiuAdmin,
         lecturer: lecturer,
         lecturerListIds: lecturerListIds,
-        lecturerFirebaseUid: lecturerFirebaseUid,
+        lecturerUserId: lecturerUserId,
         studentId: studentId,
         signedListIds: signedListIds,
       )) {
@@ -477,7 +478,7 @@ class NoticesRepository {
       if (listId.isEmpty) {
         return 'Choose a class list for this notice.';
       }
-      final uid = auth.currentFirebaseUid?.trim() ?? '';
+      final uid = auth.currentUserId?.trim() ?? '';
       if (uid.isEmpty) {
         return 'You must be signed in to publish a notice.';
       }
@@ -519,7 +520,7 @@ class NoticesRepository {
       'author': author.trim().isEmpty
           ? (isLecturer ? 'Lecturer' : 'Admin')
           : author.trim(),
-      'createdAt': FieldValue.serverTimestamp(),
+      'createdAt': ApiFieldValue.serverTimestamp(),
       'sendPush': draft.sendPush,
       'audience': _audienceToField(draft.audience),
       'kind': 'manual',
@@ -528,17 +529,17 @@ class NoticesRepository {
       final base = (draft.scheduledFor != null && draft.scheduledFor!.isAfter(now))
           ? draft.scheduledFor!
           : now;
-      map['expiresAt'] = Timestamp.fromDate(base.add(draft.validFor!));
+      map['expiresAt'] = apiDateToField(base.add(draft.validFor!));
     }
     if (draft.scheduledFor != null) {
-      map['scheduledFor'] = Timestamp.fromDate(draft.scheduledFor!);
+      map['scheduledFor'] = apiDateToField(draft.scheduledFor!);
     }
     if (draft.audience == NoticeAudienceKind.classList) {
       map['targetListId'] = draft.targetListId ?? '';
       map['targetListTitle'] = draft.targetListTitle ?? '';
     }
     try {
-      await _firestore.collection(FirestoreCollections.notices).add(map);
+      await _firestore.collection(ApiCollections.notices).add(map);
       return null;
     } catch (e) {
       return '$e';
@@ -559,8 +560,8 @@ class NoticesRepository {
       'title': list.displayTitle,
       'body': '',
       'author': createdBy.trim().isEmpty ? 'QA' : createdBy.trim(),
-      'createdAt': FieldValue.serverTimestamp(),
-      'expiresAt': Timestamp.fromDate(
+      'createdAt': ApiFieldValue.serverTimestamp(),
+      'expiresAt': apiDateToField(
         DateTime.now().add(const Duration(hours: 3)),
       ),
       'sendPush': true,
@@ -572,7 +573,7 @@ class NoticesRepository {
       'sessionId': session.id,
     };
     try {
-      await _firestore.collection(FirestoreCollections.notices).add(map);
+      await _firestore.collection(ApiCollections.notices).add(map);
       return null;
     } catch (e) {
       return '$e';
@@ -582,7 +583,7 @@ class NoticesRepository {
   /// Returns null on success, otherwise an error message.
   Future<String?> deleteNotice(String noticeId) async {
     try {
-      await _firestore.collection(FirestoreCollections.notices).doc(noticeId).delete();
+      await _firestore.collection(ApiCollections.notices).doc(noticeId).delete();
       await NoticesDiskCache.removeNotice(_diskCacheUserKey(), noticeId);
       return null;
     } catch (e) {

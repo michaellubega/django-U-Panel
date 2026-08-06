@@ -66,7 +66,7 @@ List<AttendanceList> attendanceListsForCurrentStaff() {
   final sorted = List<AttendanceList>.from(AttendanceStore.lists)
     ..sort(compareAttendanceListsNewestFirst);
   if (auth.isKiuAdmin) {
-    final uid = auth.currentFirebaseUid?.trim();
+    final uid = auth.currentUserId?.trim();
     if (uid == null || uid.isEmpty) return [];
     return filterListsForHierarchy(
       sorted.where((l) => attendanceListAccessibleToLecturer(l, uid)),
@@ -76,7 +76,7 @@ List<AttendanceList> attendanceListsForCurrentStaff() {
     return filterListsForHierarchy(sorted);
   }
   if (auth.lecturerCheckDone && auth.isLecturer && !auth.isAdmin) {
-    final uid = auth.currentFirebaseUid?.trim();
+    final uid = auth.currentUserId?.trim();
     if (uid == null || uid.isEmpty) return [];
     return filterListsForHierarchy(
       sorted.where((l) => attendanceListAccessibleToLecturer(l, uid)),

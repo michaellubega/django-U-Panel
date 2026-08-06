@@ -34,7 +34,7 @@ class _KiuAdminCheckInRecordsScreenState
       _error = null;
     });
     try {
-      final uid = AuthRepository.instance.currentFirebaseUid;
+      final uid = AuthRepository.instance.currentUserId;
       if (uid == null || uid.isEmpty) {
         setState(() {
           _error = 'You must be signed in.';

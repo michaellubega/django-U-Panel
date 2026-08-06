@@ -1,4 +1,5 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
+import '../../../core/api/api_store.dart';
+import '../../../core/api/api_datetime.dart';
 
 /// Arrival at campus or departure when leaving.
 enum CampusPresenceKind {
@@ -66,7 +67,7 @@ class CampusGeofence {
       label: (data['label'] as String?)?.trim().isNotEmpty == true
           ? (data['label'] as String).trim()
           : 'Campus',
-      updatedAt: (data['updatedAt'] as Timestamp?)?.toDate(),
+      updatedAt: apiDateFromField(data['updatedAt']),
       updatedByName: (data['updatedByName'] as String?)?.trim(),
     );
   }
@@ -103,12 +104,12 @@ class CampusPresenceEvent {
   final String? deviceId;
 
   static CampusPresenceEvent? fromDoc(
-    DocumentSnapshot<Map<String, dynamic>> doc,
+    ApiDocumentSnapshot doc,
   ) {
     final data = doc.data();
     if (data == null) return null;
     final kind = CampusPresenceKindX.parse(data['kind'] as String?);
-    final captured = (data['capturedAt'] as Timestamp?)?.toDate();
+    final captured = apiDateFromField(data['capturedAt']);
     final dateKey = (data['localDateKey'] as String?)?.trim() ?? '';
     final uid = (data['adminUid'] as String?)?.trim() ?? '';
     if (kind == null || captured == null || dateKey.isEmpty || uid.isEmpty) {

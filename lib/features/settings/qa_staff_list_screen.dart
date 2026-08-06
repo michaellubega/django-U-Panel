@@ -1,9 +1,8 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
 import '../../core/auth/auth_repository.dart';
-import '../../core/firebase/firestore_collections.dart';
-import '../../core/firebase/u_panel_firestore.dart';
+import '../../core/api/api_collections.dart';
+import '../../core/api/api_store.dart';
 import '../../core/theme/app_theme.dart';
 
 /// Admin-only directory of QA staff ([admins] with `isAdmin: true`).
@@ -18,9 +17,9 @@ class QaStaffListScreen extends StatelessWidget {
         backgroundColor: AppTheme.primary,
         foregroundColor: Colors.white,
       ),
-      body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-        stream: uPanelFirestore()
-            .collection(FirestoreCollections.admins)
+      body: StreamBuilder<ApiQuerySnapshot>(
+        stream: apiStore()
+            .collection(ApiCollections.admins)
             .snapshots(),
         builder: (context, snap) {
           if (snap.hasError) {
@@ -31,15 +30,15 @@ class QaStaffListScreen extends StatelessWidget {
           }
           final docs = snap.data!.docs
               .where((d) =>
-                  d.data()['isAdmin'] == true &&
+                  d.data()?['isAdmin'] == true &&
                   AuthRepository.adminDocIsQaStaff(d.data()))
               .toList()
             ..sort((a, b) {
-              final ra = (a.data()['staffNumber'] as String?) ??
-                  (a.data()['registrationNumber'] as String?) ??
+              final ra = (a.data()?['staffNumber'] as String?) ??
+                  (a.data()?['registrationNumber'] as String?) ??
                   '';
-              final rb = (b.data()['staffNumber'] as String?) ??
-                  (b.data()['registrationNumber'] as String?) ??
+              final rb = (b.data()?['staffNumber'] as String?) ??
+                  (b.data()?['registrationNumber'] as String?) ??
                   '';
               return ra.compareTo(rb);
             });
@@ -60,7 +59,7 @@ class QaStaffListScreen extends StatelessWidget {
             separatorBuilder: (_, __) => const Divider(height: 1),
             itemBuilder: (context, i) {
               final d = docs[i];
-              final data = d.data();
+              final data = d.data() ?? const {};
               final reg = (data['staffNumber'] as String?) ??
                   (data['registrationNumber'] as String?) ??
                   '—';

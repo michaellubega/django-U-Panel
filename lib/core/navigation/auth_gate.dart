@@ -69,7 +69,7 @@ class _AuthGateState extends State<AuthGate> {
         } else {
           child = AppShell(
             key: ValueKey(
-              'shell_${auth.sessionEpoch}_${auth.currentFirebaseUid}',
+              'shell_${auth.sessionEpoch}_${auth.currentUserId}',
             ),
           );
         }

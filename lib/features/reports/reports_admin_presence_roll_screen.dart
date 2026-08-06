@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../core/navigation/screen_refresh.dart';
 import '../../core/theme/app_theme.dart';
 import 'admin_presence_roll_export.dart';
+import 'report_pdf_generation_dialog.dart';
 import '../campus_presence/admin_campus_absent_list_screen.dart';
 import '../campus_presence/campus_presence_grouping.dart';
 import '../campus_presence/campus_presence_policy.dart';
@@ -26,7 +27,6 @@ class _ReportsAdminPresenceRollScreenState
   CampusPresenceLogPeriod _period = CampusPresenceLogPeriod.week;
   DateTime _anchor = DateTime.now();
   bool _loading = true;
-  bool _exportBusy = false;
   List<AdminCampusRosterEntry> _roster = const [];
   List<CampusPresenceEvent> _events = const [];
 
@@ -66,11 +66,13 @@ class _ReportsAdminPresenceRollScreenState
   }
 
   Future<void> _exportPdf() async {
-    setState(() => _exportBusy = true);
     try {
-      final path = await exportAdminPresenceRollPdf(
-        period: _period,
-        anchor: _anchor,
+      final path = await runWithReportPdfGenerationDialog(
+        context,
+        task: () => exportAdminPresenceRollPdf(
+          period: _period,
+          anchor: _anchor,
+        ),
       );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -87,8 +89,6 @@ class _ReportsAdminPresenceRollScreenState
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Could not save PDF: $e')),
       );
-    } finally {
-      if (mounted) setState(() => _exportBusy = false);
     }
   }
 
@@ -263,14 +263,8 @@ class _ReportsAdminPresenceRollScreenState
           RefreshIconButton(onRefresh: _load),
           IconButton(
             tooltip: 'Export PDF',
-            onPressed: _exportBusy ? null : _exportPdf,
-            icon: _exportBusy
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.picture_as_pdf_rounded),
+            onPressed: _exportPdf,
+            icon: const Icon(Icons.picture_as_pdf_rounded),
           ),
           IconButton(
             tooltip: 'Absent today',

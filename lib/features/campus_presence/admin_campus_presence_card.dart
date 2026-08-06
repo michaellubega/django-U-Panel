@@ -44,7 +44,7 @@ class AdminCampusPresenceCardState extends State<AdminCampusPresenceCard> {
       return;
     }
     setState(() => _loading = true);
-    final uid = AuthRepository.instance.currentFirebaseUid;
+    final uid = AuthRepository.instance.currentUserId;
     final status =
         await CampusPresenceRepository.instance.fetchTodayStatusForCurrentAdmin();
     final pendingCount = uid == null

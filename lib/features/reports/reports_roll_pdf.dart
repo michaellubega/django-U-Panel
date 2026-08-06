@@ -1,9 +1,11 @@
 import 'dart:typed_data';
 
+import 'package:flutter/services.dart' show rootBundle;
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import 'package:printing/printing.dart';
 
+import '../../core/widgets/app_brand_logo.dart';
 import 'report_file_save.dart';
 import 'reports_pdf_text.dart';
 
@@ -44,6 +46,64 @@ Future<_RollPdfFonts> _loadRollPdfFonts() async {
   }
 }
 
+Future<Uint8List?> _loadAppLogoBytes() async {
+  try {
+    final data = await rootBundle.load(AppBrandLogo.assetForPlatform());
+    return data.buffer.asUint8List();
+  } catch (_) {
+    return null;
+  }
+}
+
+pw.Widget _rollPdfHeader({
+  required _RollPdfFonts fonts,
+  required String title,
+  required String subtitleLine,
+  Uint8List? logoBytes,
+}) {
+  final titleBlock = pw.Column(
+    crossAxisAlignment: pw.CrossAxisAlignment.start,
+    children: [
+      pw.Text(
+        title,
+        style: fonts.textStyle(
+          fontSize: 14,
+          header: true,
+          color: _brandGreen,
+        ),
+      ),
+      pw.SizedBox(height: 4),
+      pw.Text(
+        subtitleLine,
+        style: fonts.textStyle(
+          fontSize: 9,
+          color: PdfColors.grey700,
+        ),
+      ),
+    ],
+  );
+
+  if (logoBytes == null) return titleBlock;
+
+  return pw.Row(
+    crossAxisAlignment: pw.CrossAxisAlignment.start,
+    children: [
+      pw.ClipRRect(
+        horizontalRadius: 6,
+        verticalRadius: 6,
+        child: pw.Image(
+          pw.MemoryImage(logoBytes),
+          width: 44,
+          height: 44,
+          fit: pw.BoxFit.cover,
+        ),
+      ),
+      pw.SizedBox(width: 10),
+      pw.Expanded(child: titleBlock),
+    ],
+  );
+}
+
 /// Builds a landscape roll table PDF and saves it to the device.
 Future<String?> saveRollTablePdf({
   required String filename,
@@ -71,6 +131,7 @@ Future<Uint8List> buildRollTablePdfBytes({
   required List<List<String>> bodyRows,
 }) async {
   final fonts = await _loadRollPdfFonts();
+  final logoBytes = await _loadAppLogoBytes();
   final safeTitle = preparePdfText(title);
   final safeSubtitle = preparePdfText(subtitle);
   final safeHeaders = preparePdfTextRow(headerCells);
@@ -141,21 +202,11 @@ Future<Uint8List> buildRollTablePdfBytes({
       pageFormat: PdfPageFormat.a4.landscape,
       margin: const pw.EdgeInsets.all(20),
       build: (context) => [
-        pw.Text(
-          safeTitle,
-          style: fonts.textStyle(
-            fontSize: 14,
-            header: true,
-            color: _brandGreen,
-          ),
-        ),
-        pw.SizedBox(height: 4),
-        pw.Text(
-          '$safeSubtitle | Generated $generated',
-          style: fonts.textStyle(
-            fontSize: 9,
-            color: PdfColors.grey700,
-          ),
+        _rollPdfHeader(
+          fonts: fonts,
+          title: safeTitle,
+          subtitleLine: '$safeSubtitle | Generated $generated',
+          logoBytes: logoBytes,
         ),
         pw.SizedBox(height: 10),
         pw.Table(

@@ -1,11 +1,10 @@
 import 'dart:async';
 
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
 
 import '../../../core/auth/auth_repository.dart';
-import '../../../core/firebase/firestore_collections.dart';
-import '../../../core/firebase/u_panel_firestore.dart';
+import '../../../core/api/api_collections.dart';
+import '../../../core/api/api_store.dart';
 import '../models/attendance_models.dart';
 import 'attendance_repository.dart';
 
@@ -19,7 +18,7 @@ class AttendanceRemoteListWatch {
 
   static const _lecturerSources = {'lecturerAssigned', 'lecturerCreated'};
 
-  final List<StreamSubscription<QuerySnapshot<Map<String, dynamic>>>> _subs =
+  final List<StreamSubscription<ApiQuerySnapshot>> _subs =
       [];
   final Map<String, Set<String>> _idsBySource = {};
   bool _running = false;
@@ -31,7 +30,7 @@ class AttendanceRemoteListWatch {
   Future<void> start() async {
     if (_running) return;
     if (!AuthRepository.instance.isLoggedIn) return;
-    final db = tryUPanelFirestore();
+    final db = tryApiStore();
     if (db == null) return;
 
     await stop();
@@ -52,24 +51,24 @@ class AttendanceRemoteListWatch {
       _attachCollectionWatch(
         db,
         source: 'staffLists',
-        query: db.collection(FirestoreCollections.attendanceLists),
+        query: ApiCollectionQuery(ApiCollections.attendanceLists),
       );
     } else {
-      final uid = auth.currentFirebaseUid?.trim();
+      final uid = auth.currentUserId?.trim();
       if (uid != null && uid.isNotEmpty) {
         _lecturerDualWatch = true;
         _attachCollectionWatch(
           db,
           source: 'lecturerAssigned',
           query: db
-              .collection(FirestoreCollections.attendanceLists)
+              .collection(ApiCollections.attendanceLists)
               .where('lecturerUid', isEqualTo: uid),
         );
         _attachCollectionWatch(
           db,
           source: 'lecturerCreated',
           query: db
-              .collection(FirestoreCollections.attendanceLists)
+              .collection(ApiCollections.attendanceLists)
               .where('createdBy', isEqualTo: uid),
         );
       }
@@ -91,7 +90,7 @@ class AttendanceRemoteListWatch {
     _running = false;
   }
 
-  void _attachStudentSignInWatch(FirebaseFirestore db) {
+  void _attachStudentSignInWatch(ApiStore db) {
     final studentIds = AttendanceRepository.instance
         .studentIdsForCurrentUserInStore()
         .toList();
@@ -101,7 +100,7 @@ class AttendanceRemoteListWatch {
       final source = 'signIns:${chunk.join(',')}';
       expectedSources.add(source);
       final sub = db
-          .collection(FirestoreCollections.signIns)
+          .collection(ApiCollections.signIns)
           .where('studentId', whereIn: chunk)
           .snapshots()
           .listen(
@@ -109,7 +108,7 @@ class AttendanceRemoteListWatch {
               final listIds = <String>{};
               for (final doc in snap.docs) {
                 final id =
-                    (doc.data()['listId'] as String?)?.trim() ?? '';
+                    (doc.data()?['listId'] as String?)?.trim() ?? '';
                 if (id.isNotEmpty) listIds.add(id);
               }
               _updateFromSource(source, listIds);
@@ -126,9 +125,9 @@ class AttendanceRemoteListWatch {
   }
 
   void _attachCollectionWatch(
-    FirebaseFirestore db, {
+    ApiStore db, {
     required String source,
-    required Query<Map<String, dynamic>> query,
+    required ApiCollectionQuery query,
   }) {
     final sub = query.snapshots().listen(
       (snap) {

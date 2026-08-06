@@ -3,8 +3,8 @@ import 'data/pending_check_in_queue.dart';
 import 'data/pending_session_code_queue.dart';
 import 'models/attendance_models.dart';
 
-/// Locally queued GPS check-ins are trusted for roll/sync even when live session
-/// metadata (times, geofence centre, list fields) changed after offline capture.
+/// Locally queued GPS check-ins are trusted for roll/sync when they belong to
+/// [session] (same session id + list scope). Does not match other sessions.
 bool offlineQueuedCheckInTrustsPresent(
   PendingCheckInEntry entry,
   AttendanceSession session,
@@ -16,25 +16,16 @@ bool offlineQueuedCheckInTrustsPresent(
   return true;
 }
 
-/// Offline queue + matching capture metadata (time, code scope, GPS when required).
+/// Offline queue row for the same session — not cross-session time/GPS guessing.
 bool offlineOrMetadataQueuedCheckInTrustsPresent(
   PendingCheckInEntry entry,
   AttendanceSession session,
 ) {
-  if (offlineQueuedCheckInTrustsPresent(entry, session)) return true;
-  if (entry.listId.isNotEmpty && entry.listId != session.listId) {
-    return false;
-  }
-  return isTimestampWithinSessionBounds(session, entry.capturedAt) &&
-      positionQualifiesForPresentCorrection(
-        session,
-        entry.latitude,
-        entry.longitude,
-      );
+  return offlineQueuedCheckInTrustsPresent(entry, session);
 }
 
-/// Locally queued session-code captures are trusted when code + student match,
-/// even if session id hints or metadata differ from the published session.
+/// Locally queued session-code captures require matching join code, student,
+/// capture time within session bounds, and GPS when required.
 bool offlineQueuedSessionCodeTrustsPresent({
   required PendingSessionCodeEntry entry,
   required AttendanceSession session,
@@ -50,7 +41,10 @@ bool offlineQueuedSessionCodeTrustsPresent({
   if (entryCode.isEmpty || sessionCode.isEmpty || entryCode != sessionCode) {
     return false;
   }
-  return true;
+  if (!isTimestampWithinSessionBounds(session, entry.capturedAt)) {
+    return false;
+  }
+  return pendingReplayLocationOk(session, entry.latitude, entry.longitude);
 }
 
 /// True when [entry] should block [finalizeRollForSession] for [session].

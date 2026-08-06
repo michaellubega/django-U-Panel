@@ -5,24 +5,24 @@ import '../../core/navigation/app_shell.dart';
 import '../../core/navigation/screen_refresh.dart';
 import '../../core/theme/app_theme.dart';
 
-/// Slightly larger type scale for dashboard [Card] content (readability on desktop).
+/// Dashboard [Card] typography aligned with Ant Design (14px base).
 abstract final class DashboardCardText {
-  static const double titleSize = 20;
-  static const double sectionSize = 18;
-  static const double itemTitleSize = 16;
-  static const double bodySize = 15;
-  static const double captionSize = 14;
-  static const double labelSize = 13;
-  static const double metricValueSize = 22;
+  static const double titleSize = 16;
+  static const double sectionSize = 14;
+  static const double itemTitleSize = 14;
+  static const double bodySize = 14;
+  static const double captionSize = 12;
+  static const double labelSize = 12;
+  static const double metricValueSize = 24;
   static const double metricValueLargeSize = 30;
-  static const double metricLabelDenseSize = 11;
+  static const double metricLabelDenseSize = 12;
   static const double metricLabelSize = 14;
 
   static TextStyle cardTitle(TextTheme theme) =>
-      theme.titleLarge!.copyWith(fontWeight: FontWeight.w700, fontSize: titleSize);
+      theme.titleLarge!.copyWith(fontWeight: FontWeight.w600, fontSize: titleSize);
 
   static TextStyle cardSection(TextTheme theme) =>
-      theme.titleMedium!.copyWith(fontWeight: FontWeight.w700, fontSize: sectionSize);
+      theme.titleMedium!.copyWith(fontWeight: FontWeight.w600, fontSize: sectionSize);
 
   static TextStyle itemTitle(TextTheme theme) =>
       theme.titleSmall!.copyWith(fontWeight: FontWeight.w600, fontSize: itemTitleSize);
@@ -96,8 +96,8 @@ class DashboardLiveHeader extends StatelessWidget {
             : title;
     final titleStyle = (compact || greeting != null)
         ? theme.textTheme.titleLarge?.copyWith(
-            fontWeight: FontWeight.w800,
-            height: 1.15,
+            fontWeight: FontWeight.w600,
+            height: AppTheme.lineHeightLg / AppTheme.fontSizeLg,
           )
         : theme.textTheme.headlineMedium;
     final subtitleText = subtitle.trim();
@@ -260,7 +260,7 @@ class _LivePulseBadgeState extends State<_LivePulseBadge>
               '${widget.count} live',
               style: Theme.of(context).textTheme.labelMedium?.copyWith(
                     color: AppTheme.primary,
-                    fontWeight: FontWeight.w700,
+                    fontWeight: FontWeight.w600,
                   ),
             ),
           ],
@@ -352,7 +352,7 @@ class DashboardStatTile extends StatelessWidget {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: valueStyle?.copyWith(
-                fontWeight: FontWeight.w800,
+                fontWeight: FontWeight.w600,
                 color: AppTheme.primary,
                 height: 1.0,
                 fontSize: autoDense
@@ -757,7 +757,7 @@ class DashboardAttendanceDonut extends StatelessWidget {
               Text(
                 total <= 0 ? '—' : '$pct%',
                 style: Theme.of(context).textTheme.titleLarge?.copyWith(
-                      fontWeight: FontWeight.w800,
+                      fontWeight: FontWeight.w600,
                       color: AppTheme.primary,
                       fontSize: DashboardCardText.metricValueSize,
                     ),
@@ -1025,7 +1025,7 @@ class _LegendRow extends StatelessWidget {
         Text(
           value,
           style: DashboardCardText.itemTitle(Theme.of(context).textTheme).copyWith(
-                fontWeight: FontWeight.w700,
+                fontWeight: FontWeight.w600,
               ),
         ),
         const SizedBox(width: 8),

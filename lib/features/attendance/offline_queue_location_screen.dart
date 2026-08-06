@@ -63,8 +63,8 @@ class _OfflineQueueLocationScreenState extends State<OfflineQueueLocationScreen>
     with TickerProviderStateMixin {
   static const _stageLabels = <String>[
     'Confirming your location…',
-    'Saving session on this device…',
-    'Preparing offline verification…',
+    'Saving check-in on this device…',
+    'Preparing verification…',
   ];
 
   late final AnimationController _pulse;
@@ -96,7 +96,10 @@ class _OfflineQueueLocationScreenState extends State<OfflineQueueLocationScreen>
     _successScale = Tween<double>(begin: 0.35, end: 1.0).animate(
       CurvedAnimation(parent: _successController, curve: Curves.elasticOut),
     );
-    WidgetsBinding.instance.addPostFrameCallback((_) => _run());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      FocusManager.instance.primaryFocus?.unfocus();
+      _run();
+    });
   }
 
   @override
@@ -217,8 +220,8 @@ class _OfflineQueueLocationScreenState extends State<OfflineQueueLocationScreen>
     if (!mounted) return;
 
     await _advanceToStage(2);
-    final stillOnDevice = (await PendingSessionCodeQueue.loadAll())
-        .any((e) => e.id == entryId);
+    final allAfterEnqueue = await PendingSessionCodeQueue.loadAll();
+    final stillOnDevice = allAfterEnqueue.any((e) => e.id == entryId);
     if (!stillOnDevice) {
       await _openPendingListOnce();
     }
@@ -232,19 +235,19 @@ class _OfflineQueueLocationScreenState extends State<OfflineQueueLocationScreen>
       await _showResult(
         title: 'Recorded on this device',
         subtitle: online
-            ? 'Session $code is saved on this phone. '
+            ? 'Check-in for session $code is saved on this phone. '
                 'It will upload and verify when the connection is stable (up to ${PendingRetention.unverifiedPending.inDays} days).'
-            : 'Session $code is saved on this phone while offline. '
-                'Attendance will verify automatically when you\'re back online (up to ${PendingRetention.unverifiedPending.inDays} days).',
+            : 'Check-in for session $code is saved on this phone. '
+                'It will verify automatically when you\'re back online (up to ${PendingRetention.unverifiedPending.inDays} days).',
         uploaded: false,
       );
     } else {
       await _showResult(
         title: online ? 'Submitted for verification' : 'Recorded on this device',
         subtitle: online
-            ? 'Session $code was sent to the server. '
-                'You will be marked present once the lecturer session syncs (up to ${PendingRetention.unverifiedPending.inDays} days).'
-            : 'Session $code is saved on this phone. '
+            ? 'Check-in for session $code was sent to the server. '
+                'You will be marked present once verification completes (up to ${PendingRetention.unverifiedPending.inDays} days).'
+            : 'Check-in for session $code is saved on this phone. '
                 'It will verify when you\'re back online.',
         uploaded: online,
       );
@@ -258,32 +261,52 @@ class _OfflineQueueLocationScreenState extends State<OfflineQueueLocationScreen>
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    if (_phase == _OfflineQueuePhase.processing) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        FocusManager.instance.primaryFocus?.unfocus();
+      });
+    }
     return PopScope(
       canPop: _phase != _OfflineQueuePhase.processing,
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text('Offline check-in'),
-          automaticallyImplyLeading: _phase != _OfflineQueuePhase.processing,
-        ),
-        body: SafeArea(
-          child: AnimatedSwitcher(
-            duration: const Duration(milliseconds: 360),
-            switchInCurve: Curves.easeOutCubic,
-            switchOutCurve: Curves.easeInCubic,
-            child: switch (_phase) {
-              _OfflineQueuePhase.processing => _buildProcessing(
-                  key: const ValueKey('processing'),
-                  theme: theme,
-                ),
-              _OfflineQueuePhase.result => _buildResult(
-                  key: const ValueKey('result'),
-                  theme: theme,
-                ),
-              _OfflineQueuePhase.error => _buildError(
-                  key: const ValueKey('error'),
-                  theme: theme,
-                ),
-            },
+      child: MediaQuery.removeViewInsets(
+        context: context,
+        removeBottom: true,
+        child: Scaffold(
+          resizeToAvoidBottomInset: false,
+          appBar: AppBar(
+            title: const Text('Offline check-in'),
+            automaticallyImplyLeading: _phase != _OfflineQueuePhase.processing,
+          ),
+          body: SafeArea(
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                return AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 360),
+                  switchInCurve: Curves.easeOutCubic,
+                  switchOutCurve: Curves.easeInCubic,
+                  layoutBuilder: (current, _) => current ?? const SizedBox.shrink(),
+                  child: SizedBox(
+                    key: ValueKey(_phase),
+                    width: constraints.maxWidth,
+                    height: constraints.maxHeight,
+                    child: switch (_phase) {
+                      _OfflineQueuePhase.processing => _buildProcessing(
+                          key: const ValueKey('processing'),
+                          theme: theme,
+                        ),
+                      _OfflineQueuePhase.result => _buildResult(
+                          key: const ValueKey('result'),
+                          theme: theme,
+                        ),
+                      _OfflineQueuePhase.error => _buildError(
+                          key: const ValueKey('error'),
+                          theme: theme,
+                        ),
+                    },
+                  ),
+                );
+              },
+            ),
           ),
         ),
       ),
@@ -294,99 +317,135 @@ class _OfflineQueueLocationScreenState extends State<OfflineQueueLocationScreen>
     final progress = _stageIndex >= _stageLabels.length
         ? 1.0
         : (_stageIndex + 1) / _stageLabels.length;
-    return Padding(
+    return LayoutBuilder(
       key: key,
-      padding: const EdgeInsets.all(24),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          const Spacer(),
-          FadeTransition(
-            opacity: Tween<double>(begin: 0.55, end: 1.0).animate(
-              CurvedAnimation(parent: _pulse, curve: Curves.easeInOut),
-            ),
-            child: const Icon(
-              Icons.sensors_rounded,
-              size: 72,
-              color: AppTheme.primary,
-            ),
-          ),
-          const SizedBox(height: 24),
-          Text(
-            'Saving your check-in',
-            textAlign: TextAlign.center,
-            style: theme.textTheme.titleLarge?.copyWith(
-              fontWeight: FontWeight.w800,
-            ),
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Session ${widget.rawCode.trim()}',
-            textAlign: TextAlign.center,
-            style: theme.textTheme.bodyMedium?.copyWith(
-              color: AppTheme.textSecondary,
-            ),
-          ),
-          const SizedBox(height: 28),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(4),
-            child: LinearProgressIndicator(
-              minHeight: 6,
-              value: progress,
-              backgroundColor: AppTheme.softGrey,
-              color: AppTheme.primary,
-            ),
-          ),
-          const SizedBox(height: 22),
-          for (var i = 0; i < _stageLabels.length; i++) ...[
-            if (i > 0) const SizedBox(height: 10),
-            Row(
-              children: [
-                if (i < _stageIndex || _stageIndex >= _stageLabels.length)
-                  const Icon(
-                    Icons.check_circle_rounded,
-                    size: 22,
-                    color: AppTheme.success,
-                  )
-                else if (i == _stageIndex)
-                  const SizedBox(
-                    width: 22,
-                    height: 22,
-                    child: CircularProgressIndicator(strokeWidth: 2.5),
-                  )
-                else
-                  const Icon(
-                    Icons.radio_button_unchecked_rounded,
-                    size: 22,
-                    color: AppTheme.textSecondary,
-                  ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    _stageLabels[i],
-                    style: theme.textTheme.bodyMedium?.copyWith(
-                      fontWeight: i == _stageIndex ? FontWeight.w700 : FontWeight.w500,
-                      color: i > _stageIndex && _stageIndex < _stageLabels.length
-                          ? AppTheme.textSecondary
-                          : AppTheme.textPrimary,
+      builder: (context, constraints) {
+        final ultraCompact = constraints.maxHeight < 280;
+        final compact = constraints.maxHeight < 520;
+        final pad = ultraCompact ? 12.0 : (compact ? 16.0 : 24.0);
+        final iconSize = ultraCompact ? 44.0 : (compact ? 56.0 : 72.0);
+        return SingleChildScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: EdgeInsets.all(pad),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              FadeTransition(
+                opacity: Tween<double>(begin: 0.55, end: 1.0).animate(
+                  CurvedAnimation(parent: _pulse, curve: Curves.easeInOut),
+                ),
+                child: Icon(
+                  Icons.sensors_rounded,
+                  size: iconSize,
+                  color: AppTheme.primary,
+                ),
+              ),
+              SizedBox(height: ultraCompact ? 10 : (compact ? 16 : 24)),
+              Text(
+                'Saving your check-in',
+                textAlign: TextAlign.center,
+                style: (ultraCompact
+                        ? theme.textTheme.titleMedium
+                        : theme.textTheme.titleLarge)
+                    ?.copyWith(
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              SizedBox(height: ultraCompact ? 4 : 8),
+              Text(
+                'Session ${widget.rawCode.trim()}',
+                textAlign: TextAlign.center,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: AppTheme.textSecondary,
+                ),
+              ),
+              SizedBox(height: ultraCompact ? 10 : (compact ? 16 : 28)),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: LinearProgressIndicator(
+                  minHeight: 6,
+                  value: progress,
+                  backgroundColor: AppTheme.softGrey,
+                  color: AppTheme.primary,
+                ),
+              ),
+              SizedBox(height: ultraCompact ? 12 : 22),
+              for (var i = 0; i < _stageLabels.length; i++) ...[
+                if (i > 0) SizedBox(height: ultraCompact ? 6 : 10),
+                Row(
+                  children: [
+                    if (i < _stageIndex || _stageIndex >= _stageLabels.length)
+                      Icon(
+                        Icons.check_circle_rounded,
+                        size: ultraCompact ? 18 : 22,
+                        color: AppTheme.success,
+                      )
+                    else if (i == _stageIndex)
+                      SizedBox(
+                        width: ultraCompact ? 18 : 22,
+                        height: ultraCompact ? 18 : 22,
+                        child: const CircularProgressIndicator(strokeWidth: 2.5),
+                      )
+                    else
+                      Icon(
+                        Icons.radio_button_unchecked_rounded,
+                        size: ultraCompact ? 18 : 22,
+                        color: AppTheme.textSecondary,
+                      ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        _stageLabels[i],
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          fontSize: ultraCompact ? 13 : null,
+                          fontWeight: i == _stageIndex
+                              ? FontWeight.w700
+                              : FontWeight.w500,
+                          color: i > _stageIndex &&
+                                  _stageIndex < _stageLabels.length
+                              ? AppTheme.textSecondary
+                              : AppTheme.textPrimary,
+                        ),
+                      ),
                     ),
-                  ),
+                  ],
                 ),
               ],
-            ),
-          ],
-          if (_resolving) ...[
-            const SizedBox(height: 18),
-            LocationResolvingPanel(
-              resolving: true,
-              locationServiceDisabled: _locationServiceDisabled,
-              onRetry: _run,
-              compact: true,
-            ),
-          ],
-          const Spacer(),
-        ],
-      ),
+              if (_resolving) ...[
+                SizedBox(height: ultraCompact ? 8 : 18),
+                if (ultraCompact)
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        'Getting GPS…',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: AppTheme.textSecondary,
+                        ),
+                      ),
+                    ],
+                  )
+                else
+                  LocationResolvingPanel(
+                    resolving: true,
+                    locationServiceDisabled: _locationServiceDisabled,
+                    onRetry: _run,
+                    compact: true,
+                  ),
+              ],
+            ],
+          ),
+        );
+      },
     );
   }
 
@@ -395,86 +454,106 @@ class _OfflineQueueLocationScreenState extends State<OfflineQueueLocationScreen>
     final icon = _uploadedToServer
         ? Icons.cloud_done_rounded
         : Icons.offline_pin_rounded;
-    return Center(
+    return LayoutBuilder(
       key: key,
-      child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 420),
-        child: Padding(
+      builder: (context, constraints) {
+        return SingleChildScrollView(
           padding: const EdgeInsets.all(24),
-          child: Card(
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(24, 32, 24, 28),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(
+              minHeight: constraints.maxHeight,
+              maxWidth: 420,
+            ),
+            child: Align(
+              alignment: Alignment.center,
+              child: Card(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(24, 32, 24, 28),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      ScaleTransition(
+                        scale: _successScale,
+                        child: Container(
+                          width: 80,
+                          height: 80,
+                          decoration: BoxDecoration(
+                            color: color.withValues(alpha: 0.14),
+                            shape: BoxShape.circle,
+                          ),
+                          child: Icon(icon, size: 44, color: color),
+                        ),
+                      ),
+                      const SizedBox(height: 22),
+                      Text(
+                        _resultTitle ?? 'Saved',
+                        textAlign: TextAlign.center,
+                        style: theme.textTheme.headlineSmall?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        _resultSubtitle ?? '',
+                        textAlign: TextAlign.center,
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color: AppTheme.textSecondary,
+                          height: 1.45,
+                        ),
+                      ),
+                      const SizedBox(height: 28),
+                      SizedBox(
+                        width: double.infinity,
+                        child: FilledButton(
+                          onPressed: _finish,
+                          child: const Text('Done'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildError({required Key key, required ThemeData theme}) {
+    return LayoutBuilder(
+      key: key,
+      builder: (context, constraints) {
+        final minBodyHeight =
+            (constraints.maxHeight - 48).clamp(0.0, double.infinity);
+        return SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minHeight: minBodyHeight),
+            child: Align(
+              alignment: Alignment.center,
               child: Column(
                 mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  ScaleTransition(
-                    scale: _successScale,
-                    child: Container(
-                      width: 80,
-                      height: 80,
-                      decoration: BoxDecoration(
-                        color: color.withValues(alpha: 0.14),
-                        shape: BoxShape.circle,
-                      ),
-                      child: Icon(icon, size: 44, color: color),
-                    ),
+                  LocationResolvingPanel(
+                    resolving: _resolving,
+                    errorMessage: _errorMessage,
+                    locationServiceDisabled: _locationServiceDisabled,
+                    permissionBlocked: _permissionBlocked,
+                    onRetry: _run,
                   ),
-                  const SizedBox(height: 22),
-                  Text(
-                    _resultTitle ?? 'Saved',
-                    textAlign: TextAlign.center,
-                    style: theme.textTheme.headlineSmall?.copyWith(
-                      fontWeight: FontWeight.w800,
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  Text(
-                    _resultSubtitle ?? '',
-                    textAlign: TextAlign.center,
-                    style: theme.textTheme.bodyMedium?.copyWith(
-                      color: AppTheme.textSecondary,
-                      height: 1.45,
-                    ),
-                  ),
-                  const SizedBox(height: 28),
-                  SizedBox(
-                    width: double.infinity,
-                    child: FilledButton(
-                      onPressed: _finish,
-                      child: const Text('Done'),
-                    ),
+                  const SizedBox(height: 24),
+                  FilledButton(
+                    onPressed: () => Navigator.of(context).pop(false),
+                    child: const Text('Back'),
                   ),
                 ],
               ),
             ),
           ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildError({required Key key, required ThemeData theme}) {
-    return Padding(
-      key: key,
-      padding: const EdgeInsets.all(24),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          const Spacer(),
-          LocationResolvingPanel(
-            resolving: _resolving,
-            errorMessage: _errorMessage,
-            locationServiceDisabled: _locationServiceDisabled,
-            permissionBlocked: _permissionBlocked,
-            onRetry: _run,
-          ),
-          const Spacer(),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('Back'),
-          ),
-        ],
-      ),
+        );
+      },
     );
   }
 }

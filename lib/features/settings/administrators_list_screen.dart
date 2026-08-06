@@ -1,9 +1,8 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
 import '../../core/auth/auth_repository.dart';
-import '../../core/firebase/firestore_collections.dart';
-import '../../core/firebase/u_panel_firestore.dart';
+import '../../core/api/api_collections.dart';
+import '../../core/api/api_store.dart';
 import '../../core/theme/app_theme.dart';
 
 /// Admin-only directory of full administrators ([admins], not QA staff).
@@ -18,9 +17,9 @@ class AdministratorsListScreen extends StatelessWidget {
         backgroundColor: AppTheme.secondary,
         foregroundColor: Colors.white,
       ),
-      body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-        stream: uPanelFirestore()
-            .collection(FirestoreCollections.admins)
+      body: StreamBuilder<ApiQuerySnapshot>(
+        stream: apiStore()
+            .collection(ApiCollections.admins)
             .snapshots(),
         builder: (context, snap) {
           if (snap.hasError) {
@@ -30,14 +29,14 @@ class AdministratorsListScreen extends StatelessWidget {
             return const Center(child: CircularProgressIndicator());
           }
           final docs = snap.data!.docs
-              .where((d) => AuthRepository.adminDocIsFullAdministrator(d.data()))
+              .where((d) => AuthRepository.adminDocIsFullAdministrator(d.data() ?? const {}))
               .toList()
             ..sort((a, b) {
-              final sa = (a.data()['staffNumber'] as String?) ??
-                  (a.data()['registrationNumber'] as String?) ??
+              final sa = (a.data()?['staffNumber'] as String?) ??
+                  (a.data()?['registrationNumber'] as String?) ??
                   '';
-              final sb = (b.data()['staffNumber'] as String?) ??
-                  (b.data()['registrationNumber'] as String?) ??
+              final sb = (b.data()?['staffNumber'] as String?) ??
+                  (b.data()?['registrationNumber'] as String?) ??
                   '';
               return sa.compareTo(sb);
             });
@@ -58,7 +57,7 @@ class AdministratorsListScreen extends StatelessWidget {
             itemCount: docs.length,
             separatorBuilder: (_, __) => const Divider(height: 1),
             itemBuilder: (context, i) {
-              final data = docs[i].data();
+              final data = docs[i].data() ?? const {};
               final staff = (data['staffNumber'] as String?) ??
                   (data['registrationNumber'] as String?) ??
                   '—';

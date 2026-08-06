@@ -1,13 +1,12 @@
 import 'dart:async';
 
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
 
 import '../../../core/auth/auth_repository.dart';
 import '../../../core/connectivity/app_connectivity.dart';
-import '../../../core/firebase/firestore_collections.dart';
-import '../../../core/firebase/session_rtd_sync.dart';
-import '../../../core/firebase/u_panel_firestore.dart';
+import '../../../core/api/api_collections.dart';
+import '../../../core/api/rtd_stubs.dart';
+import '../../../core/api/api_store.dart';
 import '../../notices/data/notices_repository.dart';
 import '../check_in_validation.dart';
 import '../models/attendance_models.dart';
@@ -96,7 +95,7 @@ class PendingSessionCreateSync {
     }
     if (pending.isEmpty) return;
 
-    final firestore = uPanelFirestore();
+    final firestore = apiStore();
     var uploadedAny = false;
     var skippedBackoff = 0;
     var keptAfterError = 0;
@@ -123,7 +122,7 @@ class PendingSessionCreateSync {
           _ensureSessionInStore(e);
           await _publishSessionToRtdAfterUpload(
             entry: e,
-            creatorUid: AuthRepository.instance.currentFirebaseUid?.trim(),
+            creatorUid: AuthRepository.instance.currentUserId?.trim(),
           );
           await PendingSessionCreateQueue.removeBySessionId(e.sessionId);
           _clearRetryState(e.sessionId);
@@ -171,9 +170,9 @@ class PendingSessionCreateSync {
         );
         final metadataReady =
             entry.remoteLearning || isSessionGeofenceConfigured(session);
-        final creatorUid = AuthRepository.instance.currentFirebaseUid?.trim();
+        final creatorUid = AuthRepository.instance.currentUserId?.trim();
         await firestore
-            .collection(FirestoreCollections.attendanceSessions)
+            .collection(ApiCollections.attendanceSessions)
             .doc(entry.sessionId)
             .set(
               AttendanceRepository.activeSessionToFirestoreMapForSync(
@@ -181,7 +180,7 @@ class PendingSessionCreateSync {
                 createdByUid: creatorUid,
                 locationMetadataPending: !metadataReady && !entry.remoteLearning,
               ),
-              SetOptions(merge: true),
+              ApiSetOptions(merge: true),
             )
             .timeout(_uploadTimeout);
 
@@ -249,14 +248,14 @@ class PendingSessionCreateSync {
   }
 
   static Future<bool> _ensureListPublished(
-    FirebaseFirestore firestore,
+    ApiStore firestore,
     String listId,
   ) async {
     final id = listId.trim();
     if (id.isEmpty) return false;
     try {
       final snap = await firestore
-          .collection(FirestoreCollections.attendanceLists)
+          .collection(ApiCollections.attendanceLists)
           .doc(id)
           .get()
           .timeout(_probeTimeout);
@@ -266,7 +265,7 @@ class PendingSessionCreateSync {
     await PendingListCreateSync.drain();
     try {
       final snap = await firestore
-          .collection(FirestoreCollections.attendanceLists)
+          .collection(ApiCollections.attendanceLists)
           .doc(id)
           .get()
           .timeout(_probeTimeout);
@@ -296,7 +295,7 @@ class PendingSessionCreateSync {
   }
 
   static Future<void> _markListActive(
-    FirebaseFirestore firestore,
+    ApiStore firestore,
     String listId,
   ) async {
     final list = AttendanceStore.listById(listId);
@@ -323,11 +322,11 @@ class PendingSessionCreateSync {
     AttendanceStore.updateList(updated);
     try {
       await firestore
-          .collection(FirestoreCollections.attendanceLists)
+          .collection(ApiCollections.attendanceLists)
           .doc(listId)
           .set(
             AttendanceRepository.listToFirestoreMapForSync(updated),
-            SetOptions(merge: true),
+            ApiSetOptions(merge: true),
           )
           .timeout(_uploadTimeout);
     } catch (_) {}

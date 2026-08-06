@@ -1,8 +1,7 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
-import '../../core/firebase/firestore_collections.dart';
-import '../../core/firebase/u_panel_firestore.dart';
+import '../../core/api/api_collections.dart';
+import '../../core/api/api_store.dart';
 import '../../core/theme/app_theme.dart';
 
 /// Admin-only directory of registered lecturers ([lecturers] collection).
@@ -17,9 +16,9 @@ class LecturersListScreen extends StatelessWidget {
         backgroundColor: AppTheme.primary,
         foregroundColor: Colors.white,
       ),
-      body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-        stream: uPanelFirestore()
-            .collection(FirestoreCollections.lecturers)
+      body: StreamBuilder<ApiQuerySnapshot>(
+        stream: apiStore()
+            .collection(ApiCollections.lecturers)
             .snapshots(),
         builder: (context, snap) {
           if (snap.hasError) {
@@ -29,11 +28,11 @@ class LecturersListScreen extends StatelessWidget {
             return const Center(child: CircularProgressIndicator());
           }
           final docs = snap.data!.docs
-              .where((d) => d.data()['isLecturer'] == true)
+              .where((d) => d.data()?['isLecturer'] == true)
               .toList()
             ..sort((a, b) {
-              final sa = (a.data()['staffNumber'] as String?) ?? '';
-              final sb = (b.data()['staffNumber'] as String?) ?? '';
+              final sa = (a.data()?['staffNumber'] as String?) ?? '';
+              final sb = (b.data()?['staffNumber'] as String?) ?? '';
               return sa.compareTo(sb);
             });
           if (docs.isEmpty) {
@@ -53,7 +52,7 @@ class LecturersListScreen extends StatelessWidget {
             separatorBuilder: (_, __) => const Divider(height: 1),
             itemBuilder: (context, i) {
               final d = docs[i];
-              final data = d.data();
+              final data = d.data() ?? const {};
               final staff = (data['staffNumber'] as String?) ?? '—';
               final name = (data['fullName'] as String?)?.trim();
               final title = (name != null && name.isNotEmpty) ? name : staff;

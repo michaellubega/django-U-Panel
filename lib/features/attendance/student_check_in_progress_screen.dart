@@ -21,6 +21,8 @@ class StudentCheckInProgressResult {
     required this.success,
     this.wasQueued = false,
     this.serverVerified = false,
+    this.uploadedToServer = false,
+    this.listRollStats,
   });
 
   /// True when a present row exists locally (submitted or queued for upload).
@@ -31,6 +33,18 @@ class StudentCheckInProgressResult {
 
   /// True when the official [attendanceRecords] row was pulled from Firebase.
   final bool serverVerified;
+
+  /// True when check-in attempt evidence exists on RTD or Firestore.
+  final bool uploadedToServer;
+
+  /// Attendance % for this class list after server validation (when available).
+  final AttendanceRollStats? listRollStats;
+
+  int? get listAttendancePercent {
+    final stats = listRollStats;
+    if (stats == null || stats.total <= 0) return null;
+    return stats.percentRounded;
+  }
 }
 
 enum _CheckInUiPhase { processing, result, error }
@@ -120,7 +134,10 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
     _successScale = Tween<double>(begin: 0.35, end: 1.0).animate(
       CurvedAnimation(parent: _successController, curve: Curves.elasticOut),
     );
-    WidgetsBinding.instance.addPostFrameCallback((_) => _runPipeline());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      FocusManager.instance.primaryFocus?.unfocus();
+      _runPipeline();
+    });
   }
 
   @override
@@ -132,11 +149,13 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
 
   Future<void> _advanceToStage(int index) async {
     if (!mounted) return;
+    final minGap =
+        _pipelineLikelyOnline ? Duration.zero : _stageMinGap;
     final now = DateTime.now();
-    if (_lastStageAdvancedAt != null) {
+    if (_lastStageAdvancedAt != null && minGap > Duration.zero) {
       final elapsed = now.difference(_lastStageAdvancedAt!);
-      if (elapsed < _stageMinGap) {
-        await Future<void>.delayed(_stageMinGap - elapsed);
+      if (elapsed < minGap) {
+        await Future<void>.delayed(minGap - elapsed);
         if (!mounted) return;
       }
     }
@@ -147,7 +166,9 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
   Future<void> _completeStagesBeforeResult() async {
     if (!mounted) return;
     setState(() => _stageIndex = _stageLabels.length);
-    await Future<void>.delayed(const Duration(milliseconds: 450));
+    if (!_pipelineLikelyOnline) {
+      await Future<void>.delayed(const Duration(milliseconds: 450));
+    }
   }
 
   void _showError(String message) {
@@ -179,6 +200,61 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
     if (result != null && mounted) {
       Navigator.of(context).pop(result);
     }
+  }
+
+  Future<AttendanceRollStats> _resolveListRollStatsAfterVerification({
+    bool refreshFromServer = true,
+  }) async {
+    return AttendanceRepository.instance.listRollStatsAfterVerifiedCheckIn(
+      sessionId: widget.session.id,
+      studentId: widget.student.id,
+      listId: widget.list.id,
+      refreshFromServer: refreshFromServer,
+    );
+  }
+
+  Future<bool> _checkInAttemptUploaded() async {
+    final recordId = attendanceRecordIdForSessionStudent(
+      widget.session.id,
+      widget.student.id,
+    );
+    return AttendanceRepository.instance.checkInAttemptExistsOnServer(recordId);
+  }
+
+  Future<void> _showVerifiedPresentResult({
+    bool refreshFromServer = true,
+    bool serverVerified = true,
+  }) async {
+    AttendanceRollStats? stats;
+    if (!_pipelineLikelyOnline) {
+      stats = await _resolveListRollStatsAfterVerification(
+        refreshFromServer: refreshFromServer,
+      );
+      if (stats.total <= 0 && !refreshFromServer) {
+        stats = await _resolveListRollStatsAfterVerification(
+          refreshFromServer: true,
+        );
+      }
+    } else {
+      unawaited(
+        AttendanceRepository.instance.listRollStatsAfterVerifiedCheckIn(
+          sessionId: widget.session.id,
+          studentId: widget.student.id,
+          listId: widget.list.id,
+          refreshFromServer: true,
+        ),
+      );
+    }
+    await _showResult(
+      kind: _CheckInResultKind.present,
+      result: StudentCheckInProgressResult(
+        success: true,
+        wasQueued: false,
+        serverVerified: serverVerified,
+        uploadedToServer: true,
+        listRollStats: stats,
+      ),
+    );
   }
 
   Future<({double latitude, double longitude})?> _resolveCoordinates(
@@ -376,14 +452,7 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
         widget.student.id,
       );
       if (row?.verified == true) {
-        await _showResult(
-          kind: _CheckInResultKind.present,
-          result: const StudentCheckInProgressResult(
-            success: true,
-            wasQueued: false,
-            serverVerified: true,
-          ),
-        );
+        await _showVerifiedPresentResult();
         return;
       }
     }
@@ -433,10 +502,11 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
             AttendanceStore.isPresentForSession(session.id, widget.student.id)) {
           await _showResult(
             kind: _CheckInResultKind.pendingSync,
-            result: const StudentCheckInProgressResult(
+            result: StudentCheckInProgressResult(
               success: true,
               wasQueued: false,
               serverVerified: false,
+              uploadedToServer: await _checkInAttemptUploaded(),
             ),
           );
           return;
@@ -473,22 +543,47 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
         _showError(userMessageForCheckInOutcome(outcome));
         return;
       case StudentOfflineCheckInOutcome.success:
-        await _showResult(
-          kind: _CheckInResultKind.present,
-          result: const StudentCheckInProgressResult(
-            success: true,
-            wasQueued: false,
-            serverVerified: true,
-          ),
+        await _showVerifiedPresentResult(
+          refreshFromServer: false,
+          serverVerified: true,
         );
         return;
       case StudentOfflineCheckInOutcome.submittedPendingVerification:
+        if (_pipelineLikelyOnline) {
+          await _showVerifiedPresentResult(
+            refreshFromServer: false,
+            serverVerified: false,
+          );
+          unawaited(
+            AttendanceRepository.instance.awaitCheckInVerificationAfterUpload(
+              sessionId: session.id,
+              studentId: widget.student.id,
+              sessionCodeRaw: session.sessionCode,
+            ),
+          );
+          return;
+        }
+        final verified = await AttendanceRepository.instance
+            .awaitCheckInVerificationAfterUpload(
+          sessionId: session.id,
+          studentId: widget.student.id,
+          sessionCodeRaw: session.sessionCode,
+        );
+        if (!mounted) return;
+        if (verified) {
+          await _showVerifiedPresentResult(
+            refreshFromServer: false,
+            serverVerified: true,
+          );
+          return;
+        }
         await _showResult(
           kind: _CheckInResultKind.pendingSync,
-          result: const StudentCheckInProgressResult(
+          result: StudentCheckInProgressResult(
             success: true,
             wasQueued: false,
             serverVerified: false,
+            uploadedToServer: await _checkInAttemptUploaded(),
           ),
         );
         return;
@@ -509,48 +604,69 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
     final theme = Theme.of(context);
     final listLabel =
         '${widget.list.whoTaught} · ${widget.list.room}'.trim();
+    if (_phase == _CheckInUiPhase.processing) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        FocusManager.instance.primaryFocus?.unfocus();
+      });
+    }
     return PopScope(
       canPop: _phase != _CheckInUiPhase.processing,
-      child: Scaffold(
-        appBar: AppBar(
-          title: const Text('Check-in'),
-          automaticallyImplyLeading: _phase != _CheckInUiPhase.processing,
-          bottom: listLabel.isEmpty
-              ? null
-              : PreferredSize(
-                  preferredSize: const Size.fromHeight(22),
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
-                    child: Text(
-                      listLabel,
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: AppTheme.textSecondary,
+      child: MediaQuery.removeViewInsets(
+        context: context,
+        removeBottom: true,
+        child: Scaffold(
+          resizeToAvoidBottomInset: false,
+          appBar: AppBar(
+            title: const Text('Check-in'),
+            automaticallyImplyLeading: _phase != _CheckInUiPhase.processing,
+            bottom: listLabel.isEmpty
+                ? null
+                : PreferredSize(
+                    preferredSize: const Size.fromHeight(22),
+                    child: Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 0, 16, 10),
+                      child: Text(
+                        listLabel,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: AppTheme.textSecondary,
+                        ),
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
                       ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
                     ),
                   ),
-                ),
-        ),
-        body: SafeArea(
-          child: AnimatedSwitcher(
-            duration: const Duration(milliseconds: 360),
-            switchInCurve: Curves.easeOutCubic,
-            switchOutCurve: Curves.easeInCubic,
-            child: switch (_phase) {
-              _CheckInUiPhase.processing => _buildProcessing(
-                  key: const ValueKey('processing'),
-                  theme: theme,
-                ),
-              _CheckInUiPhase.result => _buildResult(
-                  key: const ValueKey('result'),
-                  theme: theme,
-                ),
-              _CheckInUiPhase.error => _buildError(
-                  key: const ValueKey('error'),
-                  theme: theme,
-                ),
-            },
+          ),
+          body: SafeArea(
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                return AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 360),
+                  switchInCurve: Curves.easeOutCubic,
+                  switchOutCurve: Curves.easeInCubic,
+                  layoutBuilder: (current, _) =>
+                      current ?? const SizedBox.shrink(),
+                  child: SizedBox(
+                    key: ValueKey(_phase),
+                    width: constraints.maxWidth,
+                    height: constraints.maxHeight,
+                    child: switch (_phase) {
+                      _CheckInUiPhase.processing => _buildProcessing(
+                          key: const ValueKey('processing'),
+                          theme: theme,
+                        ),
+                      _CheckInUiPhase.result => _buildResult(
+                          key: const ValueKey('result'),
+                          theme: theme,
+                        ),
+                      _CheckInUiPhase.error => _buildError(
+                          key: const ValueKey('error'),
+                          theme: theme,
+                        ),
+                    },
+                  ),
+                );
+              },
+            ),
           ),
         ),
       ),
@@ -564,83 +680,101 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
     return LayoutBuilder(
       key: key,
       builder: (context, constraints) {
+        final ultraCompact = constraints.maxHeight < 280;
         final compact = constraints.maxHeight < 520;
-        final pad = compact ? 16.0 : 24.0;
-        final iconSize = compact ? 56.0 : 72.0;
-        final minBodyHeight =
-            (constraints.maxHeight - pad * 2).clamp(0.0, double.infinity);
+        final pad = ultraCompact ? 12.0 : (compact ? 16.0 : 24.0);
+        final iconSize = ultraCompact ? 44.0 : (compact ? 56.0 : 72.0);
         return SingleChildScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
           padding: EdgeInsets.all(pad),
-          child: ConstrainedBox(
-            constraints: BoxConstraints(minHeight: minBodyHeight),
-            child: Align(
-              alignment: Alignment.center,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                FadeTransition(
-                  opacity: Tween<double>(begin: 0.55, end: 1.0).animate(
-                    CurvedAnimation(parent: _pulse, curve: Curves.easeInOut),
-                  ),
-                  child: Icon(
-                    Icons.sensors_rounded,
-                    size: iconSize,
-                    color: AppTheme.primary,
-                  ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              FadeTransition(
+                opacity: Tween<double>(begin: 0.55, end: 1.0).animate(
+                  CurvedAnimation(parent: _pulse, curve: Curves.easeInOut),
                 ),
-                SizedBox(height: compact ? 16 : 24),
-                Text(
-                  'Checking you in',
-                  textAlign: TextAlign.center,
-                  style: theme.textTheme.titleLarge?.copyWith(
-                    fontWeight: FontWeight.w800,
-                  ),
+                child: Icon(
+                  Icons.sensors_rounded,
+                  size: iconSize,
+                  color: AppTheme.primary,
                 ),
-                const SizedBox(height: 8),
-                Text(
-                  'Session ${widget.session.sessionCode}',
-                  textAlign: TextAlign.center,
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    color: AppTheme.textSecondary,
-                  ),
+              ),
+              SizedBox(height: ultraCompact ? 10 : (compact ? 16 : 24)),
+              Text(
+                'Checking you in',
+                textAlign: TextAlign.center,
+                style: (ultraCompact
+                        ? theme.textTheme.titleMedium
+                        : theme.textTheme.titleLarge)
+                    ?.copyWith(
+                  fontWeight: FontWeight.w800,
                 ),
-                SizedBox(height: compact ? 16 : 28),
-                ClipRRect(
-                  borderRadius: BorderRadius.circular(4),
-                  child: TweenAnimationBuilder<double>(
-                    tween: Tween<double>(begin: 0, end: progress),
-                    duration: const Duration(milliseconds: 420),
-                    curve: Curves.easeOutCubic,
-                    builder: (context, value, _) {
-                      return LinearProgressIndicator(
-                        minHeight: 6,
-                        value: value,
-                        backgroundColor: AppTheme.softGrey,
-                        color: AppTheme.primary,
-                      );
-                    },
-                  ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Session ${widget.session.sessionCode}',
+                textAlign: TextAlign.center,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: AppTheme.textSecondary,
                 ),
-                SizedBox(height: compact ? 14 : 22),
-                _CheckInStageList(
-                  labels: _stageLabels,
-                  activeIndex: _stageIndex,
-                  compact: compact,
-                  suppressActiveSpinner: _resolvingLocation,
+              ),
+              SizedBox(height: ultraCompact ? 10 : (compact ? 16 : 28)),
+              ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: TweenAnimationBuilder<double>(
+                  tween: Tween<double>(begin: 0, end: progress),
+                  duration: const Duration(milliseconds: 420),
+                  curve: Curves.easeOutCubic,
+                  builder: (context, value, _) {
+                    return LinearProgressIndicator(
+                      minHeight: 6,
+                      value: value,
+                      backgroundColor: AppTheme.softGrey,
+                      color: AppTheme.primary,
+                    );
+                  },
                 ),
-                if (_resolvingLocation) ...[
-                  SizedBox(height: compact ? 12 : 18),
+              ),
+              SizedBox(height: ultraCompact ? 12 : (compact ? 14 : 22)),
+              _CheckInStageList(
+                labels: _stageLabels,
+                activeIndex: _stageIndex,
+                compact: compact || ultraCompact,
+                suppressActiveSpinner: _resolvingLocation,
+              ),
+              if (_resolvingLocation) ...[
+                SizedBox(height: ultraCompact ? 8 : (compact ? 12 : 18)),
+                if (ultraCompact)
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        'Getting GPS…',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: AppTheme.textSecondary,
+                        ),
+                      ),
+                    ],
+                  )
+                else
                   LocationResolvingPanel(
                     resolving: true,
                     locationServiceDisabled: _locationServiceDisabled,
                     onRetry: _runPipeline,
                     compact: true,
                   ),
-                ],
-                ],
-              ),
-            ),
+              ],
+            ],
           ),
         );
       },
@@ -651,6 +785,11 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
     final kind = _resultKind ?? _CheckInResultKind.present;
     final studentName = widget.student.name.trim();
     final sessionCode = widget.session.sessionCode.trim();
+    final rollStats = _pendingResult?.listRollStats;
+    final attendancePercent = _pendingResult?.listAttendancePercent;
+    final listLabel = widget.list.displayTitle.trim().isNotEmpty
+        ? widget.list.displayTitle.trim()
+        : '${widget.list.whoTaught} · ${widget.list.room}'.trim();
     final (title, subtitle, icon, color) = switch (kind) {
       _CheckInResultKind.present => (
           'You\'re present',
@@ -726,6 +865,39 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
                           height: 1.45,
                         ),
                       ),
+                      if (_pendingResult?.uploadedToServer == true) ...[
+                        const SizedBox(height: 14),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(
+                              Icons.check_circle_rounded,
+                              size: 20,
+                              color: AppTheme.success,
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              'Check-in attempt uploaded',
+                              style: theme.textTheme.labelLarge?.copyWith(
+                                color: AppTheme.success,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                      if (kind == _CheckInResultKind.present &&
+                          !_pipelineLikelyOnline &&
+                          attendancePercent != null &&
+                          rollStats != null) ...[
+                        const SizedBox(height: 22),
+                        _CheckInAttendancePercentCard(
+                          percent: attendancePercent,
+                          present: rollStats.present,
+                          total: rollStats.total,
+                          listLabel: listLabel,
+                        ),
+                      ],
                       const SizedBox(height: 28),
                       SizedBox(
                         width: double.infinity,
@@ -897,6 +1069,81 @@ class _CheckInStageRow extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+Color _attendancePercentColor(int percent) {
+  final t = percent.clamp(0, 100) / 100.0;
+  return HSVColor.fromAHSV(1.0, t * 120.0, 0.82, 0.94).toColor();
+}
+
+class _CheckInAttendancePercentCard extends StatelessWidget {
+  const _CheckInAttendancePercentCard({
+    required this.percent,
+    required this.present,
+    required this.total,
+    required this.listLabel,
+  });
+
+  final int percent;
+  final int present;
+  final int total;
+  final String listLabel;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final color = _attendancePercentColor(percent);
+    final classLabel = listLabel.isEmpty ? 'this class' : listLabel;
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(18, 16, 18, 16),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: color.withValues(alpha: 0.14)),
+      ),
+      child: Column(
+        children: [
+          Text(
+            'Your attendance',
+            style: theme.textTheme.labelLarge?.copyWith(
+              color: AppTheme.textSecondary,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 4),
+          if (classLabel.isNotEmpty) ...[
+            Text(
+              classLabel,
+              textAlign: TextAlign.center,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: AppTheme.textSecondary,
+              ),
+            ),
+            const SizedBox(height: 8),
+          ],
+          Text(
+            '$percent%',
+            style: theme.textTheme.displaySmall?.copyWith(
+              fontWeight: FontWeight.w800,
+              color: color,
+              height: 1.0,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            '$present of $total sessions',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: AppTheme.textSecondary,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

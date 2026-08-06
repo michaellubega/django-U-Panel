@@ -1,4 +1,4 @@
-# Post-process build/web before Firebase deploy:
+# Post-process build/web before static hosting deploy:
 # - legacy AssetManifest.json (cached old main.dart.js may still request it)
 # - verify critical boot files exist (avoid SPA rewrite serving index.html as JS/JSON)
 
@@ -67,7 +67,6 @@ $required = @(
     "version.json",
     "android_web_gate.js",
     "upanel_brand.js",
-    "firebase-messaging-sw.js",
     "assets\AssetManifest.bin.json",
     "assets\FontManifest.json",
     "assets\AssetManifest.json",
@@ -84,7 +83,7 @@ foreach ($rel in $required) {
 
 if ($missing.Count -gt 0) {
     Write-Error @"
-build/web is incomplete — Firebase would serve index.html for missing files and the app would crash.
+build/web is incomplete — the host may serve index.html for missing files and the app would crash.
 
 Missing:
   $($missing -join "`n  ")

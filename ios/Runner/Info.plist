@@ -45,6 +45,17 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.u-panel</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>upanel</string>
+			</array>
+		</dict>
+	</array>
 	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>U-Panel uses your location to confirm you are in the classroom for attendance check-in.</string>
 	<key>UIBackgroundModes</key>

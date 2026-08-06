@@ -19,7 +19,7 @@ class AttendanceLessonNotificationScheduler {
     if (!auth.isLoggedIn || !auth.roleCheckDone) return;
 
     final role = auth.resolvedRole;
-    final uid = auth.currentFirebaseUid?.trim();
+    final uid = auth.currentUserId?.trim();
     final now = DateTime.now();
     final today = DateTime(now.year, now.month, now.day);
     final endDay = today.add(const Duration(days: _lookaheadDays));

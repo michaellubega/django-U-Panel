@@ -30,7 +30,7 @@ class LessonInsightsService {
     if (!auth.lecturerCheckDone || !auth.isLecturer || auth.isAdmin) {
       return false;
     }
-    final uid = auth.currentFirebaseUid?.trim();
+    final uid = auth.currentUserId?.trim();
     if (uid != null &&
         uid.isNotEmpty &&
         attendanceListAccessibleToLecturer(list, uid)) {

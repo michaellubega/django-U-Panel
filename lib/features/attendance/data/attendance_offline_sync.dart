@@ -211,7 +211,12 @@ class AttendanceOfflineSync {
 
   /// Re-runs session-code upload after session creates; stops when queue drains or stalls.
   static Future<void> _drainSessionCodesWithRetry() async {
-    for (var pass = 0; pass < 3; pass++) {
+    final initial = await PendingSessionCodeQueue.loadAll();
+    if (initial.isEmpty) return;
+    final allUploaded =
+        initial.every((e) => e.hasLocalUploadEvidence);
+    final maxPasses = allUploaded ? 3 : 4;
+    for (var pass = 0; pass < maxPasses; pass++) {
       if (pass > 0 && AppConnectivity.instance.hasNetworkInterface) {
         await PendingListCreateSync.drain();
         await PendingSessionCreateSync.drainUrgent();
@@ -221,13 +226,16 @@ class AttendanceOfflineSync {
       final before = (await PendingSessionCodeQueue.loadAll()).length;
       if (before == 0) return;
       if (AppConnectivity.instance.hasNetworkInterface) {
-        await AttendanceRepository.instance.prefetchSessionsForPendingCodes();
+        final snapshot = await PendingSessionCodeQueue.loadAll();
+        if (snapshot.any((e) => e.hasLocalUploadEvidence)) {
+          await AttendanceRepository.instance.prefetchSessionsForPendingCodes();
+        }
       }
       await PendingSessionCodeSync.drainUrgent();
       final after = (await PendingSessionCodeQueue.loadAll()).length;
       if (after == 0) return;
       if (after < before) continue;
-      // No progress this pass — keep retrying; lecturer session may upload next pass.
+      if (allUploaded) return;
     }
   }
 
@@ -307,21 +315,26 @@ class AttendanceOfflineSync {
     }
 
     final codes = await PendingSessionCodeQueue.loadAll();
-    final keptCodes = <PendingSessionCodeEntry>[];
-    for (final e in codes) {
-      if (PendingSessionCodeSync.dropVerifiedMismatchInvalid(e)) {
-        PendingSessionCodeSync.discardLocalAttendanceSideEffects(e);
-        continue;
+    await PendingSessionCodeQueue.mutate((codes) async {
+      final keptCodes = <PendingSessionCodeEntry>[];
+      for (final e in codes) {
+        if (PendingSessionCodeSync.dropVerifiedMismatchInvalid(e)) {
+          final marked = e.invalidMarkedAt ?? e.pendingSince;
+          if (PendingRetention.isExpired(marked, now)) {
+            PendingSessionCodeSync.discardLocalAttendanceSideEffects(e);
+            continue;
+          }
+          keptCodes.add(e);
+          continue;
+        }
+        if (PendingRetention.isExpired(e.pendingSince, now)) {
+          PendingSessionCodeSync.discardLocalAttendanceSideEffects(e);
+          continue;
+        }
+        keptCodes.add(e);
       }
-      if (PendingRetention.isExpired(e.pendingSince, now)) {
-        PendingSessionCodeSync.discardLocalAttendanceSideEffects(e);
-        continue;
-      }
-      keptCodes.add(e);
-    }
-    if (keptCodes.length != codes.length) {
-      await PendingSessionCodeQueue.saveAll(keptCodes);
-    }
+      return keptCodes;
+    });
 
     final creates = await PendingSessionCreateQueue.loadAll();
     final keptCreates = creates
@@ -428,18 +441,6 @@ class AttendanceOfflineSync {
           continue;
         }
 
-        if (AttendanceStore.hasCheckedIn(e.sessionId, e.studentId)) {
-          final existing = AttendanceStore.attendanceRecordForSessionStudent(
-            e.sessionId,
-            e.studentId,
-          );
-          if (existing != null && existing.present && existing.verified) {
-            await PendingCheckInQueue.removeById(e.id);
-            droppedDuplicate++;
-            continue;
-          }
-        }
-
         final sessionCodeRaw =
             normalizeSessionCodeInput(session.sessionCode);
         final canonicalId = repo.canonicalStudentIdForUpload(e.studentId);
@@ -457,6 +458,43 @@ class AttendanceOfflineSync {
                 deviceId: e.deviceId,
                 pendingSince: e.pendingSince,
               );
+
+        if (AttendanceStore.hasCheckedIn(e.sessionId, e.studentId)) {
+          final existing = AttendanceStore.attendanceRecordForSessionStudent(
+            e.sessionId,
+            e.studentId,
+          );
+          if (existing != null &&
+              existing.present &&
+              existing.verified &&
+              await repo.isCheckInAttemptAcceptedForSessionStudent(
+                sessionId: e.sessionId,
+                studentId: e.studentId,
+              )) {
+            keep.add(
+              e.copyWith(status: PendingCheckInQueueStatus.approved),
+            );
+            droppedDuplicate++;
+            continue;
+          }
+        }
+
+        if (e.hasLocalUploadEvidence) {
+          final approved = await repo.pendingCheckInIsApproved(
+            entry: pendingEntry,
+            session: session,
+          );
+          keep.add(
+            pendingEntry.copyWith(
+              status: approved
+                  ? PendingCheckInQueueStatus.approved
+                  : PendingCheckInQueueStatus.queued,
+              uploadedAt: e.uploadedAt ?? pendingEntry.uploadedAt,
+            ),
+          );
+          continue;
+        }
+
         final outcome = await repo.submitStudentCheckInWithOfflineSupport(
           pendingEntry.toAttendanceRecord(),
           listIdOverride: e.listId,
@@ -465,17 +503,45 @@ class AttendanceOfflineSync {
         switch (outcome) {
           case StudentOfflineCheckInOutcome.success:
           case StudentOfflineCheckInOutcome.duplicate:
-            uploadedPairs.add((sessionId: e.sessionId, studentId: e.studentId));
-            break;
-          case StudentOfflineCheckInOutcome.submittedPendingVerification:
-            if (await repo.pendingCheckInHasServerEvidence(
+            final approved = await repo.pendingCheckInIsApproved(
               entry: pendingEntry,
               session: session,
-            )) {
+            );
+            if (approved) {
               uploadedPairs.add((sessionId: e.sessionId, studentId: e.studentId));
+              keep.add(
+                pendingEntry.copyWith(status: PendingCheckInQueueStatus.approved),
+              );
             } else {
-              keep.add(pendingEntry);
+              keep.add(
+                pendingEntry.copyWith(status: PendingCheckInQueueStatus.queued),
+              );
             }
+            break;
+          case StudentOfflineCheckInOutcome.submittedPendingVerification:
+            final uploaded = await repo.pendingCheckInHasServerEvidence(
+              entry: pendingEntry,
+              session: session,
+            );
+            final approved = await repo.pendingCheckInIsApproved(
+              entry: pendingEntry,
+              session: session,
+            );
+            if (uploaded) {
+              uploadedPairs.add((sessionId: e.sessionId, studentId: e.studentId));
+              await PendingCheckInQueue.markUploaded(pendingEntry.id);
+            }
+            final uploadStamp = e.uploadedAt ?? pendingEntry.uploadedAt;
+            keep.add(
+              pendingEntry.copyWith(
+                status: approved
+                    ? PendingCheckInQueueStatus.approved
+                    : PendingCheckInQueueStatus.queued,
+                uploadedAt: uploaded || uploadStamp != null
+                    ? (uploadStamp ?? DateTime.now())
+                    : null,
+              ),
+            );
             break;
           case StudentOfflineCheckInOutcome.queuedOffline:
             keep.add(pendingEntry);

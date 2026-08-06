@@ -1,0 +1,52 @@
+{% extends "admin/base_site.html" %}
+{% load i18n static %}
+
+{% block extrastyle %}
+{{ block.super }}
+{% endblock %}
+
+{% block bodyclass %}{{ block.super }} login upanel-login{% endblock %}
+
+{% block nav-global %}{% endblock %}
+{% block nav-sidebar %}{% endblock %}
+{% block content_title %}{% endblock %}
+{% block nav-breadcrumbs %}{% endblock %}
+{% block footer %}{% endblock %}
+
+{% block content %}
+<div class="upanel-login-shell">
+  <div class="upanel-login-card">
+    <div class="upanel-login-brand">
+      <img src="{% static 'admin/img/logo.png' %}" alt="" width="72" height="72" class="upanel-login-logo">
+      <h1>U-Panel Admin</h1>
+      <p>KIU campus system administration</p>
+    </div>
+
+    {% if form.errors and not form.non_field_errors %}
+    <p class="upanel-login-error">
+      {% blocktranslate count counter=form.errors.items|length %}Please correct the error below.{% plural %}Please correct the errors below.{% endblocktranslate %}
+    </p>
+    {% endif %}
+    {% if form.non_field_errors %}
+    {% for error in form.non_field_errors %}
+    <p class="upanel-login-error">{{ error }}</p>
+    {% endfor %}
+    {% endif %}
+
+    <form action="{{ app_path }}" method="post" id="login-form">{% csrf_token %}
+      <div class="upanel-field">
+        <label for="id_username">{% translate 'Username' %}</label>
+        {{ form.username }}
+      </div>
+      <div class="upanel-field">
+        <label for="id_password">{% translate 'Password' %}</label>
+        {{ form.password }}
+        <input type="hidden" name="next" value="{{ next }}">
+      </div>
+      <button type="submit" class="upanel-login-btn">{% translate 'Log in' %}</button>
+    </form>
+
+    <p class="upanel-login-hint">Use your Django superuser credentials. QA demo: create via <code>seed_qa_demo_user</code>.</p>
+  </div>
+</div>
+{% endblock %}

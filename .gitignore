@@ -47,6 +47,10 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 
-# Release signing (never commit)
-/android/key.properties
-/android/*.jks
+# Django backend
+backend/.venv/
+backend/db.sqlite3
+backend/.env
+.kamal/secrets
+backend/**/__pycache__/
+backend/**/*.pyc

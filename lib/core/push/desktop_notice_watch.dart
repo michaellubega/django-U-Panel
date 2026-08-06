@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -32,7 +31,7 @@ class DesktopNoticeWatch {
           defaultTargetPlatform == TargetPlatform.macOS);
 
   Future<void> restart() async {
-    if (!supported || Firebase.apps.isEmpty) return;
+    if (!supported) return;
     final auth = AuthRepository.instance;
     if (!auth.isLoggedIn) {
       await stop();
@@ -43,7 +42,7 @@ class DesktopNoticeWatch {
     }
     if (!auth.isLoggedIn || !auth.roleCheckDone) return;
 
-    final uid = auth.currentFirebaseUid?.trim() ?? '';
+    final uid = auth.currentUserId?.trim() ?? '';
     if (uid.isEmpty) return;
     if (_activeUid != uid) {
       _activeUid = uid;
@@ -74,7 +73,7 @@ class DesktopNoticeWatch {
       final auth = AuthRepository.instance;
       if (!auth.isLoggedIn || !auth.roleCheckDone) return;
 
-      final uid = auth.currentFirebaseUid?.trim() ?? '';
+      final uid = auth.currentUserId?.trim() ?? '';
       if (uid.isEmpty) return;
 
       final notices = await NoticesRepository.instance.fetchRecent(limit: 40);
@@ -151,7 +150,7 @@ class DesktopNoticeWatch {
             kiuAdmin: auth.isKiuAdmin,
             lecturer: lecturer,
             lecturerListIds: lecturerListIds,
-            lecturerFirebaseUid: auth.currentFirebaseUid,
+            lecturerUserId: auth.currentUserId,
             studentId: studentId,
             signedListIds: signedListIds,
           ),

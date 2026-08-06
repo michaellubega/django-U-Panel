@@ -109,6 +109,10 @@ class RollPendingContext {
     for (final e in checkIns) {
       if (PendingRetention.isExpired(e.pendingSince, DateTime.now())) continue;
       if (e.sessionId.trim().isEmpty || e.studentId.trim().isEmpty) continue;
+      if (e.isApproved) {
+        addOfflineTrustedPresent(e.sessionId, e.studentId);
+        continue;
+      }
       final session = AttendanceStore.sessionById(e.sessionId);
       if (session != null &&
           offlineOrMetadataQueuedCheckInTrustsPresent(e, session)) {
@@ -121,6 +125,34 @@ class RollPendingContext {
       if (PendingRetention.isExpired(e.pendingSince, DateTime.now())) continue;
       if (e.status == PendingSessionCodeStatus.invalidOrExpired) continue;
       if (e.status == PendingSessionCodeStatus.deviceBlocked) continue;
+      if (e.status == PendingSessionCodeStatus.approved) {
+        final student = AttendanceStore.findStudentByReg(e.registrationNumber);
+        if (student != null) {
+          final sid = e.sessionId?.trim() ?? '';
+          if (sid.isNotEmpty) {
+            final linked = AttendanceStore.sessionById(sid);
+            if (linked != null &&
+                offlineQueuedSessionCodeTrustsPresent(
+                  entry: e,
+                  session: linked,
+                  studentRegistrationNumber: student.registrationNumber,
+                )) {
+              addOfflineTrustedPresent(sid, student.id);
+            }
+          } else {
+            for (final s in AttendanceStore.sessions) {
+              if (offlineQueuedSessionCodeTrustsPresent(
+                entry: e,
+                session: s,
+                studentRegistrationNumber: student.registrationNumber,
+              )) {
+                addOfflineTrustedPresent(s.id, student.id);
+              }
+            }
+          }
+        }
+        continue;
+      }
       final student = AttendanceStore.findStudentByReg(e.registrationNumber);
       if (student == null) continue;
       final sid = e.sessionId?.trim();

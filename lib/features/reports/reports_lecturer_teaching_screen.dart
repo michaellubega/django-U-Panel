@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../core/navigation/screen_refresh.dart';
 import '../../core/theme/app_theme.dart';
 import 'lecturer_teaching_roll_export.dart';
+import 'report_pdf_generation_dialog.dart';
 import '../attendance/attendance_list_hierarchy.dart';
 import '../attendance/data/attendance_repository.dart';
 import '../attendance/models/attendance_models.dart';
@@ -44,7 +45,6 @@ class _ReportsLecturerTeachingScreenState
   LessonPeriodFilter _filter = LessonPeriodFilter.week;
   DateTime _anchor = DateTime.now();
   bool _loading = true;
-  bool _exportBusy = false;
   RollPendingContext _pending = const RollPendingContext.empty();
   List<LessonSessionInsight> _insights = const [];
 
@@ -85,11 +85,13 @@ class _ReportsLecturerTeachingScreenState
   }
 
   Future<void> _exportPdf() async {
-    setState(() => _exportBusy = true);
     try {
-      final path = await exportLecturerTeachingRollPdf(
-        filter: _filter,
-        anchor: _anchor,
+      final path = await runWithReportPdfGenerationDialog(
+        context,
+        task: () => exportLecturerTeachingRollPdf(
+          filter: _filter,
+          anchor: _anchor,
+        ),
       );
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -106,8 +108,6 @@ class _ReportsLecturerTeachingScreenState
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Could not save PDF: $e')),
       );
-    } finally {
-      if (mounted) setState(() => _exportBusy = false);
     }
   }
 
@@ -262,14 +262,8 @@ class _ReportsLecturerTeachingScreenState
           RefreshIconButton(onRefresh: _reload),
           IconButton(
             tooltip: 'Export PDF',
-            onPressed: _exportBusy ? null : _exportPdf,
-            icon: _exportBusy
-                ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Icon(Icons.picture_as_pdf_rounded),
+            onPressed: _exportPdf,
+            icon: const Icon(Icons.picture_as_pdf_rounded),
           ),
           IconButton(
             tooltip: 'Pick date',

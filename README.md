@@ -4,7 +4,7 @@
 
 **University operations platform** — leadership, finance, attendance, learning, and communication in one place.
 
-Download the **Android APK** and **Windows installer** from GitHub (landing page above). The **web app** runs on Firebase.
+Download the **Android APK** and **Windows installer** from GitHub (landing page above). The **web app** and mobile/desktop clients talk to a **Django REST API** backend.
 
 - **Desktop**: Fixed left sidebar, top bar (search, notifications, profile), card-based main area.
 - **Mobile**: Bottom navigation (varies by role; includes Attendance, Notices, Profile), large cards, drawer for full menu.
@@ -26,9 +26,34 @@ Download the **Android APK** and **Windows installer** from GitHub (landing page
 
 ## Run
 
+### Flutter client
+
 ```bash
 flutter pub get
-flutter run
+flutter run --dart-define=UPANEL_API_BASE_URL=http://127.0.0.1:8000
+```
+
+### Django backend
+
+```bash
+cd backend
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+copy .env.example .env
+docker compose up -d db redis   # Postgres + Redis
+python manage.py migrate
+python manage.py runserver
+```
+
+Or run everything in Docker: `docker compose up`
+
+See [backend/README.md](backend/README.md) for Celery, OneSignal, and Sentry setup.
+
+### Flutter with monitoring + push
+
+```bash
+flutter run --dart-define=UPANEL_API_BASE_URL=http://127.0.0.1:8000 --dart-define=SENTRY_DSN=... --dart-define=ONESIGNAL_APP_ID=...
 ```
 
 Targets: **Windows**, **macOS**, **Web**, **Android**, **iOS** (configure as needed).
@@ -38,26 +63,25 @@ Targets: **Windows**, **macOS**, **Web**, **Android**, **iOS** (configure as nee
 ## Project structure
 
 ```
+backend/           # Django REST API
 lib/
   core/
+    api/           # HTTP client, auth, resource paths
+    auth/          # Session, roles, registration
     theme/         # Deep blue theme, cards, typography
-    constants/     # Breakpoints, app name
     navigation/    # App shell (sidebar + bottom nav)
   features/
     dashboard/
     attendance/
-    finance/
-    materials/
     notices/
-    communication/
-    reports/
     settings/
   main.dart
 ```
 
 ## Tech
 
-- Flutter 3.x
+- Flutter 3.x + Django 6.x (REST API)
+- PostgreSQL, Redis, Celery
+- OneSignal (push), Sentry (monitoring)
 - Material 3
-- `google_fonts` (Inter)
 - Responsive layout: breakpoint 840px (desktop sidebar vs mobile bottom nav)

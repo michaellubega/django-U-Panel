@@ -1,23 +1,27 @@
-/// FCM topic names for notice pushes. Must stay in sync with Cloud Functions
-/// ([functions/index.js]) that send to these topics.
-const String kFcmAllNoticesTopic = 'all_notices';
+/// OneSignal tag names for notice pushes. Must stay in sync with
+/// `backend/upanel/services/onesignal.py` and Celery notice tasks.
+const String kPushAllNoticesTag = 'all_notices';
 
-/// KIU administrator-only notice pushes. Sync with [functions/index.js].
-const String kFcmKiuAdminsTopic = 'kiu_admins';
+/// KIU administrator-only notice pushes.
+const String kPushKiuAdminsTag = 'kiu_admins';
 
-/// Topics are restricted to `[a-zA-Z0-9-_.~%]+`; Firestore ids are usually safe,
-/// but we sanitize so subscribe/send never fail on odd ids.
-String sanitizeFcmTopicSegment(String raw) {
+String sanitizePushTagSegment(String raw) {
   return raw.replaceAll(RegExp(r'[^a-zA-Z0-9-_.~%]'), '_');
 }
 
-String fcmListNoticeTopic(String listId) =>
-    'list_${sanitizeFcmTopicSegment(listId.trim())}';
+String pushListNoticeTag(String listId) =>
+    'list_${sanitizePushTagSegment(listId.trim())}';
 
-/// Per-student notice pushes (missed session, etc.). Sync with [functions/index.js].
-String fcmStudentNoticeTopic(String studentId) =>
-    'stu_${sanitizeFcmTopicSegment(studentId.trim())}';
+String pushStudentNoticeTag(String studentId) =>
+    'stu_${sanitizePushTagSegment(studentId.trim())}';
 
-/// Per-lecturer notice pushes (take attendance reminders). Sync with [functions/index.js].
-String fcmLecturerNoticeTopic(String lecturerUid) =>
-    'lec_${sanitizeFcmTopicSegment(lecturerUid.trim())}';
+String pushLecturerNoticeTag(String userId) =>
+    'lec_${sanitizePushTagSegment(userId.trim())}';
+
+// Back-compat aliases for gradual rename at call sites.
+const String kFcmAllNoticesTopic = kPushAllNoticesTag;
+const String kFcmKiuAdminsTopic = kPushKiuAdminsTag;
+String sanitizeFcmTopicSegment(String raw) => sanitizePushTagSegment(raw);
+String fcmListNoticeTopic(String listId) => pushListNoticeTag(listId);
+String fcmStudentNoticeTopic(String studentId) => pushStudentNoticeTag(studentId);
+String fcmLecturerNoticeTopic(String uid) => pushLecturerNoticeTag(uid);

@@ -80,7 +80,7 @@ class _LecturerDashboardScreenState extends State<LecturerDashboardScreen> {
             admin: false,
             lecturer: true,
             lecturerListIds: listIds,
-            lecturerFirebaseUid: AuthRepository.instance.currentFirebaseUid,
+            lecturerUserId: AuthRepository.instance.currentUserId,
             studentId: null,
             signedListIds: const {},
           ))

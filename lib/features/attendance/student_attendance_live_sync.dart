@@ -1,8 +1,7 @@
 import 'dart:async';
 
 import '../../core/auth/auth_repository.dart';
-import '../../core/firebase/student_rtd_index.dart';
-import 'data/attendance_remote_record_watch.dart';
+import '../../core/api/rtd_stubs.dart';
 import 'data/attendance_repository.dart';
 import 'data/attendance_rtd_record_watch.dart';
 import 'models/attendance_models.dart';
@@ -22,7 +21,6 @@ abstract final class StudentAttendanceLiveSync {
     await StudentRtdIndex.publishCurrentStudentRegistration();
 
     await AttendanceRtdRecordWatch.instance.start();
-    unawaited(AttendanceRemoteRecordWatch.instance.start());
 
     await AttendanceRepository.instance.refreshStudentProfileFromRtd();
 
@@ -62,17 +60,15 @@ abstract final class StudentAttendanceLiveSync {
 
     final reg = AuthRepository.instance.currentRegistrationNumber?.trim();
     if (reg != null && reg.isNotEmpty) {
-      for (final listId
-          in AttendanceStore.enrolledListIdsForRegistrationNormalized(reg)) {
-        unawaited(
-          AttendanceRepository.instance.refreshStudentListAttendanceFromRtd(
-            listId,
-          ),
+      final listIds =
+          AttendanceStore.enrolledListIdsForRegistrationNormalized(reg);
+      for (final listId in listIds) {
+        await AttendanceRepository.instance.refreshStudentListAttendanceFromRtd(
+          listId,
         );
       }
     }
 
-    unawaited(AttendanceRemoteRecordWatch.instance.start());
     AttendanceRepository.instance.notifyStoreUpdatedFromRtd();
   }
 }

@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../../core/auth/auth_repository.dart';
@@ -9,6 +8,7 @@ import '../../core/connectivity/app_connectivity.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/widgets/dismissible_error_banner.dart';
 import '../auth/forgot_password_screen.dart';
+import '../../core/api/api_auth.dart';
 
 enum _ChangePasswordPhase { form, processing, success }
 
@@ -158,10 +158,10 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen>
     if (staff != null && staff.isNotEmpty) return staff;
     final email = auth.currentUserEmail ?? auth.currentEmail;
     if (email != null && email.trim().isNotEmpty) return email.trim();
-    final firebaseEmail = FirebaseAuth.instance.currentUser?.email;
-    if (firebaseEmail != null) {
-      return StaffAuthEmail.syntheticEmailToStaffNumber(firebaseEmail) ??
-          firebaseEmail;
+    final authEmail = ApiAuth.instance.currentUser?.email;
+    if (authEmail != null) {
+      return StaffAuthEmail.syntheticEmailToStaffNumber(authEmail) ??
+          authEmail;
     }
     return null;
   }
@@ -171,7 +171,7 @@ class _ChangePasswordScreenState extends State<ChangePasswordScreen>
     final candidates = <String?>[
       auth.currentUserEmail,
       auth.currentEmail,
-      FirebaseAuth.instance.currentUser?.email,
+      ApiAuth.instance.currentUser?.email,
     ];
     String? initial;
     for (final candidate in candidates) {

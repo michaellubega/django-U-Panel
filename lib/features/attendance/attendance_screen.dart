@@ -7,8 +7,8 @@ import '../../core/constants/app_constants.dart';
 import '../../core/auth/auth_repository.dart';
 import '../../core/auth/student_registration_number.dart';
 import '../../core/auth/user_role.dart';
-import '../../core/firebase/firestore_collections.dart';
-import '../../core/firebase/u_panel_firestore.dart';
+import '../../core/api/api_collections.dart';
+import '../../core/api/api_store.dart';
 import '../../core/connectivity/app_connectivity.dart';
 import '../../core/device/device_identity.dart';
 import '../../core/theme/app_theme.dart';
@@ -68,7 +68,7 @@ bool attendanceListAllowsMaintenance(AttendanceList list) {
   if (!a.adminCheckDone || !a.lecturerCheckDone) return false;
   if (a.isAdmin) return true;
   if (a.isLecturer) {
-    final uid = a.currentFirebaseUid;
+    final uid = a.currentUserId;
     if (uid == null || uid.isEmpty) return false;
     return attendanceListAccessibleToLecturer(list, uid);
   }
@@ -1611,11 +1611,11 @@ class _StartSessionScreenState extends State<StartSessionScreen> {
       name = profile?['fullName']?.trim();
     }
     if (name == null || name.isEmpty) {
-      final uid = auth.currentFirebaseUid?.trim();
+      final uid = auth.currentUserId?.trim();
       if (uid != null && uid.isNotEmpty) {
         try {
-          final snap = await uPanelFirestore()
-              .collection(FirestoreCollections.lecturers)
+          final snap = await apiStore()
+              .collection(ApiCollections.lecturers)
               .doc(uid)
               .get();
           name = (snap.data()?['fullName'] as String?)?.trim();
@@ -2181,13 +2181,15 @@ class _SessionCodeDisplayState extends State<_SessionCodeDisplay>
     AttendanceRepository.instance
         .touchRecentListDetail(widget.list.id);
     unawaited(
-      AttendanceRemoteRecordWatch.instance
-          .watchActiveSessionRecords(widget.session.id),
-    );
-    unawaited(
       AttendanceRtdRecordWatch.instance
           .watchActiveSessionRecords(widget.session.id),
     );
+    if (!AttendanceRepository.isStudentRecordWatchUser()) {
+      unawaited(
+        AttendanceRemoteRecordWatch.instance
+            .watchActiveSessionRecords(widget.session.id),
+      );
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _maybeAutoEndExpired();
       _scheduleExpiryAutoClose();
@@ -2286,7 +2288,7 @@ class _SessionCodeDisplayState extends State<_SessionCodeDisplay>
         title: const Text('End session & save roll?'),
         content: const Text(
           'The join code will stop working. Roster students who did not check in '
-          'show as Pending for up to 7 days while offline check-ins sync and verify. '
+          'show as Pending for up to 7 days while queued check-ins sync and verify. '
           'After 7 days, anyone still unverified is marked Absent.',
         ),
         actions: [
@@ -2766,21 +2768,27 @@ class _SessionCheckInsScreenState extends State<SessionCheckInsScreen>
     WidgetsBinding.instance.addObserver(this);
     AppConnectivity.instance.addListener(_onConnectivity);
     AttendanceRepository.instance.addListener(_onRepo);
-    AttendanceRepository.instance.touchRecentListDetail(widget.list.id);
-    unawaited(AttendanceRemoteRecordWatch.instance.start());
+    AttendanceRepository.instance
+        .touchRecentListDetail(widget.list.id);
     unawaited(AttendanceRtdRecordWatch.instance.start());
-    final active = AttendanceStore.sessions
-        .where((s) => s.listId == widget.list.id && s.isActive)
-        .toList();
-    if (active.isNotEmpty) {
-      unawaited(
-        AttendanceRemoteRecordWatch.instance
-            .watchActiveSessionRecords(active.first.id),
-      );
-      unawaited(
-        AttendanceRtdRecordWatch.instance
-            .watchActiveSessionRecords(active.first.id),
-      );
+    if (!AttendanceRepository.isStudentRecordWatchUser()) {
+      unawaited(AttendanceRemoteRecordWatch.instance.start());
+    }
+    if (!AuthRepository.instance.isStudentAuthIdentity &&
+        !AttendanceRepository.isStudentScopedUser()) {
+      final active = AttendanceStore.sessions
+          .where((s) => s.listId == widget.list.id && s.isActive)
+          .toList();
+      if (active.isNotEmpty) {
+        unawaited(
+          AttendanceRemoteRecordWatch.instance
+              .watchActiveSessionRecords(active.first.id),
+        );
+        unawaited(
+          AttendanceRtdRecordWatch.instance
+              .watchActiveSessionRecords(active.first.id),
+        );
+      }
     }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(_reloadListDetail());
@@ -3042,11 +3050,11 @@ class _CreateAttendanceListScreenState
       name = profile?['fullName']?.trim();
     }
     if (name == null || name.isEmpty) {
-      final uid = auth.currentFirebaseUid?.trim();
+      final uid = auth.currentUserId?.trim();
       if (uid != null && uid.isNotEmpty) {
         try {
-          final snap = await uPanelFirestore()
-              .collection(FirestoreCollections.lecturers)
+          final snap = await apiStore()
+              .collection(ApiCollections.lecturers)
               .doc(uid)
               .get();
           name = (snap.data()?['fullName'] as String?)?.trim();
@@ -3155,7 +3163,7 @@ class _CreateAttendanceListScreenState
       return;
     }
     final auth = AuthRepository.instance;
-    final creatorUid = auth.currentFirebaseUid?.trim();
+    final creatorUid = auth.currentUserId?.trim();
     String? lecturerUid;
     String? pendingLecturerStaffNumber;
     if (auth.adminCheckDone && auth.isAdmin) {
@@ -3173,7 +3181,7 @@ class _CreateAttendanceListScreenState
       lecturerUid = resolved.uid;
       pendingLecturerStaffNumber = resolved.deferredStaffNumber;
     } else if (!auth.isAdmin) {
-      lecturerUid = auth.currentFirebaseUid?.trim();
+      lecturerUid = auth.currentUserId?.trim();
     }
     final list = AttendanceList(
       id: DateTime.now().millisecondsSinceEpoch.toString(),
@@ -3618,8 +3626,8 @@ class _EditAttendanceListScreenState extends State<EditAttendanceListScreen> {
     final uid = _list?.lecturerUid?.trim();
     if (uid == null || uid.isEmpty) return;
     try {
-      final snap = await uPanelFirestore()
-          .collection(FirestoreCollections.lecturers)
+      final snap = await apiStore()
+          .collection(ApiCollections.lecturers)
           .doc(uid)
           .get();
       final sn = (snap.data()?['staffNumber'] as String?)?.trim();
@@ -4056,19 +4064,24 @@ class _SignInContentState extends State<_SignInContent> {
   void _setBusy(bool value) {
     if (value) {
       _busyCountdownTimer?.cancel();
-      _busyCountdownRemaining = _signInBusyCountdownSeconds;
-      _busyCountdownTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-        if (!mounted) {
-          _busyCountdownTimer?.cancel();
-          _busyCountdownTimer = null;
-          return;
-        }
-        setState(() {
-          if (_busyCountdownRemaining > 0) {
-            _busyCountdownRemaining--;
+      final online = AppConnectivity.instance.isOnline;
+      if (!online) {
+        _busyCountdownRemaining = _signInBusyCountdownSeconds;
+        _busyCountdownTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+          if (!mounted) {
+            _busyCountdownTimer?.cancel();
+            _busyCountdownTimer = null;
+            return;
           }
+          setState(() {
+            if (_busyCountdownRemaining > 0) {
+              _busyCountdownRemaining--;
+            }
+          });
         });
-      });
+      } else {
+        _busyCountdownRemaining = 0;
+      }
       setState(() => _busy = true);
     } else {
       _busyCountdownTimer?.cancel();
@@ -4461,8 +4474,8 @@ class _SignInContentState extends State<_SignInContent> {
               isOnline
                   ? 'Code $normalizedCode saved for up to 7 days — '
                       'will auto-verify when your lecturer starts the session.'
-                  : 'Code $normalizedCode saved offline for up to 7 days — '
-                      'will verify when the session is available.',
+                  : 'Code $normalizedCode saved for up to 7 days — '
+                      'check-in will verify when the session is available.',
             ),
             duration: const Duration(seconds: 6),
           ),
@@ -4703,10 +4716,14 @@ class _SignInContentState extends State<_SignInContent> {
         });
         _clearSessionCodeAfterUse();
         final codeLabel = activeSession.sessionCode.trim();
+        final online = AppConnectivity.instance.isOnline;
+        final pct = result.listAttendancePercent;
         final snackText = result.wasQueued
             ? 'Session $codeLabel saved on this device — will verify when you\'re back online.'
             : result.serverVerified
-                ? 'You are marked present for session $codeLabel.'
+                ? online || pct == null
+                    ? 'You are marked present for session $codeLabel.'
+                    : 'Present for session $codeLabel. Your attendance for this class is $pct%.'
                 : 'Check-in for session $codeLabel recorded — syncing official attendance.';
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
@@ -4781,6 +4798,7 @@ class _SignInContentState extends State<_SignInContent> {
       return false;
     }
 
+    FocusScope.of(context).unfocus();
     final ok = await Navigator.of(context).push<bool>(
       MaterialPageRoute<bool>(
         fullscreenDialog: true,
@@ -4915,7 +4933,7 @@ class _SignInContentState extends State<_SignInContent> {
                             if (mounted) setState(() {});
                           },
                           icon: const Icon(Icons.pending_actions_rounded),
-                          label: const Text('Offline pending sessions'),
+                          label: const Text('Check-ins'),
                         ),
                       ),
                     ],

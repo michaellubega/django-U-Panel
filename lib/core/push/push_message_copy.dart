@@ -1,9 +1,10 @@
-import 'package:firebase_messaging/firebase_messaging.dart';
-
-/// Shapes FCM / notice text for the system tray (matches Cloud Functions copy).
-(String title, String body) pushDisplayCopyForMessage(RemoteMessage message) {
-  final n = message.notification;
-  var title = (n?.title ?? message.data['title'] as String? ?? 'Notice').trim();
+/// Shapes notice text for the system tray.
+(String title, String body) pushDisplayCopyForMessage({
+  required Map<String, dynamic> data,
+  String? notificationTitle,
+  String? notificationBody,
+}) {
+  var title = (notificationTitle ?? data['title'] as String? ?? 'Notice').trim();
   title = title
       .replaceFirst(
         RegExp(r'^Check-in is open:\s*', caseSensitive: false),
@@ -16,8 +17,8 @@ import 'package:firebase_messaging/firebase_messaging.dart';
       .trim();
   if (title.isEmpty) title = 'Notice';
 
-  final kind = (message.data['kind'] as String? ?? '').toLowerCase();
-  var body = (n?.body ?? message.data['body'] as String? ?? '').trim();
+  final kind = (data['kind'] as String? ?? '').toLowerCase();
+  var body = (notificationBody ?? data['body'] as String? ?? '').trim();
   if (kind == 'sessioncode') {
     return (title, 'Your class is ready. Open the app.');
   }
@@ -76,12 +77,10 @@ import 'package:firebase_messaging/firebase_messaging.dart';
   String? kind,
 }) {
   return pushDisplayCopyForMessage(
-    RemoteMessage(
-      data: {
-        'title': title,
-        'body': body,
-        if (kind != null) 'kind': kind,
-      },
-    ),
+    data: {
+      'title': title,
+      'body': body,
+      if (kind != null) 'kind': kind,
+    },
   );
 }

@@ -211,7 +211,7 @@ class _SettingsScreenState extends State<SettingsScreen>
         await _refreshFromRtdOnVisible();
       }
       await _loadProfile();
-      await _loadAttendanceStats(force: forceAttendance);
+      await _loadAttendanceStats(force: forceAttendance || !_attendanceStatsLoaded);
     } catch (_) {
       // Keep profile usable if background refresh fails.
     }
@@ -245,6 +245,7 @@ class _SettingsScreenState extends State<SettingsScreen>
     await AttendanceRepository.instance.loadStudentAttendanceForProfile(
       force: true,
     );
+    await AttendanceRepository.instance.refreshStudentProfileFromRtd();
     _applyCachedAttendanceStats();
   }
 

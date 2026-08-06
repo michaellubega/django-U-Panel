@@ -20,14 +20,28 @@ class AppTheme {
   static const Color accent = brandGreen; // Highlights, focus, KIU-style marks
   static const Color accentLight = Color(0xFF2A9B63); // Highlight tint (brand green family)
   static const Color softGrey = Color(0xFFE2E8F0);
-  static const Color textPrimary = Color(0xFF0A2915); // Near-black with green bias
-  static const Color textSecondary = Color(0xFF64748B);
+  // Ant Design–aligned text colors (rgba black)
+  static const Color textPrimary = Color(0xE0000000); // 88%
+  static const Color textSecondary = Color(0xA6000000); // 65%
+  static const Color textTertiary = Color(0x73000000); // 45%
   static const Color success = Color(0xFF059669);
   static const Color warning = Color(0xFFD97706);
   static const Color error = Color(0xFFDC2626);
 
   static const double cardRadius = 14.0;
   static const double cardElevation = 2.0;
+
+  /// Ant Design default typography (14px base, 22px line-height).
+  static const double fontSizeBase = 14.0;
+  static const double fontSizeSm = 12.0;
+  static const double fontSizeLg = 16.0;
+  static const double fontSizeXl = 20.0;
+  static const double lineHeightBase = 22.0;
+  static const double lineHeightSm = 20.0;
+  static const double lineHeightLg = 24.0;
+  static const double lineHeightXl = 28.0;
+
+  static double _lh(double size, double lineHeight) => lineHeight / size;
 
   /// Desktop embedders need an explicit system font; otherwise some Windows GPUs
   /// render blank glyphs when Material falls back to an unavailable family.
@@ -78,33 +92,81 @@ class AppTheme {
   }
 
   static TextTheme _buildTextTheme() {
-    final applied = ThemeData.light(useMaterial3: true).textTheme.apply(
-          bodyColor: textPrimary,
-          displayColor: textPrimary,
-          decorationColor: textPrimary,
-          fontFamily: _fontFamily,
-          fontFamilyFallback: _fontFamilyFallback,
-        );
-
-    return applied.copyWith(
-      displayLarge: _baseTextStyle(fontSize: 57, fontWeight: FontWeight.w400),
-      displayMedium: _baseTextStyle(fontSize: 45, fontWeight: FontWeight.w400),
-      displaySmall: _baseTextStyle(fontSize: 36, fontWeight: FontWeight.w400),
-      headlineLarge: _baseTextStyle(fontSize: 32, fontWeight: FontWeight.w600),
-      headlineMedium: _baseTextStyle(fontSize: 22, fontWeight: FontWeight.w600),
-      headlineSmall: _baseTextStyle(fontSize: 20, fontWeight: FontWeight.w600),
-      titleLarge: _baseTextStyle(fontSize: 18, fontWeight: FontWeight.w600),
-      titleMedium: _baseTextStyle(fontSize: 16, fontWeight: FontWeight.w500),
-      titleSmall: _baseTextStyle(fontSize: 14, fontWeight: FontWeight.w500),
-      bodyLarge: _baseTextStyle(fontSize: 15),
-      bodyMedium: _baseTextStyle(fontSize: 14, color: textSecondary),
-      bodySmall: _baseTextStyle(fontSize: 12, color: textSecondary),
-      labelLarge: _baseTextStyle(fontSize: 14, fontWeight: FontWeight.w500),
-      labelMedium: _baseTextStyle(fontSize: 12, fontWeight: FontWeight.w500),
-      labelSmall: _baseTextStyle(
-        fontSize: 11,
-        fontWeight: FontWeight.w500,
+    return TextTheme(
+      displayLarge: _baseTextStyle(
+        fontSize: 38,
+        fontWeight: FontWeight.w600,
+        height: 46 / 38,
+      ),
+      displayMedium: _baseTextStyle(
+        fontSize: 30,
+        fontWeight: FontWeight.w600,
+        height: 40 / 30,
+      ),
+      displaySmall: _baseTextStyle(
+        fontSize: 24,
+        fontWeight: FontWeight.w600,
+        height: 32 / 24,
+      ),
+      headlineLarge: _baseTextStyle(
+        fontSize: fontSizeXl,
+        fontWeight: FontWeight.w600,
+        height: _lh(fontSizeXl, lineHeightXl),
+      ),
+      headlineMedium: _baseTextStyle(
+        fontSize: fontSizeXl,
+        fontWeight: FontWeight.w600,
+        height: _lh(fontSizeXl, lineHeightXl),
+      ),
+      headlineSmall: _baseTextStyle(
+        fontSize: fontSizeLg,
+        fontWeight: FontWeight.w600,
+        height: _lh(fontSizeLg, lineHeightLg),
+      ),
+      titleLarge: _baseTextStyle(
+        fontSize: fontSizeLg,
+        fontWeight: FontWeight.w600,
+        height: _lh(fontSizeLg, lineHeightLg),
+      ),
+      titleMedium: _baseTextStyle(
+        fontSize: fontSizeBase,
+        fontWeight: FontWeight.w600,
+        height: _lh(fontSizeBase, lineHeightBase),
+      ),
+      titleSmall: _baseTextStyle(
+        fontSize: fontSizeBase,
+        fontWeight: FontWeight.w400,
+        height: _lh(fontSizeBase, lineHeightBase),
+      ),
+      bodyLarge: _baseTextStyle(
+        fontSize: fontSizeBase,
+        height: _lh(fontSizeBase, lineHeightBase),
+      ),
+      bodyMedium: _baseTextStyle(
+        fontSize: fontSizeBase,
         color: textSecondary,
+        height: _lh(fontSizeBase, lineHeightBase),
+      ),
+      bodySmall: _baseTextStyle(
+        fontSize: fontSizeSm,
+        color: textTertiary,
+        height: _lh(fontSizeSm, lineHeightSm),
+      ),
+      labelLarge: _baseTextStyle(
+        fontSize: fontSizeBase,
+        fontWeight: FontWeight.w400,
+        height: _lh(fontSizeBase, lineHeightBase),
+      ),
+      labelMedium: _baseTextStyle(
+        fontSize: fontSizeSm,
+        fontWeight: FontWeight.w400,
+        height: _lh(fontSizeSm, lineHeightSm),
+      ),
+      labelSmall: _baseTextStyle(
+        fontSize: fontSizeSm,
+        fontWeight: FontWeight.w400,
+        color: textTertiary,
+        height: _lh(fontSizeSm, lineHeightSm),
       ),
     );
   }
@@ -147,9 +209,10 @@ class AppTheme {
         backgroundColor: primary,
         foregroundColor: Colors.white,
         titleTextStyle: _baseTextStyle(
-          fontSize: 18,
+          fontSize: fontSizeLg,
           fontWeight: FontWeight.w600,
           color: Colors.white,
+          height: _lh(fontSizeLg, lineHeightLg),
         ),
       ),
       cardTheme: CardThemeData(
@@ -169,9 +232,10 @@ class AppTheme {
           shape:
               RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           textStyle: _baseTextStyle(
-            fontSize: 15,
+            fontSize: fontSizeBase,
             fontWeight: FontWeight.w600,
             color: Colors.white,
+            height: _lh(fontSizeBase, lineHeightBase),
           ),
         ),
       ),
@@ -180,9 +244,10 @@ class AppTheme {
           backgroundColor: primary,
           foregroundColor: Colors.white,
           textStyle: _baseTextStyle(
-            fontSize: 15,
+            fontSize: fontSizeBase,
             fontWeight: FontWeight.w600,
             color: Colors.white,
+            height: _lh(fontSizeBase, lineHeightBase),
           ),
         ),
       ),
@@ -190,9 +255,10 @@ class AppTheme {
         style: TextButton.styleFrom(
           foregroundColor: primary,
           textStyle: _baseTextStyle(
-            fontSize: 14,
+            fontSize: fontSizeBase,
             fontWeight: FontWeight.w600,
             color: primary,
+            height: _lh(fontSizeBase, lineHeightBase),
           ),
         ),
       ),
@@ -204,9 +270,10 @@ class AppTheme {
           shape:
               RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
           textStyle: _baseTextStyle(
-            fontSize: 15,
-            fontWeight: FontWeight.w500,
+            fontSize: fontSizeBase,
+            fontWeight: FontWeight.w400,
             color: primary,
+            height: _lh(fontSizeBase, lineHeightBase),
           ),
         ),
       ),
@@ -224,15 +291,32 @@ class AppTheme {
         ),
         contentPadding:
             const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-        hintStyle: _baseTextStyle(fontSize: 15, color: textSecondary),
-        labelStyle: _baseTextStyle(fontSize: 14, color: textSecondary),
-        floatingLabelStyle: _baseTextStyle(
-          fontSize: 14,
-          fontWeight: FontWeight.w500,
-          color: primary,
+        hintStyle: _baseTextStyle(
+          fontSize: fontSizeBase,
+          color: textTertiary,
+          height: _lh(fontSizeBase, lineHeightBase),
         ),
-        helperStyle: _baseTextStyle(fontSize: 12, color: textSecondary),
-        errorStyle: _baseTextStyle(fontSize: 12, color: error),
+        labelStyle: _baseTextStyle(
+          fontSize: fontSizeBase,
+          color: textSecondary,
+          height: _lh(fontSizeBase, lineHeightBase),
+        ),
+        floatingLabelStyle: _baseTextStyle(
+          fontSize: fontSizeBase,
+          fontWeight: FontWeight.w400,
+          color: primary,
+          height: _lh(fontSizeBase, lineHeightBase),
+        ),
+        helperStyle: _baseTextStyle(
+          fontSize: fontSizeSm,
+          color: textTertiary,
+          height: _lh(fontSizeSm, lineHeightSm),
+        ),
+        errorStyle: _baseTextStyle(
+          fontSize: fontSizeSm,
+          color: error,
+          height: _lh(fontSizeSm, lineHeightSm),
+        ),
       ),
       textTheme: textTheme,
       primaryTextTheme: textTheme,
@@ -241,17 +325,37 @@ class AppTheme {
       listTileTheme: ListTileThemeData(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-        titleTextStyle: _baseTextStyle(fontSize: 16, fontWeight: FontWeight.w500),
-        subtitleTextStyle: _baseTextStyle(fontSize: 14, color: textSecondary),
+        titleTextStyle: _baseTextStyle(
+          fontSize: fontSizeBase,
+          fontWeight: FontWeight.w400,
+          height: _lh(fontSizeBase, lineHeightBase),
+        ),
+        subtitleTextStyle: _baseTextStyle(
+          fontSize: fontSizeBase,
+          color: textSecondary,
+          height: _lh(fontSizeBase, lineHeightBase),
+        ),
         iconColor: textSecondary,
       ),
       dialogTheme: DialogThemeData(
         backgroundColor: background,
-        titleTextStyle: _baseTextStyle(fontSize: 20, fontWeight: FontWeight.w600),
-        contentTextStyle: _baseTextStyle(fontSize: 14, color: textSecondary),
+        titleTextStyle: _baseTextStyle(
+          fontSize: fontSizeXl,
+          fontWeight: FontWeight.w600,
+          height: _lh(fontSizeXl, lineHeightXl),
+        ),
+        contentTextStyle: _baseTextStyle(
+          fontSize: fontSizeBase,
+          color: textSecondary,
+          height: _lh(fontSizeBase, lineHeightBase),
+        ),
       ),
       snackBarTheme: SnackBarThemeData(
-        contentTextStyle: _baseTextStyle(fontSize: 14, color: Colors.white),
+        contentTextStyle: _baseTextStyle(
+          fontSize: fontSizeBase,
+          color: Colors.white,
+          height: _lh(fontSizeBase, lineHeightBase),
+        ),
       ),
       segmentedButtonTheme: SegmentedButtonThemeData(
         style: ButtonStyle(
@@ -280,27 +384,43 @@ class AppTheme {
             return const BorderSide(color: softGrey);
           }),
           textStyle: WidgetStatePropertyAll(
-            _baseTextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+            _baseTextStyle(
+              fontSize: fontSizeBase,
+              fontWeight: FontWeight.w400,
+              height: _lh(fontSizeBase, lineHeightBase),
+            ),
           ),
         ),
       ),
       chipTheme: ChipThemeData(
         backgroundColor: surface,
         selectedColor: primary.withValues(alpha: 0.16),
-        labelStyle: _baseTextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+        labelStyle: _baseTextStyle(
+          fontSize: fontSizeSm,
+          fontWeight: FontWeight.w400,
+          height: _lh(fontSizeSm, lineHeightSm),
+        ),
         secondaryLabelStyle: _baseTextStyle(
-          fontSize: 13,
+          fontSize: fontSizeSm,
           fontWeight: FontWeight.w600,
           color: primary,
+          height: _lh(fontSizeSm, lineHeightSm),
         ),
         side: const BorderSide(color: softGrey),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
       ),
       dropdownMenuTheme: DropdownMenuThemeData(
-        textStyle: _baseTextStyle(fontSize: 15),
+        textStyle: _baseTextStyle(
+          fontSize: fontSizeBase,
+          height: _lh(fontSizeBase, lineHeightBase),
+        ),
       ),
       tooltipTheme: TooltipThemeData(
-        textStyle: _baseTextStyle(fontSize: 12, color: Colors.white),
+        textStyle: _baseTextStyle(
+          fontSize: fontSizeSm,
+          color: Colors.white,
+          height: _lh(fontSizeSm, lineHeightSm),
+        ),
         decoration: BoxDecoration(
           color: secondary,
           borderRadius: BorderRadius.circular(8),

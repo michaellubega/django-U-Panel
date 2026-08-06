@@ -1,19 +1,17 @@
 import 'dart:async';
 import 'dart:io';
 
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:connectivity_plus/connectivity_plus.dart';
-import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/foundation.dart'
     show ChangeNotifier, debugPrint, defaultTargetPlatform, kDebugMode, kIsWeb, TargetPlatform;
 
-import '../firebase/firestore_collections.dart';
-import '../firebase/u_panel_firestore.dart';
+import '../api/api_client.dart';
+import '../api/api_config.dart';
 
 /// App-wide online/offline status.
 ///
 /// Uses [connectivity_plus] as a transport hint and confirms reachability with
-/// a lightweight Firestore server read on [FirestoreCollections.meta]/connectivity.
+/// [ApiClient.instance.ping].
 class AppConnectivity extends ChangeNotifier {
   AppConnectivity._();
   static final AppConnectivity instance = AppConnectivity._();
@@ -29,9 +27,9 @@ class AppConnectivity extends ChangeNotifier {
   Timer? _periodicProbe;
 
   bool _initialized = false;
-  bool _firebaseAttached = false;
+  bool _apiAttached = false;
   bool _hasNetworkInterface = true;
-  bool _firestoreReachable = false;
+  bool _apiReachable = false;
   bool _probeInFlight = false;
   int _consecutiveProbeFailures = 0;
   DateTime? _lastSuccessfulProbe;
@@ -40,15 +38,18 @@ class AppConnectivity extends ChangeNotifier {
   /// Device reports Wi‑Fi / mobile data / ethernet (not airplane mode).
   bool get hasNetworkInterface => _hasNetworkInterface;
 
-  /// Last Firestore server probe succeeded (ignoring grace window).
-  bool get firestoreReachable => _firestoreReachable;
+  /// Last API server probe succeeded (ignoring grace window).
+  bool get apiReachable => _apiReachable;
 
-  /// True when the device has a network interface and Firestore was reachable
+  /// Back-compat alias for callers still named after Firestore.
+  bool get firestoreReachable => _apiReachable;
+
+  /// True when the device has a network interface and the API was reachable
   /// recently, or reachability has not been disproved yet.
   bool get isOnline {
     if (!_hasNetworkInterface) return false;
-    if (!_firebaseAttached || !_initialized) return true;
-    if (_firestoreReachable) return true;
+    if (!_apiAttached || !_initialized) return true;
+    if (_apiReachable) return true;
     if (_recentlyReachable) return true;
     if (_consecutiveProbeFailures < _failuresBeforeOffline) return true;
     return false;
@@ -72,11 +73,11 @@ class AppConnectivity extends ChangeNotifier {
 
     _connectivitySub =
         _connectivity.onConnectivityChanged.listen(_applyConnectivityResults);
-    _maybeAttachFirebase();
+    _maybeAttachApi();
     notifyListeners();
   }
 
-  /// Confirms Firestore reachability before a critical online operation (check-in).
+  /// Confirms API reachability before a critical online operation (check-in).
   Future<bool> ensureReachable({
     Duration timeout = const Duration(seconds: 5),
   }) async {
@@ -85,44 +86,37 @@ class AppConnectivity extends ChangeNotifier {
       return false;
     }
     if (!_initialized) await initialize();
-    _maybeAttachFirebase();
-    if (!_firebaseAttached) return true;
+    _maybeAttachApi();
+    if (!_apiAttached) return true;
 
-    if (_firestoreReachable || _recentlyReachable) return true;
+    if (_apiReachable || _recentlyReachable) return true;
 
-    final reachable = await _firestoreServerReachable(timeout: timeout);
+    final reachable = await _apiServerReachable(timeout: timeout);
     _applyProbeResult(reachable);
     if (reachable) return true;
     return _consecutiveProbeFailures < _failuresBeforeOffline;
   }
 
-  /// Re-run the Firestore server probe (e.g. on app resume).
+  /// Re-run the API server probe (e.g. on app resume).
   Future<void> probeNow({bool force = false}) async {
     if (!_initialized) await initialize();
-    _maybeAttachFirebase();
-    await _runFirestoreProbe(force: force);
+    _maybeAttachApi();
+    await _runApiProbe(force: force);
   }
 
-  void _maybeAttachFirebase() {
-    if (_firebaseAttached || Firebase.apps.isEmpty) return;
-    _firebaseAttached = true;
-    // Web login path should not block on Firestore probes — defer until needed.
+  void _maybeAttachApi() {
+    if (_apiAttached || !isApiConfigured) return;
+    _apiAttached = true;
     if (kIsWeb) return;
-    unawaited(_runFirestoreProbe(force: true));
+    unawaited(_runApiProbe(force: true));
     _periodicProbe?.cancel();
     _periodicProbe = Timer.periodic(_probeInterval, (_) {
-      unawaited(_runFirestoreProbe());
+      unawaited(_runApiProbe());
     });
   }
 
-  DocumentReference<Map<String, dynamic>> _probeDocumentRef() {
-    return uPanelFirestore()
-        .collection(FirestoreCollections.meta)
-        .doc(FirestoreCollections.connectivityPingDocId);
-  }
-
-  Future<void> _runFirestoreProbe({bool force = false}) async {
-    if (!_firebaseAttached || _probeInFlight) return;
+  Future<void> _runApiProbe({bool force = false}) async {
+    if (!_apiAttached || _probeInFlight) return;
     if (!_hasNetworkInterface && !_assumeOnlineWhenConnectivityUnknown) {
       _recordProbeFailure();
       return;
@@ -138,50 +132,26 @@ class AppConnectivity extends ChangeNotifier {
     _probeInFlight = true;
     _lastProbeAttempt = now;
     try {
-      final reachable = await _firestoreServerReachable();
+      final reachable = await _apiServerReachable();
       _applyProbeResult(reachable);
     } finally {
       _probeInFlight = false;
     }
   }
 
-  Future<bool> _firestoreServerReachable({
+  Future<bool> _apiServerReachable({
     Duration timeout = _probeTimeout,
   }) async {
-    if (Firebase.apps.isEmpty) return _hasNetworkInterface;
+    if (!isApiConfigured) return _hasNetworkInterface;
     try {
-      await _probeDocumentRef()
-          .get(const GetOptions(source: Source.server))
-          .timeout(timeout);
-      return true;
+      return await ApiClient.instance.ping(timeout: timeout);
     } on TimeoutException {
-      return false;
-    } on FirebaseException catch (e) {
-      if (_isFirestoreOfflineError(e)) return false;
-      if (_isFirestoreReachableError(e)) return true;
       return false;
     } on SocketException {
       return false;
     } catch (_) {
       return false;
     }
-  }
-
-  bool _isFirestoreOfflineError(Object error) {
-    if (error is FirebaseException) {
-      return error.code == 'unavailable';
-    }
-    return error is TimeoutException || error is SocketException;
-  }
-
-  /// Server responded (rules/doc issues still mean the network path works).
-  bool _isFirestoreReachableError(Object error) {
-    if (error is FirebaseException) {
-      return error.code == 'permission-denied' ||
-          error.code == 'not-found' ||
-          error.code == 'failed-precondition';
-    }
-    return false;
   }
 
   void _applyConnectivityResults(
@@ -199,14 +169,14 @@ class AppConnectivity extends ChangeNotifier {
 
     if (!_hasNetworkInterface) {
       _consecutiveProbeFailures = _failuresBeforeOffline;
-      _setFirestoreReachable(false, notify: false);
+      _setApiReachable(false, notify: false);
       if (notify && isOnline != onlineBefore) notifyListeners();
       return;
     }
 
     if (!hadNetwork && _hasNetworkInterface) {
       _consecutiveProbeFailures = 0;
-      unawaited(_runFirestoreProbe(force: true));
+      unawaited(_runApiProbe(force: true));
     } else if (notify && isOnline != onlineBefore) {
       notifyListeners();
     }
@@ -215,7 +185,7 @@ class AppConnectivity extends ChangeNotifier {
   void _applyProbeResult(bool reachable) {
     if (reachable) {
       _consecutiveProbeFailures = 0;
-      _setFirestoreReachable(true);
+      _setApiReachable(true);
       return;
     }
     _recordProbeFailure();
@@ -225,7 +195,7 @@ class AppConnectivity extends ChangeNotifier {
     _consecutiveProbeFailures =
         (_consecutiveProbeFailures + 1).clamp(0, _failuresBeforeOffline + 2);
     if (_consecutiveProbeFailures >= _failuresBeforeOffline) {
-      _setFirestoreReachable(false);
+      _setApiReachable(false);
     } else if (kDebugMode) {
       debugPrint(
         'AppConnectivity: probe failed ($_consecutiveProbeFailures/$_failuresBeforeOffline) — still treating as online.',
@@ -233,20 +203,20 @@ class AppConnectivity extends ChangeNotifier {
     }
   }
 
-  void _setFirestoreReachable(bool next, {bool notify = true}) {
+  void _setApiReachable(bool next, {bool notify = true}) {
     if (next) {
       _lastSuccessfulProbe = DateTime.now();
       _consecutiveProbeFailures = 0;
     }
     final onlineBefore = isOnline;
-    if (_firestoreReachable == next) {
+    if (_apiReachable == next) {
       if (next && notify && isOnline != onlineBefore) notifyListeners();
       return;
     }
-    _firestoreReachable = next;
+    _apiReachable = next;
     if (kDebugMode) {
       debugPrint(
-        'AppConnectivity: firestoreReachable=$next isOnline=$isOnline failures=$_consecutiveProbeFailures',
+        'AppConnectivity: apiReachable=$next isOnline=$isOnline failures=$_consecutiveProbeFailures',
       );
     }
     if (notify && isOnline != onlineBefore) notifyListeners();

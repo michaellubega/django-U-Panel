@@ -101,6 +101,10 @@ class _LiveSessionsListScreenState extends State<LiveSessionsListScreen> {
   }
 
   void _ensureWatchingSessions(List<AttendanceSession> sessions) {
+    if (AuthRepository.instance.isStudentAuthIdentity ||
+        AttendanceRepository.isStudentScopedUser()) {
+      return;
+    }
     final activeIds = sessions.map((s) => s.id).toSet();
     for (final id in activeIds) {
       if (!_watchedSessionIds.add(id)) continue;
@@ -183,19 +187,14 @@ class _LiveSessionsListScreenState extends State<LiveSessionsListScreen> {
                       Text(
                         'No live sessions',
                         textAlign: TextAlign.center,
-                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                              fontWeight: FontWeight.w700,
-                            ),
+                        style: Theme.of(context).textTheme.titleMedium,
                       ),
                       const SizedBox(height: 8),
                       Text(
                         'When a lecturer starts check-in, the session will appear here '
                         'with the join code and class details.',
                         textAlign: TextAlign.center,
-                        style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                              color: AppTheme.textSecondary,
-                              height: 1.45,
-                            ),
+                        style: Theme.of(context).textTheme.bodyMedium,
                       ),
                     ],
                   )
@@ -359,7 +358,7 @@ class _LiveSessionDetailCard extends StatelessWidget {
                               'LIVE',
                               style: theme.textTheme.labelSmall?.copyWith(
                                 color: Colors.white,
-                                fontWeight: FontWeight.w800,
+                                fontWeight: FontWeight.w600,
                                 letterSpacing: 0.6,
                               ),
                             ),
@@ -379,19 +378,13 @@ class _LiveSessionDetailCard extends StatelessWidget {
                       const SizedBox(height: 8),
                       Text(
                         title,
-                        style: theme.textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.w700,
-                          height: 1.25,
-                        ),
+                        style: theme.textTheme.titleMedium,
                       ),
                       if (subtitle.isNotEmpty) ...[
                         const SizedBox(height: 4),
                         Text(
                           subtitle,
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: AppTheme.textSecondary,
-                            height: 1.35,
-                          ),
+                          style: theme.textTheme.bodySmall,
                         ),
                       ],
                     ],
@@ -474,13 +467,12 @@ class _DetailLine extends StatelessWidget {
               row.value,
               style: row.emphasize
                   ? theme.textTheme.titleMedium?.copyWith(
-                      fontWeight: FontWeight.w800,
+                      fontWeight: FontWeight.w600,
                       letterSpacing: 1.2,
                       color: AppTheme.primary,
                     )
                   : theme.textTheme.bodyMedium?.copyWith(
                       fontWeight: FontWeight.w600,
-                      height: 1.35,
                     ),
             ),
           ),

@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../check_in_outcome.dart';
 import '../../../core/device/device_student_registration_lock.dart';
@@ -12,9 +11,9 @@ import '../check_in_validation.dart'
         pendingReplayLocationOk,
         resolveCourseForStudentCheckIn;
 import '../../../core/connectivity/app_connectivity.dart';
-import '../../../core/firebase/firestore_collections.dart';
-import '../../../core/firebase/session_rtd_sync.dart';
-import '../../../core/firebase/u_panel_firestore.dart';
+import '../../../core/api/api_collections.dart';
+import '../../../core/api/rtd_stubs.dart';
+import '../../../core/api/api_store.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/foundation.dart';
 import '../models/attendance_models.dart';
@@ -26,9 +25,17 @@ import 'pending_session_code_claim_upload.dart';
 class PendingSessionCodeSync {
   PendingSessionCodeSync._();
 
+  static const _uploadParallelism = 4;
+  static const _approvalParallelism = 3;
+  static const _maxUploadsPerDrain = 16;
+  static const _maxApprovalChecksPerDrain = 12;
+
+  static int _drainDepth = 0;
+  static bool get isDraining => _drainDepth > 0;
+
   static Future<void>? _drainTail;
   static final Set<String> _watchedPublishCodes = {};
-  static final List<StreamSubscription<QuerySnapshot<Map<String, dynamic>>>>
+  static final List<StreamSubscription<ApiQuerySnapshot>>
       _sessionPublishSubs = [];
   static final List<StreamSubscription<void>> _sessionRtdPublishSubs = [];
 
@@ -39,9 +46,11 @@ class PendingSessionCodeSync {
     if (prior != null) {
       await prior;
     }
+    _drainDepth++;
     try {
       await body();
     } finally {
+      _drainDepth--;
       gate.complete();
     }
   }
@@ -64,6 +73,73 @@ class PendingSessionCodeSync {
     discardLocalAttendanceSideEffects(entry);
   }
 
+  static ({
+    List<PendingSessionCodeEntry> keep,
+    List<String> droppedIds,
+    int invalidRemovedCount,
+  }) _partitionQueueForDrain(
+    List<PendingSessionCodeEntry> all,
+    DateTime now,
+  ) {
+    final keep = <PendingSessionCodeEntry>[];
+    final droppedIds = <String>[];
+    var invalidRemovedCount = 0;
+    for (final entry in all) {
+      if (_shouldDropInvalidMismatchNow(entry, now)) {
+        droppedIds.add(entry.id);
+        _dropExpiredEntry(entry);
+        invalidRemovedCount++;
+        continue;
+      }
+      if (PendingRetention.isExpired(entry.pendingSince, now)) {
+        droppedIds.add(entry.id);
+        _dropExpiredEntry(entry);
+        invalidRemovedCount++;
+        continue;
+      }
+      keep.add(entry);
+    }
+    return (
+      keep: keep,
+      droppedIds: droppedIds,
+      invalidRemovedCount: invalidRemovedCount,
+    );
+  }
+
+  /// Merges online drain results without dropping rows enqueued during network I/O.
+  static List<PendingSessionCodeEntry> _mergeDrainResults({
+    required List<PendingSessionCodeEntry> current,
+    required Set<String> drainInputIds,
+    required List<PendingSessionCodeEntry> processedRemaining,
+  }) {
+    final processedById = {
+      for (final e in processedRemaining) e.id: e,
+    };
+    final out = <PendingSessionCodeEntry>[];
+    final seen = <String>{};
+
+    for (final row in current) {
+      if (processedById.containsKey(row.id)) {
+        final proc = processedById[row.id]!;
+        out.add(
+          proc.uploadedAt == null && row.uploadedAt != null
+              ? proc.copyWith(uploadedAt: row.uploadedAt)
+              : proc,
+        );
+        seen.add(row.id);
+      } else if (!drainInputIds.contains(row.id)) {
+        out.add(row);
+        seen.add(row.id);
+      }
+    }
+    for (final e in processedRemaining) {
+      if (!seen.contains(e.id)) {
+        out.add(e);
+      }
+    }
+    return out;
+  }
+
   /// Removed from queue: session code verified but capture time/location invalid.
   static const _rejectVerifiedMismatch = 1;
 
@@ -77,8 +153,24 @@ class PendingSessionCodeSync {
     if (result is int) {
       switch (result) {
         case _removeSubmitted:
+          return (
+            discardLocal: false,
+            keepLocal: entry.copyWith(
+              status: PendingSessionCodeStatus.approved,
+              note: 'Check-in approved.',
+              invalidMarkedAt: null,
+            ),
+          );
         case _rejectVerifiedMismatch:
-          return (discardLocal: true, keepLocal: null);
+          return (
+            discardLocal: false,
+            keepLocal: entry.copyWith(
+              status: PendingSessionCodeStatus.invalidOrExpired,
+              invalidMarkedAt: entry.invalidMarkedAt ?? DateTime.now(),
+              note:
+                  'Session code matched but check-in time or location was outside class bounds.',
+            ),
+          );
         default:
           return (discardLocal: false, keepLocal: entry);
       }
@@ -93,7 +185,7 @@ class PendingSessionCodeSync {
 
   /// Live Firestore watch — retries as soon as the lecturer session doc appears.
   static void ensureWatchingSessionPublishForCodes(Iterable<String> rawCodes) {
-    final db = tryUPanelFirestore();
+    final db = tryApiStore();
     if (db == null) return;
     for (final raw in rawCodes) {
       final code = normalizeSessionCodeInput(raw);
@@ -101,7 +193,7 @@ class PendingSessionCodeSync {
         continue;
       }
       final sub = db
-          .collection(FirestoreCollections.attendanceSessions)
+          .collection(ApiCollections.attendanceSessions)
           .where('sessionCode', isEqualTo: code)
           .where('status', isEqualTo: SessionStatus.active.name)
           .limit(4)
@@ -138,10 +230,23 @@ class PendingSessionCodeSync {
 
   static void refreshSessionPublishWatchesFromQueue() {
     unawaited(() async {
-      final codes = (await PendingSessionCodeQueue.loadAll())
+      final entries = await PendingSessionCodeQueue.loadAll();
+      final codes = entries
           .map((e) => e.sessionCodeRaw)
           .where((c) => c.trim().isNotEmpty);
       ensureWatchingSessionPublishForCodes(codes);
+      final repo = AttendanceRepository.instance;
+      for (final entry in entries) {
+        final student = await repo.resolveStudentForRegistration(
+          entry.registrationNumber,
+          fast: true,
+        );
+        if (student == null) continue;
+        repo.watchPendingSessionCodeClaim(
+          entry: entry,
+          studentId: student.id,
+        );
+      }
     }());
   }
 
@@ -168,8 +273,8 @@ class PendingSessionCodeSync {
   }
 
   static Future<void> _drainBody() async {
-      final all = await PendingSessionCodeQueue.loadAll();
-      if (all.isEmpty) {
+      final initial = await PendingSessionCodeQueue.loadAll();
+      if (initial.isEmpty) {
         await PendingSessionCodeQueue.saveLastSyncResult(
           PendingSessionSyncResult(
             ranAt: DateTime.now(),
@@ -186,32 +291,57 @@ class PendingSessionCodeSync {
       }
 
       final now = DateTime.now();
-      final keep = <PendingSessionCodeEntry>[];
       var invalidRemovedCount = 0;
-
-      // Drop rows older than retention even while offline.
-      for (final entry in all) {
-        if (_dropVerifiedMismatchInvalid(entry)) {
-          _dropExpiredEntry(entry);
-          invalidRemovedCount++;
-          continue;
-        }
-        if (PendingRetention.isExpired(entry.pendingSince, now)) {
-          _dropExpiredEntry(entry);
-          invalidRemovedCount++;
-          continue;
-        }
-        keep.add(entry);
-      }
 
       if (!AppConnectivity.instance.hasNetworkInterface ||
           !await AppConnectivity.instance.ensureReachable()) {
-        await PendingSessionCodeQueue.saveAll(keep);
+        var offlineInvalidRemoved = 0;
+        final remaining = await PendingSessionCodeQueue.mutate((all) async {
+          final partition = _partitionQueueForDrain(all, now);
+          offlineInvalidRemoved = partition.invalidRemovedCount;
+          return partition.keep;
+        });
         await PendingSessionCodeQueue.saveLastSyncResult(
           PendingSessionSyncResult(
             ranAt: now,
-            startedCount: all.length,
-            remainingCount: keep.length,
+            startedCount: initial.length,
+            remainingCount: remaining.length,
+            autoSubmittedCount: 0,
+            needsRegistrationCount: 0,
+            invalidMarkedCount: 0,
+            invalidRemovedCount: offlineInvalidRemoved,
+            deviceBlockedCount: 0,
+          ),
+        );
+        return;
+      }
+
+      var processedResult = (
+        remaining: <PendingSessionCodeEntry>[],
+        autoSubmittedCount: 0,
+        needsRegistrationCount: 0,
+        invalidMarkedCount: 0,
+        invalidRemovedCount: 0,
+        deviceBlockedCount: 0,
+        hadDeferredUploads: false,
+      );
+
+      var partition = (
+        keep: <PendingSessionCodeEntry>[],
+        droppedIds: <String>[],
+        invalidRemovedCount: 0,
+      );
+      final keep = await PendingSessionCodeQueue.mutate((all) async {
+        partition = _partitionQueueForDrain(all, now);
+        invalidRemovedCount = partition.invalidRemovedCount;
+        return partition.keep;
+      });
+      if (keep.isEmpty) {
+        await PendingSessionCodeQueue.saveLastSyncResult(
+          PendingSessionSyncResult(
+            ranAt: now,
+            startedCount: initial.length,
+            remainingCount: 0,
             autoSubmittedCount: 0,
             needsRegistrationCount: 0,
             invalidMarkedCount: 0,
@@ -222,22 +352,35 @@ class PendingSessionCodeSync {
         return;
       }
 
-      await AttendanceRepository.instance.prefetchSessionsForPendingCodes();
+      final drainInputIds = keep.map((e) => e.id).toSet();
+      final anyNeedsLinking = keep.any((e) => e.hasLocalUploadEvidence);
+      if (anyNeedsLinking) {
+        await AttendanceRepository.instance.prefetchSessionsForPendingCodes();
+      }
+      processedResult = await _processEntriesOnline(keep, now);
 
-      final processed = await _processEntriesOnline(keep, now);
-      await PendingSessionCodeQueue.saveAll(processed.remaining);
+      final remaining = await PendingSessionCodeQueue.mutate((current) async {
+        return _mergeDrainResults(
+          current: current,
+          drainInputIds: drainInputIds,
+          processedRemaining: processedResult.remaining,
+        );
+      });
       refreshSessionPublishWatchesFromQueue();
+      if (processedResult.hadDeferredUploads) {
+        unawaited(Future.microtask(drainUrgent));
+      }
       await PendingSessionCodeQueue.saveLastSyncResult(
         PendingSessionSyncResult(
           ranAt: now,
-          startedCount: all.length,
-          remainingCount: processed.remaining.length,
-          autoSubmittedCount: processed.autoSubmittedCount,
-          needsRegistrationCount: processed.needsRegistrationCount,
-          invalidMarkedCount: processed.invalidMarkedCount,
+          startedCount: initial.length,
+          remainingCount: remaining.length,
+          autoSubmittedCount: processedResult.autoSubmittedCount,
+          needsRegistrationCount: processedResult.needsRegistrationCount,
+          invalidMarkedCount: processedResult.invalidMarkedCount,
           invalidRemovedCount:
-              invalidRemovedCount + processed.invalidRemovedCount,
-          deviceBlockedCount: processed.deviceBlockedCount,
+              invalidRemovedCount + processedResult.invalidRemovedCount,
+          deviceBlockedCount: processedResult.deviceBlockedCount,
         ),
       );
   }
@@ -248,8 +391,6 @@ class PendingSessionCodeSync {
   }
 
   static Future<void> _drainBodyWithoutReload({required bool urgent}) async {
-      final all = await PendingSessionCodeQueue.loadAll();
-      if (all.isEmpty) return;
       if (!AppConnectivity.instance.hasNetworkInterface) return;
       if (!urgent &&
           !await AppConnectivity.instance.ensureReachable(
@@ -259,26 +400,38 @@ class PendingSessionCodeSync {
       }
 
       final now = DateTime.now();
-      final keep = <PendingSessionCodeEntry>[];
-      for (final entry in all) {
-        if (_dropVerifiedMismatchInvalid(entry)) {
-          _dropExpiredEntry(entry);
-          continue;
-        }
-        if (PendingRetention.isExpired(entry.pendingSince, now)) {
-          _dropExpiredEntry(entry);
-          continue;
-        }
-        keep.add(entry);
+      final startedCount = (await PendingSessionCodeQueue.loadAll()).length;
+      if (startedCount == 0) return;
+
+      var partition = (
+        keep: <PendingSessionCodeEntry>[],
+        droppedIds: <String>[],
+        invalidRemovedCount: 0,
+      );
+      final keep = await PendingSessionCodeQueue.mutate((all) async {
+        partition = _partitionQueueForDrain(all, now);
+        return partition.keep;
+      });
+      if (keep.isEmpty) return;
+
+      final drainInputIds = keep.map((e) => e.id).toSet();
+      final anyNeedsLinking = keep.any((e) => e.hasLocalUploadEvidence);
+      if (anyNeedsLinking) {
+        await AttendanceRepository.instance.prefetchSessionsForPendingCodes();
       }
-      if (keep.isEmpty) {
-        await PendingSessionCodeQueue.saveAll(const []);
-        return;
-      }
-      await AttendanceRepository.instance.prefetchSessionsForPendingCodes();
       final processed = await _processEntriesOnline(keep, now);
-      await PendingSessionCodeQueue.saveAll(processed.remaining);
+
+      await PendingSessionCodeQueue.mutate((current) async {
+        return _mergeDrainResults(
+          current: current,
+          drainInputIds: drainInputIds,
+          processedRemaining: processed.remaining,
+        );
+      });
       refreshSessionPublishWatchesFromQueue();
+      if (processed.hadDeferredUploads) {
+        unawaited(Future.microtask(drainUrgent));
+      }
   }
 
   /// Legacy rows: code was verified but time/location failed — drop immediately.
@@ -292,6 +445,15 @@ class PendingSessionCodeSync {
   static bool _dropVerifiedMismatchInvalid(PendingSessionCodeEntry entry) =>
       dropVerifiedMismatchInvalid(entry);
 
+  static bool _shouldDropInvalidMismatchNow(
+    PendingSessionCodeEntry entry,
+    DateTime now,
+  ) {
+    if (!_dropVerifiedMismatchInvalid(entry)) return false;
+    final marked = entry.invalidMarkedAt ?? entry.pendingSince;
+    return PendingRetention.isExpired(marked, now);
+  }
+
   static Future<
       ({
         List<PendingSessionCodeEntry> remaining,
@@ -300,6 +462,7 @@ class PendingSessionCodeSync {
         int invalidMarkedCount,
         int invalidRemovedCount,
         int deviceBlockedCount,
+        bool hadDeferredUploads,
       })> _processEntriesOnline(
     List<PendingSessionCodeEntry> keep,
     DateTime now,
@@ -311,32 +474,119 @@ class PendingSessionCodeSync {
     var invalidRemovedCount = 0;
     var deviceBlockedCount = 0;
 
+    final needsUpload = <PendingSessionCodeEntry>[];
+    final alreadyUploaded = <PendingSessionCodeEntry>[];
     for (final entry in keep) {
-      final result = await _tryProcess(entry, now);
+      if (entry.hasLocalUploadEvidence) {
+        alreadyUploaded.add(entry);
+      } else {
+        needsUpload.add(entry);
+      }
+    }
+
+    final uploadBatch = needsUpload.length > _maxUploadsPerDrain
+        ? needsUpload.sublist(0, _maxUploadsPerDrain)
+        : needsUpload;
+    final deferredUpload = needsUpload.length > _maxUploadsPerDrain
+        ? needsUpload.sublist(_maxUploadsPerDrain)
+        : const <PendingSessionCodeEntry>[];
+
+    Future<void> applyResult(Object result, PendingSessionCodeEntry entry) async {
       if (result is int) {
         if (result == _removeSubmitted) {
           autoSubmittedCount++;
+          onlineKeep.add(
+            entry.copyWith(
+              status: PendingSessionCodeStatus.approved,
+              note: 'Check-in approved.',
+              invalidMarkedAt: null,
+            ),
+          );
           AttendanceRepository.instance.notifyAttendanceStoreUpdated();
         } else if (result == _rejectVerifiedMismatch) {
-          invalidRemovedCount++;
+          invalidMarkedCount++;
+          onlineKeep.add(
+            entry.copyWith(
+              status: PendingSessionCodeStatus.invalidOrExpired,
+              invalidMarkedAt: entry.invalidMarkedAt ?? now,
+              note:
+                  'Session code matched but check-in time or location was outside class bounds.',
+            ),
+          );
         }
-        continue;
+        return;
       }
       final updated = result as PendingSessionCodeEntry;
       if (updated.status == PendingSessionCodeStatus.invalidOrExpired) {
         final marked = updated.invalidMarkedAt ?? updated.pendingSince;
         if (PendingRetention.isExpired(marked, now)) {
           invalidRemovedCount++;
-          continue;
+          return;
         }
         invalidMarkedCount++;
       } else if (updated.status == PendingSessionCodeStatus.needsRegistration) {
         needsRegistrationCount++;
       } else if (updated.status == PendingSessionCodeStatus.deviceBlocked) {
         deviceBlockedCount++;
+      } else if (updated.status == PendingSessionCodeStatus.approved) {
+        autoSubmittedCount++;
       }
       onlineKeep.add(updated);
     }
+
+    final pendingApproval = <PendingSessionCodeEntry>[...alreadyUploaded];
+    final uploadOnlyKeep = <PendingSessionCodeEntry>[];
+
+    for (var i = 0; i < uploadBatch.length; i += _uploadParallelism) {
+      final end = i + _uploadParallelism > uploadBatch.length
+          ? uploadBatch.length
+          : i + _uploadParallelism;
+      final chunk = uploadBatch.sublist(i, end);
+      final chunkResults = await Future.wait(
+        chunk.map((entry) async {
+          final result = await _tryUploadOnly(entry, now);
+          return (entry: entry, result: result);
+        }),
+      );
+      for (final row in chunkResults) {
+        final result = row.result;
+        if (result is PendingSessionCodeEntry && result.hasLocalUploadEvidence) {
+          pendingApproval.add(result);
+          continue;
+        }
+        if (result is PendingSessionCodeEntry) {
+          uploadOnlyKeep.add(result);
+          continue;
+        }
+        await applyResult(result, row.entry);
+      }
+    }
+    onlineKeep.addAll(uploadOnlyKeep);
+    onlineKeep.addAll(deferredUpload);
+
+    var approvalChecks = 0;
+    for (var i = 0; i < pendingApproval.length; i += _approvalParallelism) {
+      if (approvalChecks >= _maxApprovalChecksPerDrain) {
+        onlineKeep.addAll(pendingApproval.skip(i));
+        break;
+      }
+      final remainingBudget = _maxApprovalChecksPerDrain - approvalChecks;
+      final chunkSize = remainingBudget < _approvalParallelism
+          ? remainingBudget
+          : _approvalParallelism;
+      final end = i + chunkSize > pendingApproval.length
+          ? pendingApproval.length
+          : i + chunkSize;
+      final chunk = pendingApproval.sublist(i, end);
+      approvalChecks += chunk.length;
+      final results = await Future.wait(
+        chunk.map((entry) => _fastPathUploadedEntry(entry, now)),
+      );
+      for (var j = 0; j < chunk.length; j++) {
+        await applyResult(results[j], chunk[j]);
+      }
+    }
+
     return (
       remaining: onlineKeep,
       autoSubmittedCount: autoSubmittedCount,
@@ -344,6 +594,7 @@ class PendingSessionCodeSync {
       invalidMarkedCount: invalidMarkedCount,
       invalidRemovedCount: invalidRemovedCount,
       deviceBlockedCount: deviceBlockedCount,
+      hadDeferredUploads: deferredUpload.isNotEmpty,
     );
   }
 
@@ -438,8 +689,49 @@ class PendingSessionCodeSync {
           break;
       }
     }
-    if (AttendanceStore.isPresentForSession(session.id, student.id)) {
+    if (await repo.pendingSessionCodeResolvedOnServer(
+      entry: withMeta,
+      studentId: student.id,
+      session: session,
+    )) {
       return _removeSubmitted;
+    }
+
+    if (withMeta.hasLocalUploadEvidence) {
+      await PendingSessionCodeClaimUpload.linkPublishedSessionToClaim(
+        entry: withMeta,
+        studentId: student.id,
+        session: session,
+      );
+      if (await repo.pendingSessionCodeResolvedOnServer(
+        entry: withMeta,
+        studentId: student.id,
+        session: session,
+      )) {
+        return _removeSubmitted;
+      }
+      if (await PendingSessionCodeClaimUpload.tryRefreshLocalFromServerClaim(
+        entry: withMeta,
+        studentId: student.id,
+      )) {
+        return _removeSubmitted;
+      }
+      unawaited(
+        repo.awaitOfficialRecordFromApi(
+          sessionId: session.id,
+          studentId: student.id,
+          timeout: const Duration(seconds: 12),
+        ),
+      );
+      return withMeta.copyWith(
+        status: PendingSessionCodeStatus.queued,
+        note:
+            withMeta.note?.trim().isNotEmpty == true
+                ? withMeta.note
+                : 'Uploaded to server — waiting for verification '
+                    '(up to ${PendingRetention.unverifiedPending.inDays} days).',
+        invalidMarkedAt: null,
+      );
     }
 
     final boundsTime = _validationTimestampForPendingCode(entry);
@@ -453,7 +745,7 @@ class PendingSessionCodeSync {
       timestamp: boundsTime,
       latitude: entry.latitude,
       longitude: entry.longitude,
-      verified: true,
+      verified: false,
       present: true,
       deviceId: entry.deviceId,
     );
@@ -462,29 +754,98 @@ class PendingSessionCodeSync {
       listIdOverride: list.id,
       sessionCodeRaw: entry.sessionCodeRaw,
     );
+    return _afterCheckInSubmitOutcome(
+      withMeta: withMeta,
+      session: session,
+      list: list,
+      student: student,
+      course: course,
+      outcome: outcome,
+      awaitVerification: true,
+    );
+  }
+
+  static Future<Object> _afterCheckInSubmitOutcome({
+    required PendingSessionCodeEntry withMeta,
+    required AttendanceSession session,
+    required AttendanceList list,
+    required StudentRecord student,
+    required String course,
+    required StudentOfflineCheckInOutcome outcome,
+    bool awaitVerification = false,
+  }) async {
+    final repo = AttendanceRepository.instance;
+
+    Future<void> ensureSignIn() async {
+      if (!AttendanceStore.hasSignedIn(list.id, student.id, course)) {
+        unawaited(
+          repo.ensureSignInAndBackfillPastAbsents(
+            listId: list.id,
+            studentId: student.id,
+            course: course,
+          ),
+        );
+      }
+    }
+
     switch (outcome) {
       case StudentOfflineCheckInOutcome.success:
-      case StudentOfflineCheckInOutcome.submittedPendingVerification:
       case StudentOfflineCheckInOutcome.duplicate:
-        if (!AttendanceStore.hasSignedIn(list.id, student.id, course)) {
-          unawaited(
-            repo.ensureSignInAndBackfillPastAbsents(
-              listId: list.id,
-              studentId: student.id,
-              course: course,
-            ),
-          );
+        if (await repo.pendingSessionCodeResolvedOnServer(
+          entry: withMeta,
+          studentId: student.id,
+          session: session,
+        )) {
+          await ensureSignIn();
+          return _removeSubmitted;
         }
-        if (outcome == StudentOfflineCheckInOutcome.submittedPendingVerification) {
-          unawaited(
-            repo.awaitOfficialRecordFromFirebase(
+        return _trustedOfflinePresentEntry(
+          entry: withMeta,
+          session: session,
+          student: student,
+          course: course,
+        );
+      case StudentOfflineCheckInOutcome.submittedPendingVerification:
+        final hasEvidence = withMeta.hasLocalUploadEvidence ||
+            await repo.pendingSessionCodeHasServerEvidence(
+              entry: withMeta,
+              studentId: student.id,
+              session: session,
+            );
+        if (hasEvidence) {
+          await ensureSignIn();
+          if (!withMeta.hasLocalUploadEvidence) {
+            await PendingSessionCodeQueue.markUploaded(withMeta.id);
+          }
+          if (awaitVerification) {
+            unawaited(
+              repo.awaitOfficialRecordFromApi(
+                sessionId: session.id,
+                studentId: student.id,
+                timeout: const Duration(seconds: 12),
+              ),
+            );
+          } else {
+            await repo.awaitOfficialRecordFromApi(
               sessionId: session.id,
               studentId: student.id,
               timeout: const Duration(seconds: 12),
-            ),
+            );
+          }
+          return withMeta.copyWith(
+            status: PendingSessionCodeStatus.queued,
+            note:
+                'Uploaded to server — waiting for verification '
+                '(up to ${PendingRetention.unverifiedPending.inDays} days).',
+            invalidMarkedAt: null,
           );
         }
-        return _removeSubmitted;
+        return _trustedOfflinePresentEntry(
+          entry: withMeta,
+          session: session,
+          student: student,
+          course: course,
+        );
       case StudentOfflineCheckInOutcome.sessionMismatch:
       case StudentOfflineCheckInOutcome.rejectedVerification:
       case StudentOfflineCheckInOutcome.queuedOffline:
@@ -573,6 +934,10 @@ class PendingSessionCodeSync {
     }
 
     var session = localSessionHint;
+    if (session != null &&
+        !await repo.isLecturerSessionPublishedOnServer(session.id)) {
+      session = null;
+    }
     session ??= await repo.resolvePublishedLecturerSessionForPendingClaim(
       sessionCodeRaw: entry.sessionCodeRaw,
       capturedAt: entry.capturedAt,
@@ -612,6 +977,14 @@ class PendingSessionCodeSync {
     required DateTime now,
     AttendanceSession? localSessionHint,
   }) async {
+    if (entry.hasLocalUploadEvidence) {
+      return _resolveUploadedClaim(
+        entry: entry,
+        student: student,
+        now: now,
+        localSessionHint: localSessionHint,
+      );
+    }
     var onServer = await PendingSessionCodeClaimUpload.isClaimOnServer(
       entry: entry,
       studentId: student.id,
@@ -632,21 +1005,12 @@ class PendingSessionCodeSync {
           invalidMarkedAt: null,
         );
       }
-      onServer = await PendingSessionCodeClaimUpload.isClaimOnServer(
-        entry: entry,
-        studentId: student.id,
+      return _resolveUploadedClaim(
+        entry: entry.copyWith(uploadedAt: DateTime.now()),
+        student: student,
+        now: now,
+        localSessionHint: localSessionHint,
       );
-      if (!onServer) {
-        return entry.copyWith(
-          sessionId: localSessionHint?.id ?? entry.sessionId,
-          listId: localSessionHint?.listId ?? entry.listId,
-          status: PendingSessionCodeStatus.queued,
-          note:
-              'Upload did not confirm on server yet — saved on this device. '
-              'Will retry shortly.',
-          invalidMarkedAt: null,
-        );
-      }
     }
 
     return _resolveUploadedClaim(
@@ -657,12 +1021,88 @@ class PendingSessionCodeSync {
     );
   }
 
+  static Future<Object> _fastPathUploadedEntry(
+    PendingSessionCodeEntry entry,
+    DateTime now,
+  ) async {
+    final repo = AttendanceRepository.instance;
+    final student = await repo.resolveStudentForRegistration(
+      entry.registrationNumber,
+      fast: true,
+    );
+    if (student == null) return entry;
+
+    AttendanceSession? localHint = _sessionLinkedInStore(entry) ??
+        (entry.sessionId?.trim().isNotEmpty == true
+            ? AttendanceStore.sessionById(entry.sessionId!.trim())
+            : null);
+    if (localHint != null &&
+        !await repo.isLecturerSessionPublishedOnServer(localHint.id)) {
+      localHint = null;
+    }
+
+    return _resolveUploadedClaim(
+      entry: entry,
+      student: student,
+      now: now,
+      localSessionHint: localHint,
+    );
+  }
+
+  /// Fast RTD upload during bulk drain — linking/verification runs in approval pass.
+  static Future<Object> _tryUploadOnly(
+    PendingSessionCodeEntry entry,
+    DateTime now,
+  ) async {
+    if (entry.hasLocalUploadEvidence) return entry;
+    if (entry.status == PendingSessionCodeStatus.deviceBlocked) return entry;
+
+    final repo = AttendanceRepository.instance;
+    final student = await repo.resolveStudentForRegistration(
+      entry.registrationNumber,
+      fast: true,
+    );
+    if (student == null) {
+      return entry.copyWith(
+        status: PendingSessionCodeStatus.needsRegistration,
+        note: 'Student not on roster yet.',
+      );
+    }
+
+    final block = await PendingSessionCodeClaimUpload.localDeviceBlockReason(
+      entry,
+      studentId: student.id,
+    );
+    if (block != null) {
+      return entry.copyWith(
+        status: PendingSessionCodeStatus.deviceBlocked,
+        note: block,
+      );
+    }
+
+    final uploaded = await PendingSessionCodeClaimUpload.uploadClaimMetadataOnly(
+      entry: entry,
+      studentId: student.id,
+    );
+    if (!uploaded) return entry;
+
+    return entry.copyWith(
+      uploadedAt: DateTime.now(),
+      status: PendingSessionCodeStatus.queued,
+      note: 'Uploaded to server — waiting for verification.',
+      invalidMarkedAt: null,
+    );
+  }
+
   static Future<Object> _tryProcess(
     PendingSessionCodeEntry entry,
     DateTime now,
   ) async {
     if (entry.status == PendingSessionCodeStatus.deviceBlocked) {
       return entry;
+    }
+    if (entry.hasLocalUploadEvidence) {
+      return _fastPathUploadedEntry(entry, now);
     }
 
     final repo = AttendanceRepository.instance;
@@ -681,7 +1121,7 @@ class PendingSessionCodeSync {
           note: block,
         );
       }
-      await repo.ensureStudentDocOnServer(studentForGuard.id);
+      unawaited(repo.ensureStudentDocOnServer(studentForGuard.id));
     }
 
     final linked = _sessionLinkedInStore(entry);
@@ -897,7 +1337,11 @@ class PendingSessionCodeSync {
           break;
       }
     }
-    if (AttendanceStore.isPresentForSession(session.id, student.id)) {
+    if (await repo.pendingSessionCodeResolvedOnServer(
+      entry: withMeta,
+      studentId: student.id,
+      session: session,
+    )) {
       return _removeSubmitted;
     }
 
@@ -911,7 +1355,7 @@ class PendingSessionCodeSync {
       timestamp: boundsTime,
       latitude: entry.latitude,
       longitude: entry.longitude,
-      verified: true,
+      verified: false,
       present: true,
       deviceId: entry.deviceId,
     );
@@ -920,41 +1364,13 @@ class PendingSessionCodeSync {
       listIdOverride: list.id,
       sessionCodeRaw: entry.sessionCodeRaw,
     );
-    switch (outcome) {
-      case StudentOfflineCheckInOutcome.success:
-      case StudentOfflineCheckInOutcome.submittedPendingVerification:
-      case StudentOfflineCheckInOutcome.duplicate:
-        if (!AttendanceStore.hasSignedIn(list.id, student.id, course)) {
-          unawaited(
-            repo.ensureSignInAndBackfillPastAbsents(
-              listId: list.id,
-              studentId: student.id,
-              course: course,
-            ),
-          );
-        }
-        if (outcome == StudentOfflineCheckInOutcome.submittedPendingVerification) {
-          await repo.awaitOfficialRecordFromFirebase(
-            sessionId: session.id,
-            studentId: student.id,
-            timeout: const Duration(seconds: 12),
-          );
-        }
-        return _removeSubmitted;
-      case StudentOfflineCheckInOutcome.sessionMismatch:
-      case StudentOfflineCheckInOutcome.rejectedVerification:
-      case StudentOfflineCheckInOutcome.queuedOffline:
-        return _trustedOfflinePresentEntry(
-          entry: withMeta,
-          session: session,
-          student: student,
-          course: course,
-        );
-      case StudentOfflineCheckInOutcome.deviceBlocked:
-        return withMeta.copyWith(
-          status: PendingSessionCodeStatus.deviceBlocked,
-          note: deviceAlreadyUsedUserMessage,
-        );
-    }
+    return _afterCheckInSubmitOutcome(
+      withMeta: withMeta,
+      session: session,
+      list: list,
+      student: student,
+      course: course,
+      outcome: outcome,
+    );
   }
 }

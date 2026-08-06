@@ -95,10 +95,10 @@ class PrivacyPolicyScreen extends StatelessWidget {
             bodyStyle: bodyStyle,
             headingStyle: headingStyle,
             paragraphs: [
-              'U-Panel uses Google Firebase for authentication, databases, '
-                  'storage, push messaging, and related cloud services. Data '
-                  'processed through Firebase is also subject to Google\'s '
-                  'privacy practices.',
+              'U-Panel uses a Django REST API backend for authentication, '
+                  'databases, storage, and related server services. Data '
+                  'processed through the backend is subject to your '
+                  'institution\'s policies and applicable law.',
             ],
           ),
           _Section(
