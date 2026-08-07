@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Allow HTTP to the Contabo API until https://api.orion13.us is live. -->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">169.58.135.136</domain>
+        <domain includeSubdomains="true">api.orion13.us</domain>
+    </domain-config>
+</network-security-config>
