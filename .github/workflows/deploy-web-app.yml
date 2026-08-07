@@ -12,6 +12,7 @@ on:
       - 'pubspec.yaml'
       - 'pubspec.lock'
       - 'website/**'
+      - 'scripts/finalize-web-build.sh'
       - '.github/workflows/deploy-web-app.yml'
   workflow_dispatch:
     inputs:
