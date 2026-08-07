@@ -16,7 +16,7 @@ import '../../core/widgets/app_brand_logo.dart';
 import '../../core/widgets/dismissible_error_banner.dart';
 import 'forgot_password_screen.dart';
 
-/// Email + password sign-in and registration (Firebase Auth).
+/// Email + password sign-in and registration (Django API).
 class AuthScreen extends StatefulWidget {
   const AuthScreen({super.key});
 

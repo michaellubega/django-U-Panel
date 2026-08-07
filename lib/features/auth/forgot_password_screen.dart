@@ -6,7 +6,7 @@ import '../../core/auth/student_auth_email.dart';
 import '../../core/connectivity/app_connectivity.dart';
 import '../../core/theme/app_theme.dart';
 
-/// Request a Firebase password-reset link for a KIU student or staff email.
+/// Request a password-reset link for a KIU student or staff email.
 class ForgotPasswordScreen extends StatefulWidget {
   const ForgotPasswordScreen({super.key, this.initialEmail = ''});
 

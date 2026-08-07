@@ -8,7 +8,7 @@ import '../../core/navigation/app_navigator.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/widgets/dismissible_error_banner.dart';
 
-/// Blocks app access until a KIU student or staff mailbox is verified in Firebase Auth.
+/// Blocks app access until a KIU student or staff mailbox is verified.
 class EmailVerificationScreen extends StatefulWidget {
   const EmailVerificationScreen({super.key});
 

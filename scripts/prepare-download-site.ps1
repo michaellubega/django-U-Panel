@@ -42,6 +42,7 @@ function Format-Size([long]$bytes) {
     return "$bytes B"
 }
 
+$webAppUrl = "$siteDomain/app/"
 $release = [ordered]@{
     version    = $Version
     build      = $Build
@@ -50,7 +51,7 @@ $release = [ordered]@{
     ios        = [ordered]@{
         label   = "iPhone & iPad"
         status  = "coming_soon"
-        webUrl  = "https://u-panel-2026.web.app/"
+        webUrl  = $webAppUrl
         message = "Native iOS app coming soon. Use the web app in Safari for now."
     }
     android    = [ordered]@{
@@ -66,8 +67,7 @@ $release = [ordered]@{
         available    = $false
     }
     web        = [ordered]@{
-        url          = "https://u-panel-2026.web.app/"
-        alternateUrl = "https://u-panel-2026.firebaseapp.com/"
+        url          = $webAppUrl
         label        = "Web app"
         available    = $true
     }
@@ -226,51 +226,7 @@ $json = ($release | ConvertTo-Json -Depth 5)
 # UTF-8 without BOM — a BOM breaks JSON.parse in browsers and disables all buttons.
 [System.IO.File]::WriteAllText($jsonPath, $json, [System.Text.UTF8Encoding]::new($false))
 Write-Host "Updated $jsonPath"
-
-# Stage download page under build/web/download/ (Flutter app stays at site root).
-$webBuild = Join-Path $root "build\web"
-$webFlutterIndex = Join-Path $webBuild "index.html"
-if (Test-Path $webFlutterIndex) {
-    $wellKnownSrc = Join-Path $root "web\.well-known"
-    if (Test-Path $wellKnownSrc) {
-        $wellKnownDest = Join-Path $webBuild ".well-known"
-        New-Item -ItemType Directory -Force -Path $wellKnownDest | Out-Null
-        Copy-Item (Join-Path $wellKnownSrc "*") $wellKnownDest -Force
-        Write-Host "Staged Digital Asset Links: $wellKnownDest"
-    }
-
-    $gateJs = Join-Path $root "web\android_web_gate.js"
-    if (Test-Path $gateJs) {
-        Copy-Item $gateJs (Join-Path $webBuild "android_web_gate.js") -Force
-    }
-
-    $brandJs = Join-Path $root "web\upanel_brand.js"
-    if (Test-Path $brandJs) {
-        Copy-Item $brandJs (Join-Path $webBuild "upanel_brand.js") -Force
-    }
-
-    $downloadDest = Join-Path $webBuild "download"
-    if (Test-Path $downloadDest) { Remove-Item $downloadDest -Recurse -Force }
-    New-Item -ItemType Directory -Force -Path $downloadDest | Out-Null
-    Copy-Item (Join-Path $website "index.html") $downloadDest -Force
-    Copy-Item (Join-Path $website "privacy.html") $downloadDest -Force
-    Copy-Item (Join-Path $website "delete-account.html") $downloadDest -Force
-    Copy-Item (Join-Path $website "styles.css") $downloadDest -Force
-    Copy-Item (Join-Path $website "app.js") $downloadDest -Force
-    Copy-Item (Join-Path $website "releases.json") $downloadDest -Force
-    if (Test-Path (Join-Path $website "assets")) {
-        Copy-Item (Join-Path $website "assets") (Join-Path $downloadDest "assets") -Recurse -Force
-    }
-    Write-Host "Staged download page: $downloadDest (installers hosted on GitHub Pages, not copied)"
-    Write-Host "  Web app URL:       https://u-panel-2026.web.app/"
-    Write-Host "  Landing page URL:  $siteDomain/"
-    Write-Host "  APK / Windows URL: $siteDomain/downloads/"
-
-    & (Join-Path $PSScriptRoot "finalize-web-build.ps1")
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-} else {
-    Write-Warning "Flutter web build not found. Run: flutter build web --release"
-    Write-Warning "Then re-run this script before firebase deploy --only hosting"
-}
-
-Write-Host "Deploy with: firebase deploy --only hosting"
+Write-Host "  Web app URL:       $webAppUrl"
+Write-Host "  Landing page URL:  $siteDomain/"
+Write-Host "  APK / Windows URL: $siteDomain/downloads/"
+Write-Host "Publish: git add website && git commit && git push origin main"
