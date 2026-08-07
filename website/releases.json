@@ -1,31 +1,28 @@
 {
     "version":  "1.0.0",
     "build":  5,
-    "releasedAt":  "2026-06-14",
+    "releasedAt":  "2026-08-07",
     "hostBase":  "https://kiu.orion13.us",
     "ios":  {
                 "label":  "iPhone \u0026 iPad",
                 "status":  "coming_soon",
-                "webUrl":  "https://u-panel-2026.web.app/",
+                "webUrl":  "https://kiu.orion13.us/app/",
                 "message":  "Native iOS app coming soon. Use the web app in Safari for now."
             },
     "android":  {
                     "file":  "https://kiu.orion13.us/downloads/U-Panel-1.0.0-android.apk",
                     "label":  "Android APK",
                     "minAndroid":  "7.0 (Nougat)",
-                    "available":  true,
-                    "size":  "69.0 MB"
+                    "available":  false
                 },
     "windows":  {
                     "file":  "https://kiu.orion13.us/downloads/U-Panel-1.0.0-windows-setup.exe",
                     "label":  "Windows installer",
                     "minWindows":  "Windows 10 (64-bit)",
-                    "available":  true,
-                    "size":  "19.7 MB"
+                    "available":  false
                 },
     "web":  {
-                "url":  "https://u-panel-2026.web.app/",
-                "alternateUrl":  "https://u-panel-2026.firebaseapp.com/",
+                "url":  "https://kiu.orion13.us/app/",
                 "label":  "Web app",
                 "available":  true
             }
