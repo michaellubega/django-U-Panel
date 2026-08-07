@@ -34,6 +34,8 @@ $webDest = Join-Path $root "website\app"
 if (Test-Path $webDest) { Remove-Item $webDest -Recurse -Force }
 New-Item -ItemType Directory -Force -Path $webDest | Out-Null
 Copy-Item (Join-Path $root "build\web\*") $webDest -Recurse -Force
+New-Item -ItemType File -Force -Path (Join-Path $root "website\.nojekyll") | Out-Null
+New-Item -ItemType File -Force -Path (Join-Path $webDest ".nojekyll") | Out-Null
 
 $wellKnownSrc = Join-Path $root "web\.well-known"
 if (Test-Path $wellKnownSrc) {
@@ -51,7 +53,12 @@ Write-Host "Web build published to website\app\"
 Write-Host "  Web app URL:  $webAppUrl"
 Write-Host "  Landing page: $siteDomain/"
 Write-Host ""
-Write-Host "Commit and push to publish:"
+Write-Host "Option A — push to GitHub (CI builds and deploys automatically on main):"
+Write-Host "  git add website .github scripts"
+Write-Host "  git commit -m `"Update web deploy config`""
+Write-Host "  git push origin main"
+Write-Host ""
+Write-Host "Option B — publish website\app\ from this machine (must git add website/app):"
 Write-Host "  git add website"
 Write-Host "  git commit -m `"Publish web app`""
 Write-Host "  git push origin main"
