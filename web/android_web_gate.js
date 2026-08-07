@@ -1,7 +1,7 @@
 // Android: optional native-app prompt after the web app has loaded — never blocks boot.
 (function () {
   var ANDROID_PACKAGE = 'com.u_panel';
-  var DEFAULT_WEB_HOST = 'u-panel-2026.web.app';
+  var DEFAULT_WEB_HOST = 'kiu.orion13.us';
   var CUSTOM_SCHEME = 'upanel';
   var SKIP_GATE_KEY = 'upanel_skip_native_gate';
   var API_TIMEOUT_MS = 2500;
