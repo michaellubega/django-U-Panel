@@ -1,4 +1,4 @@
-const WEB_APP_URL = 'https://kiu.orion13.us/app/';
+const WEB_APP_URL = 'http://169.58.135.136/app/';
 const SITE_DOMAIN = 'https://kiu.orion13.us';
 
 function applyWebButton(button, noteEl, url) {

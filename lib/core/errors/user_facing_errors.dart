@@ -4,6 +4,16 @@ abstract final class UserFacingErrors {
   static const networkUnavailable =
       'No internet connection. Turn on mobile data or Wi‑Fi, then try again.';
 
+  /// Shown when the web app (HTTPS) cannot reach an HTTP-only API (browser blocks it).
+  static const secureWebInsecureApi =
+      'The web app cannot reach the server from this page. '
+      'Open the app at http://169.58.135.136/app/ instead, or use the Android app. '
+      'ICT is enabling a secure API URL (https://api.orion13.us) for the website.';
+
+  static const apiConnectionBlocked =
+      'Could not reach the server. If you are on the website, try '
+      'http://169.58.135.136/app/ or reinstall the latest Android app.';
+
   static const serviceUnavailable =
       'The service is temporarily unavailable. Check your connection, restart the app, and try again.';
 

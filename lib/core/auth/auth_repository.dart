@@ -933,7 +933,10 @@ class AuthRepository extends ChangeNotifier {
 
   static String? _describeAuthChannelFailure(Object ex) {
     if (_looksLikeNetworkFailure(ex)) {
-      return networkUnavailableMessage;
+      if (kIsWeb && isInsecureApiBaseUrl) {
+        return UserFacingErrors.secureWebInsecureApi;
+      }
+      return UserFacingErrors.apiConnectionBlocked;
     }
     final raw = ex.toString();
     if (ex is PlatformException) {
@@ -2628,7 +2631,15 @@ class AuthRepository extends ChangeNotifier {
       if (fe.code == 'permission-denied') {
         return _authActionError(UserFacingErrors.saveProfileFailed);
       }
-      return _authActionError(UserFacingErrors.saveProfileFailed);
+      if (fe.code.startsWith('http-4')) {
+        return _authActionError(
+          UserFacingErrors.sanitize(
+            fe.message,
+            fallback: UserFacingErrors.saveAccountFailed,
+          ),
+        );
+      }
+      return _authActionError(UserFacingErrors.saveAccountFailed);
     } catch (ex) {
       await _rollbackIncompleteRegistration(cred?.user, registrationNumber: reg);
       return _authActionError(
@@ -2656,7 +2667,10 @@ class AuthRepository extends ChangeNotifier {
         return 'Password is too weak. Use at least 6 characters.';
       case 'network-request-failed':
       case 'unavailable':
-        return networkUnavailableMessage;
+        if (kIsWeb && isInsecureApiBaseUrl) {
+          return UserFacingErrors.secureWebInsecureApi;
+        }
+        return UserFacingErrors.apiConnectionBlocked;
       default:
         return UserFacingErrors.sanitize(
           ex.message,
@@ -2833,7 +2847,10 @@ class AuthRepository extends ChangeNotifier {
         return 'Too many attempts. Wait a few minutes, then try again.';
       case 'network-request-failed':
       case 'unavailable':
-        return networkUnavailableMessage;
+        if (kIsWeb && isInsecureApiBaseUrl) {
+          return UserFacingErrors.secureWebInsecureApi;
+        }
+        return UserFacingErrors.apiConnectionBlocked;
       case 'user-disabled':
         return 'This account has been disabled.';
       default:
