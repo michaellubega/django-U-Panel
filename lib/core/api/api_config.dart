@@ -15,6 +15,10 @@ String get uPanelApiBaseUrl {
 
 bool get isApiConfigured => uPanelApiBaseUrl.trim().isNotEmpty;
 
+/// True when the compile-time API URL uses plain HTTP (blocked from HTTPS web pages).
+bool get isInsecureApiBaseUrl =>
+    uPanelApiBaseUrl.toLowerCase().startsWith('http://');
+
 /// Compile-time Sentry DSN (`--dart-define=SENTRY_DSN=https://...`).
 const String _kSentryDsnFromEnv = String.fromEnvironment('SENTRY_DSN');
 
