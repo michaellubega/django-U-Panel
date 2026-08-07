@@ -1,8 +1,7 @@
-const WEB_APP_URL = 'https://u-panel-2026.web.app/';
-const WEB_APP_ALT_HOST = 'u-panel-2026.firebaseapp.com';
+const WEB_APP_URL = 'https://kiu.orion13.us/app/';
 const SITE_DOMAIN = 'https://kiu.orion13.us';
 
-function applyWebButton(button, noteEl, url, alternateUrl) {
+function applyWebButton(button, noteEl, url) {
   if (!button) return;
 
   button.href = url || WEB_APP_URL;
@@ -10,13 +9,8 @@ function applyWebButton(button, noteEl, url, alternateUrl) {
   button.removeAttribute('aria-disabled');
 
   if (noteEl) {
-    if (alternateUrl) {
-      noteEl.textContent =
-        'Also at ' + WEB_APP_ALT_HOST + ' — same app, no install.';
-    } else {
-      noteEl.textContent =
-        'Runs in your browser — same sign-in as the mobile app.';
-    }
+    noteEl.textContent =
+      'Runs in your browser — same sign-in as the mobile app.';
   }
 }
 
@@ -29,8 +23,8 @@ async function loadReleaseInfo() {
   const androidNote = document.getElementById('android-note');
   const windowsNote = document.getElementById('windows-note');
   // Web app links are always on the buttons — not dependent on releases.json.
-  applyWebButton(webBtn, null, WEB_APP_URL, WEB_APP_ALT_HOST);
-  applyWebButton(iosWebBtn, null, WEB_APP_URL, null);
+  applyWebButton(webBtn, null, WEB_APP_URL);
+  applyWebButton(iosWebBtn, null, WEB_APP_URL);
 
   try {
     const res = await fetch('releases.json', { cache: 'no-store' });
@@ -46,8 +40,8 @@ async function loadReleaseInfo() {
     configureDownload(data.windows, windowsBtn, windowsNote);
 
     const webUrl = data.web?.url || WEB_APP_URL;
-    applyWebButton(webBtn, null, webUrl, null);
-    applyWebButton(iosWebBtn, null, webUrl, null);
+    applyWebButton(webBtn, null, webUrl);
+    applyWebButton(iosWebBtn, null, webUrl);
   } catch (_) {
     if (versionEl) versionEl.textContent = 'Release info unavailable';
     [androidBtn, windowsBtn].forEach((btn) => {

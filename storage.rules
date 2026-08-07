@@ -1,9 +1,0 @@
-rules_version = '2';
-// No Storage uploads in the app currently. Tighten paths when you add files.
-service firebase.storage {
-  match /b/{bucket}/o {
-    match /{allPaths=**} {
-      allow read, write: if false;
-    }
-  }
-}
