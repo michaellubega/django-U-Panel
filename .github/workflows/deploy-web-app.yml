@@ -16,13 +16,14 @@ on:
       - 'pubspec.lock'
       - 'website/**'
       - 'scripts/finalize-web-build.sh'
+      - 'config/nginx/Dockerfile'
       - '.github/workflows/deploy-web-app.yml'
   workflow_dispatch:
     inputs:
       api_base_url:
         description: 'UPANEL_API_BASE_URL baked into the web build'
         required: false
-        default: 'http://169.58.135.136'
+        default: 'https://api.orion13.us'
 
 permissions:
   contents: write
@@ -46,7 +47,7 @@ jobs:
 
       - name: Build web app
         env:
-          API_URL: ${{ github.event.inputs.api_base_url || 'http://169.58.135.136' }}
+          API_URL: ${{ github.event.inputs.api_base_url || 'https://api.orion13.us' }}
         run: |
           flutter pub get
           flutter build web --release \

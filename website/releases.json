@@ -2,11 +2,11 @@
     "version":  "1.0.0",
     "build":  5,
     "releasedAt":  "2026-08-07",
-    "hostBase":  "http://169.58.135.136",
+    "hostBase":  "https://kiu.orion13.us",
     "ios":  {
                 "label":  "iPhone \u0026 iPad",
                 "status":  "coming_soon",
-                "webUrl":  "http://169.58.135.136/app/",
+                "webUrl":  "https://kiu.orion13.us/app/",
                 "message":  "Native iOS app coming soon. Use the web app in Safari for now."
             },
     "android":  {
@@ -22,7 +22,7 @@
                     "available":  false
                 },
     "web":  {
-                "url":  "http://169.58.135.136/app/",
+                "url":  "https://kiu.orion13.us/app/",
                 "label":  "Web app",
                 "available":  true
             }
