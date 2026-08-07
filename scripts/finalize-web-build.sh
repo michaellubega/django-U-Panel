@@ -12,11 +12,11 @@ if [[ ! -f "$WEB/index.html" ]]; then
 fi
 
 if [[ -d "$ASSETS" ]]; then
-  python3 <<'PY'
-import json, os
+  python3 - "$ASSETS" <<'PY'
+import json, sys
 from pathlib import Path
 
-assets = Path(os.environ["ASSETS"])
+assets = Path(sys.argv[1])
 manifest = {}
 for p in sorted(assets.rglob("*")):
     if not p.is_file():
