@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
@@ -76,9 +77,11 @@ class ApiClient {
     Duration timeout = const Duration(seconds: 15),
   }) async {
     await ensureLoaded();
-    final res = await http
-        .get(_uri(path, query), headers: _headers())
-        .timeout(timeout);
+    final res = await _send(
+      () => http
+          .get(_uri(path, query), headers: _headers())
+          .timeout(timeout),
+    );
     return _decodeDynamicResponse(res);
   }
 
@@ -88,13 +91,15 @@ class ApiClient {
     Duration timeout = const Duration(seconds: 20),
   }) async {
     await ensureLoaded();
-    final res = await http
-        .post(
-          _uri(path),
-          headers: _headers(jsonBody: true),
-          body: jsonEncode(body),
-        )
-        .timeout(timeout);
+    final res = await _send(
+      () => http
+          .post(
+            _uri(path),
+            headers: _headers(jsonBody: true),
+            body: jsonEncode(body),
+          )
+          .timeout(timeout),
+    );
     return _decodeJsonResponse(res);
   }
 
@@ -104,33 +109,49 @@ class ApiClient {
     Duration timeout = const Duration(seconds: 20),
   }) async {
     await ensureLoaded();
-    final res = await http
-        .patch(
-          _uri(path),
-          headers: _headers(jsonBody: true),
-          body: jsonEncode(body),
-        )
-        .timeout(timeout);
+    final res = await _send(
+      () => http
+          .patch(
+            _uri(path),
+            headers: _headers(jsonBody: true),
+            body: jsonEncode(body),
+          )
+          .timeout(timeout),
+    );
     return _decodeJsonResponse(res);
   }
 
   Future<void> delete(String path) async {
     await ensureLoaded();
-    final res = await http.delete(_uri(path), headers: _headers());
+    final res = await _send(() => http.delete(_uri(path), headers: _headers()));
     if (res.statusCode >= 400) {
-      throw ApiException('http-${res.statusCode}', res.body);
+      throw ApiException('http-${res.statusCode}', _formatErrorDetail(res.body));
     }
   }
 
   /// Lightweight reachability probe (replaces Firestore meta/connectivity ping).
   Future<bool> ping({Duration timeout = const Duration(seconds: 6)}) async {
     try {
-      final res = await http
-          .get(_uri('/api/health/'), headers: _headers())
-          .timeout(timeout);
+      final res = await _send(
+        () => http
+            .get(_uri('/api/health/'), headers: _headers())
+            .timeout(timeout),
+      );
       return res.statusCode >= 200 && res.statusCode < 300;
     } catch (_) {
       return false;
+    }
+  }
+
+  Future<http.Response> _send(Future<http.Response> Function() request) async {
+    try {
+      return await request();
+    } on TimeoutException {
+      throw ApiAuthException('network-request-failed', 'Request timed out.');
+    } on SocketException catch (ex) {
+      throw ApiAuthException('network-request-failed', ex.message);
+    } on http.ClientException catch (ex) {
+      throw ApiAuthException('network-request-failed', ex.message);
     }
   }
 
@@ -140,16 +161,39 @@ class ApiClient {
     return null;
   }
 
+  static String _formatErrorDetail(String body, {dynamic decoded}) {
+    if (decoded is Map) {
+      final detail = decoded['detail'];
+      if (detail != null) {
+        return detail is List
+            ? detail.map((e) => e.toString()).join(' ')
+            : detail.toString();
+      }
+      for (final value in decoded.values) {
+        if (value is List && value.isNotEmpty) {
+          return value.first.toString();
+        }
+        if (value is String && value.isNotEmpty) {
+          return value;
+        }
+      }
+    }
+    if (body.trim().isEmpty) return 'Request failed.';
+    return body;
+  }
+
   dynamic _decodeDynamicResponse(http.Response res) {
     if (res.statusCode == 204) return null;
     dynamic decoded;
     if (res.body.isNotEmpty) {
-      decoded = jsonDecode(res.body);
+      try {
+        decoded = jsonDecode(res.body);
+      } catch (_) {
+        decoded = null;
+      }
     }
     if (res.statusCode >= 200 && res.statusCode < 300) return decoded;
-    final detail = decoded is Map
-        ? decoded['detail']?.toString() ?? res.body
-        : res.body;
+    final detail = _formatErrorDetail(res.body, decoded: decoded);
     if (res.statusCode == 401) {
       throw ApiAuthException('invalid-credential', detail);
     }
@@ -161,6 +205,10 @@ class ApiClient {
     }
     if (res.statusCode == 429) {
       throw ApiAuthException('too-many-requests', detail);
+    }
+    if (res.statusCode == 400 &&
+        detail.toLowerCase().contains('already exists')) {
+      throw ApiAuthException('email-already-in-use', detail);
     }
     if (res.statusCode >= 500) {
       throw ApiException('unavailable', detail);
