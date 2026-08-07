@@ -2,7 +2,7 @@
 #
 # Usage:
 #   .\scripts\deploy-hosting.ps1
-#   .\scripts\deploy-hosting.ps1 -ApiBaseUrl "http://169.58.135.136"
+#   .\scripts\deploy-hosting.ps1 -ApiBaseUrl "https://api.orion13.us"
 #   .\scripts\deploy-hosting.ps1 -IncludeApk
 #
 # Publishes:
@@ -10,7 +10,7 @@
 #   Landing  -> https://kiu.orion13.us/  (git push website/)
 
 param(
-    [string]$ApiBaseUrl = "http://169.58.135.136",
+    [string]$ApiBaseUrl = "https://api.orion13.us",
     [string]$WebBaseHref = "/app/"
 )
 
