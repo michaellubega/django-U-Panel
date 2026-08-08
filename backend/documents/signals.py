@@ -3,7 +3,7 @@ from django.dispatch import receiver
 
 from accounts.models import User
 
-from ..models import ApiDocument
+from .models import ApiDocument
 from .services.user_sync import (
     ADMINS,
     LECTURERS,
