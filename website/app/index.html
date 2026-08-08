@@ -30,6 +30,7 @@
         return;
       }
       if (host === 'kiu.orion13.us' || host === 'www.kiu.orion13.us') {
+        // HTTPS site must call an HTTPS API (set DNS: api.orion13.us → VPS + Cloudflare).
         window.upanelApiBaseUrl = 'https://api.orion13.us';
         return;
       }
