@@ -206,6 +206,9 @@ class ApiClient {
     if (res.statusCode == 429) {
       throw ApiAuthException('too-many-requests', detail);
     }
+    if (res.statusCode == 502 || res.statusCode == 503 || res.statusCode == 504) {
+      throw ApiException('gateway-timeout', detail);
+    }
     if (res.statusCode == 400 &&
         detail.toLowerCase().contains('already exists')) {
       throw ApiAuthException('email-already-in-use', detail);
