@@ -73,3 +73,22 @@ PY
 fi
 
 echo "Web build verification passed."
+
+# Disable Flutter PWA caching — stale service workers caused infinite reload / stuck splash.
+cat > "$WEB/flutter_service_worker.js" <<'SWEOF'
+'use strict';
+// U-Panel: unregister any legacy Flutter service worker (no offline cache).
+self.addEventListener('install', (event) => {
+  self.skipWaiting();
+});
+self.addEventListener('activate', (event) => {
+  event.waitUntil(
+    (async () => {
+      try {
+        await self.registration.unregister();
+      } catch (_) {}
+    })(),
+  );
+});
+SWEOF
+echo "Wrote no-op flutter_service_worker.js"
