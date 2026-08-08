@@ -7,6 +7,18 @@
 set -euo pipefail
 
 APP_DIR="${UPANEL_APP_DIR:-/opt/upanel}"
+
+if [[ ! -d "${APP_DIR}/.git" ]]; then
+  echo "ERROR: ${APP_DIR} is not a git repository." >&2
+  echo "" >&2
+  echo "Run the one-time bootstrap (preserves .env.production):" >&2
+  echo "  curl -fsSL https://raw.githubusercontent.com/michaellubega/django-U-Panel/main/scripts/contabo/bootstrap-server.sh | bash" >&2
+  echo "" >&2
+  echo "Or manually:" >&2
+  echo "  bash scripts/contabo/bootstrap-server.sh" >&2
+  exit 1
+fi
+
 cd "${APP_DIR}"
 
 echo "==> Pull latest main"
