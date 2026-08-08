@@ -2591,17 +2591,8 @@ class AuthRepository extends ChangeNotifier {
         await user.updateDisplayName(name);
       } catch (_) {}
 
-      try {
-        await user.sendEmailVerification();
-      } on ApiAuthException catch (ex) {
-        if (kDebugMode) {
-          debugPrint('registerWithEmail: verification email failed: ${ex.code} ${ex.message}');
-        }
-      } catch (ex) {
-        if (kDebugMode) {
-          debugPrint('registerWithEmail: verification email failed: $ex');
-        }
-      }
+      // Queue verification email (fast API); delivery happens in the background.
+      unawaited(_sendSignupVerificationEmail(user));
 
       _forceSignedOut = false;
       clearAuthFormError();
@@ -2617,6 +2608,16 @@ class AuthRepository extends ChangeNotifier {
       notifyListeners();
       return const AuthActionResult(needsEmailVerification: true);
     } on ApiAuthException catch (ex) {
+      if (cred?.user == null &&
+          (ex.code == 'network-request-failed' || ex.code == 'unavailable')) {
+        final recovered = await _tryRecoverSignupAfterGatewayError(
+          email: em,
+          password: password,
+          registrationNumber: reg,
+          fullName: name,
+        );
+        if (recovered != null) return recovered;
+      }
       return _authActionError(_mapAuthError(ex));
     } on PlatformException catch (ex) {
       return _authActionError(
@@ -2626,6 +2627,22 @@ class AuthRepository extends ChangeNotifier {
       if (cred?.user != null) {
         return _authActionError(
           'Your account was created. Sign in with your email and password.',
+        );
+      }
+      if (fe.code == 'gateway-timeout' ||
+          fe.code == 'unavailable' ||
+          fe.code == 'http-502' ||
+          fe.code == 'http-504') {
+        final recovered = await _tryRecoverSignupAfterGatewayError(
+          email: em,
+          password: password,
+          registrationNumber: reg,
+          fullName: name,
+        );
+        if (recovered != null) return recovered;
+        return _authActionError(
+          'The server took too long while creating your account. '
+          'Try signing in — your account may already exist.',
         );
       }
       if (fe.code.startsWith('http-4')) {
@@ -2643,12 +2660,72 @@ class AuthRepository extends ChangeNotifier {
           'Your account was created. Sign in with your email and password.',
         );
       }
+      if (_looksLikeNetworkFailure(ex)) {
+        final recovered = await _tryRecoverSignupAfterGatewayError(
+          email: em,
+          password: password,
+          registrationNumber: reg,
+          fullName: name,
+        );
+        if (recovered != null) return recovered;
+        return _authActionError(
+          'The server took too long while creating your account. '
+          'Try signing in — your account may already exist.',
+        );
+      }
       return _authActionError(
         _describeAuthChannelFailure(ex) ?? UserFacingErrors.saveAccountFailed,
       );
     } finally {
       _endAuthenticating();
       notifyListeners();
+    }
+  }
+
+  Future<void> _sendSignupVerificationEmail(ApiUser user) async {
+    try {
+      await user.sendEmailVerification();
+    } on ApiAuthException catch (ex) {
+      if (kDebugMode) {
+        debugPrint(
+          'AuthRepository._sendSignupVerificationEmail: ${ex.code} ${ex.message}',
+        );
+      }
+    } catch (ex, st) {
+      if (kDebugMode) {
+        debugPrint('AuthRepository._sendSignupVerificationEmail: $ex');
+        debugPrint('$st');
+      }
+    }
+  }
+
+  /// After a gateway timeout, the account may exist even though register returned an error.
+  Future<AuthActionResult?> _tryRecoverSignupAfterGatewayError({
+    required String email,
+    required String password,
+    required String registrationNumber,
+    required String fullName,
+  }) async {
+    try {
+      final cred = await ApiAuth.instance.signInWithEmailAndPassword(
+        email: email,
+        password: password,
+      );
+      final user = cred.user;
+      if (user == null) return null;
+      _cachedIsStudentProfile = true;
+      _cachedReg = StudentRegistrationNumber.normalize(registrationNumber);
+      _forceSignedOut = false;
+      clearAuthFormError();
+      clearAuthFormDraft();
+      unawaited(_sendSignupVerificationEmail(user));
+      try {
+        await _hydrateUser(user, allowDuringAuth: true);
+      } catch (_) {}
+      notifyListeners();
+      return const AuthActionResult(needsEmailVerification: true);
+    } catch (_) {
+      return null;
     }
   }
 
