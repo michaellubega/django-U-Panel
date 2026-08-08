@@ -8,10 +8,12 @@ import '../../core/device/device_identity.dart';
 import '../../core/location/location_permission.dart';
 import '../../core/location/location_resolving_panel.dart';
 import '../../core/location/student_location_priming.dart';
+import '../../core/offline/pending_offline_coordinator.dart';
 import '../../core/theme/app_theme.dart';
 import 'check_in_validation.dart';
 import 'check_in_outcome.dart';
 import 'check_in_rejection.dart';
+import 'data/attendance_offline_sync.dart';
 import 'data/attendance_repository.dart';
 import 'models/attendance_models.dart';
 
@@ -490,6 +492,10 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
       listIdOverride: widget.list.id,
       sessionCodeRaw: session.sessionCode,
     );
+    if (AppConnectivity.instance.hasNetworkInterface) {
+      PendingOfflineCoordinator.instance.requestSync(immediate: true);
+      unawaited(AttendanceOfflineSync.drainSessionValidationFirst());
+    }
     if (!mounted) return;
 
     switch (outcome) {

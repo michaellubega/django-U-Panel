@@ -4107,7 +4107,7 @@ class _SignInContentState extends State<_SignInContent> {
 
   void _onConnectivityChanged() {
     if (!mounted) return;
-    if (AppConnectivity.instance.isOnline) {
+    if (AppConnectivity.instance.hasNetworkInterface) {
       unawaited(AttendanceOfflineSync.drainSessionValidationFirst());
     }
     setState(() {});

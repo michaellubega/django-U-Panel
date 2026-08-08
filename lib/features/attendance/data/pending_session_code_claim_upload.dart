@@ -229,7 +229,7 @@ class PendingSessionCodeClaimUpload {
   }
 
   static Future<bool> _isOnlineForUpload() async {
-    // RTD is the primary upload path — do not require Firestore reachability.
+    // RTD/API is the primary upload path — do not require reachability probe.
     return AppConnectivity.instance.hasNetworkInterface;
   }
 

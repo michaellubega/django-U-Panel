@@ -1,7 +1,10 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show debugPrint, kDebugMode;
+
 import '../auth/auth_repository.dart';
 import '../auth/student_registration_number.dart';
+import 'api_client.dart';
 import 'api_collections.dart';
 import 'api_config.dart';
 import 'api_datetime.dart';
@@ -237,6 +240,15 @@ abstract final class CheckInRtdAttemptPublish {
     DateTime? pendingUntil,
   }) async {
     if (!isApiConfigured) return false;
+    await ApiClient.instance.ensureLoaded();
+    if (ApiClient.instance.token == null || ApiClient.instance.token!.isEmpty) {
+      if (kDebugMode) {
+        debugPrint(
+          'CheckInRtdAttemptPublish: skip upload for $recordId — not signed in.',
+        );
+      }
+      return false;
+    }
     final payload = _attemptPayload(
       studentId: studentId,
       deviceId: deviceId,
@@ -259,7 +271,11 @@ abstract final class CheckInRtdAttemptPublish {
           .doc(recordId)
           .set(payload, const ApiSetOptions(merge: true));
       return true;
-    } catch (_) {
+    } catch (e, st) {
+      if (kDebugMode) {
+        debugPrint('CheckInRtdAttemptPublish.uploadPending $recordId failed: $e');
+        debugPrint('$st');
+      }
       return false;
     }
   }
