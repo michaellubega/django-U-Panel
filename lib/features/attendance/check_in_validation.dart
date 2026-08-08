@@ -85,7 +85,7 @@ bool isPositionWithinSession(AttendanceSession s, double lat, double lng) {
   if (sessionSkipsLocationCheck(s)) return true;
   if (!isValidCheckInCoordinates(lat, lng)) return false;
   final dist = sessionDistanceMeters(s, lat, lng);
-  return dist <= s.radiusMeters;
+  return dist <= s.radiusMeters + kCheckInGeofenceBufferMeters;
 }
 
 /// Relaxed GPS match when upgrading an official absent row from device evidence.

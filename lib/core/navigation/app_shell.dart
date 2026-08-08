@@ -98,7 +98,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
         unawaited(PushController.instance.syncTopicsForCurrentUser());
         unawaited(AttendanceRemoteListWatch.instance.start());
         unawaited(StudentLocationPriming.instance.primeOnAppOpen());
-        Future<void>.delayed(const Duration(seconds: 2), () {
+        Future<void>.delayed(const Duration(milliseconds: 400), () {
           if (!mounted) return;
           PendingOfflineCoordinator.instance.start();
         });

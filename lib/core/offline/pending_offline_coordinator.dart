@@ -67,7 +67,9 @@ class PendingOfflineCoordinator {
 
   /// Debounced sync when pending work is enqueued; immediate when connectivity returns.
   void requestSync({bool immediate = false}) {
-    if (!_running) return;
+    if (!_running) {
+      start();
+    }
     if (immediate) {
       _syncDebounceTimer?.cancel();
       unawaited(_urgentSync());
@@ -79,8 +81,13 @@ class PendingOfflineCoordinator {
     });
   }
 
+  /// Upload queued check-ins when the device has network — do not require the
+  /// optimistic [AppConnectivity.isOnline] flag (API probes can lag after 502s).
+  static bool get _canAttemptUploadSync =>
+      AppConnectivity.instance.hasNetworkInterface;
+
   void _onConnectivityChanged() {
-    if (AppConnectivity.instance.isOnline) {
+    if (_canAttemptUploadSync) {
       requestSync(immediate: true);
     }
   }
@@ -88,7 +95,7 @@ class PendingOfflineCoordinator {
   /// Best-effort upload when the app moves to background but is still running.
   Future<void> _backgroundSync() async {
     if (!AuthRepository.instance.isLoggedIn) return;
-    if (!AppConnectivity.instance.isOnline) return;
+    if (!_canAttemptUploadSync) return;
     try {
       await AttendanceOfflineSync.drainUrgentUploadsOnly(
         timeBudget: _backgroundSyncTimeout,
@@ -125,10 +132,10 @@ class PendingOfflineCoordinator {
       return;
     }
     if (!AuthRepository.instance.isLoggedIn) return;
-    if (!AppConnectivity.instance.isOnline) return;
+    if (!_canAttemptUploadSync) return;
     _tickInFlight = true;
     try {
-      await AttendanceOfflineSync.drainAllInOrder();
+      await AttendanceOfflineSync.drainSessionValidationFirst();
     } catch (e, st) {
       if (kDebugMode) {
         debugPrint('PendingOfflineCoordinator: urgent sync failed: $e');
@@ -152,8 +159,11 @@ class PendingOfflineCoordinator {
     if (!AuthRepository.instance.isLoggedIn) return;
     _tickInFlight = true;
     try {
-      if (syncWhenOnline && AppConnectivity.instance.isOnline) {
-        await AttendanceOfflineSync.drainAllInOrder();
+      if (syncWhenOnline && _canAttemptUploadSync) {
+        await AttendanceOfflineSync.drainSessionValidationFirst();
+        if (AppConnectivity.instance.isOnline) {
+          await AttendanceOfflineSync.drainAllInOrder();
+        }
       }
       await BackgroundNotificationWorker.runAll();
     } catch (e, st) {
