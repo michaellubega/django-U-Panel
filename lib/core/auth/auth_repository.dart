@@ -1031,10 +1031,16 @@ class AuthRepository extends ChangeNotifier {
       await AttendanceLocalQueues.ensureInitialized();
     } catch (_) {}
 
-    const deadline = Duration(seconds: 15);
+    const deadline = Duration(seconds: 8);
     final end = DateTime.now().add(deadline);
     while (!_apiReady && DateTime.now().isBefore(end)) {
       await Future<void>.delayed(const Duration(milliseconds: 50));
+    }
+
+    if (!_apiReady || !await _apiReachableForBoot()) {
+      _showLoginWhenApiUnreachable();
+      unawaited(_bindAuthStateWhenApiReady());
+      return;
     }
 
     final hasCached = hint == true
@@ -1081,14 +1087,40 @@ class AuthRepository extends ChangeNotifier {
 
   /// Never leave the login screen blocked behind "Signing you in…" forever.
   Future<void> _authRestoreSafetyTimeout() async {
-    await Future<void>.delayed(const Duration(seconds: 12));
+    await Future<void>.delayed(const Duration(seconds: 6));
     if (isLoggedIn) return;
-    if (!_pendingWebSessionRestore) return;
+    if (!_pendingWebSessionRestore && _initialized) return;
+    await abandonWebSessionRestore();
+  }
+
+  /// Clears a stuck web session restore and shows the login screen.
+  Future<void> abandonWebSessionRestore() async {
     _pendingWebSessionRestore = false;
     _initialized = true;
-    if (ApiAuth.instance.currentUser == null) {
-      await AuthSessionCache.clear();
+    _forceSignedOut = false;
+    try {
+      await ApiClient.instance.clearToken();
+    } catch (_) {}
+    try {
+      await ApiAuth.instance.signOut();
+    } catch (_) {}
+    _clearCaches();
+    notifyListeners();
+  }
+
+  Future<bool> _apiReachableForBoot() async {
+    try {
+      await ApiClient.instance.ensureLoaded();
+      return await ApiClient.instance.pingHealthQuick();
+    } catch (_) {
+      return false;
     }
+  }
+
+  void _showLoginWhenApiUnreachable() {
+    _pendingWebSessionRestore = false;
+    _initialized = true;
+    _clearCaches();
     notifyListeners();
   }
 
@@ -1132,6 +1164,13 @@ class AuthRepository extends ChangeNotifier {
     unawaited(_bindAuthStateWhenApiReady());
     if (hasCached) {
       unawaited(_authRestoreSafetyTimeout());
+      unawaited(_checkApiReachableWhileBooting());
+    }
+  }
+
+  Future<void> _checkApiReachableWhileBooting() async {
+    if (!await _apiReachableForBoot()) {
+      _showLoginWhenApiUnreachable();
     }
   }
 

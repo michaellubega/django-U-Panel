@@ -143,6 +143,10 @@ class ApiClient {
     }
   }
 
+  /// Fast boot probe — returns false when nginx/Django is down (502/504).
+  Future<bool> pingHealthQuick({Duration timeout = const Duration(seconds: 4)}) =>
+      ping(timeout: timeout);
+
   Future<http.Response> _send(Future<http.Response> Function() request) async {
     try {
       return await request();

@@ -74,14 +74,21 @@ Future<void> _initStorageForWeb() async {
 
 Future<void> _initApiForWeb() async {
   try {
-    await ApiClient.instance.ensureLoaded();
-    await ApiAuth.instance.restoreSession();
+    await ApiClient.instance
+        .ensureLoaded()
+        .timeout(const Duration(seconds: 5));
+    await ApiAuth.instance
+        .restoreSession()
+        .timeout(const Duration(seconds: 8));
     WebFastBoot.afterFirstFrame(() {
       unawaited(AppConnectivity.instance.initialize());
       unawaited(PushController.instance.initialize());
     });
   } catch (e, st) {
     debugPrint('API init (web) failed: $e\n$st');
+    try {
+      await ApiClient.instance.clearToken();
+    } catch (_) {}
   }
 }
 
