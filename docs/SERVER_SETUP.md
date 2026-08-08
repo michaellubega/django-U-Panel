@@ -38,6 +38,18 @@ Once SSH is off 443, run `setup-https.sh` to enable `https://api.orion13.us`.
 
 ---
 
+## Step 0 — First-time server (not a git clone)
+
+If `git pull` says **not a git repository**, `/opt/upanel` was copied manually. Bootstrap once:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/michaellubega/django-U-Panel/main/scripts/contabo/bootstrap-server.sh | bash
+```
+
+This backs up your `.env.production`, clones the repo, and deploys the web app at `/app/`.
+
+---
+
 ## Step 1 — Confirm stack is running
 
 ```bash
