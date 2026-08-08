@@ -143,9 +143,17 @@
   <script>
     (function upanelSessionHint() {
       try {
+        var hasSessionCache = false;
         var raw = localStorage.getItem('flutter.auth_session_cache_v1');
-        window.upanelCachedSessionHint =
-          raw != null && String(raw).trim().length > 0;
+        if (raw != null && String(raw).trim().length > 0) {
+          hasSessionCache = true;
+        }
+        var hasToken = false;
+        var token = localStorage.getItem('flutter.upanel_api_token_v1');
+        if (token != null && String(token).trim().length > 0) {
+          hasToken = true;
+        }
+        window.upanelCachedSessionHint = hasSessionCache || hasToken;
       } catch (_) {
         window.upanelCachedSessionHint = false;
       }

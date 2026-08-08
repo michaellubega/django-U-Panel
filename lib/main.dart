@@ -76,10 +76,13 @@ Future<void> _initApiForWeb() async {
   try {
     await ApiClient.instance
         .ensureLoaded()
-        .timeout(const Duration(seconds: 5));
-    await ApiAuth.instance
-        .restoreSession()
-        .timeout(const Duration(seconds: 8));
+        .timeout(const Duration(seconds: 3));
+    final token = ApiClient.instance.token;
+    if (token != null && token.isNotEmpty) {
+      await ApiAuth.instance
+          .restoreSession()
+          .timeout(const Duration(seconds: 5));
+    }
     WebFastBoot.afterFirstFrame(() {
       unawaited(AppConnectivity.instance.initialize());
       unawaited(PushController.instance.initialize());

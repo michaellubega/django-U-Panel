@@ -92,3 +92,13 @@ self.addEventListener('activate', (event) => {
 });
 SWEOF
 echo "Wrote no-op flutter_service_worker.js"
+
+# Pre-compress large static assets so nginx gzip_static can serve .gz files.
+if command -v gzip >/dev/null 2>&1; then
+  while IFS= read -r -d '' f; do
+    if [[ ! -f "${f}.gz" ]]; then
+      gzip -9 -k -f "$f"
+    fi
+  done < <(find "$WEB" \( -name 'main.dart.js' -o -name '*.wasm' -o -name 'canvaskit.js' \) -type f -print0 2>/dev/null)
+  echo "Pre-compressed static assets for nginx gzip_static"
+fi

@@ -1031,13 +1031,29 @@ class AuthRepository extends ChangeNotifier {
       await AttendanceLocalQueues.ensureInitialized();
     } catch (_) {}
 
-    const deadline = Duration(seconds: 8);
+    try {
+      await ApiClient.instance.ensureLoaded();
+    } catch (_) {}
+
+    final hasToken = ApiClient.instance.token?.isNotEmpty == true;
+    if (!hasToken && hint != true) {
+      _initialized = true;
+      _pendingWebSessionRestore = false;
+      notifyListeners();
+      unawaited(_bindAuthStateWhenApiReady());
+      return;
+    }
+
+    const deadline = Duration(seconds: 3);
     final end = DateTime.now().add(deadline);
     while (!_apiReady && DateTime.now().isBefore(end)) {
       await Future<void>.delayed(const Duration(milliseconds: 50));
     }
 
-    if (!_apiReady || !await _apiReachableForBoot()) {
+    if (!_apiReady ||
+        !await _apiReachableForBoot(
+          timeout: const Duration(seconds: 2),
+        )) {
       _showLoginWhenApiUnreachable();
       unawaited(_bindAuthStateWhenApiReady());
       return;
@@ -1087,7 +1103,7 @@ class AuthRepository extends ChangeNotifier {
 
   /// Never leave the login screen blocked behind "Signing you in…" forever.
   Future<void> _authRestoreSafetyTimeout() async {
-    await Future<void>.delayed(const Duration(seconds: 6));
+    await Future<void>.delayed(const Duration(seconds: 4));
     if (isLoggedIn) return;
     if (!_pendingWebSessionRestore && _initialized) return;
     await abandonWebSessionRestore();
@@ -1108,10 +1124,12 @@ class AuthRepository extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<bool> _apiReachableForBoot() async {
+  Future<bool> _apiReachableForBoot({
+    Duration timeout = const Duration(seconds: 2),
+  }) async {
     try {
       await ApiClient.instance.ensureLoaded();
-      return await ApiClient.instance.pingHealthQuick();
+      return await ApiClient.instance.pingHealthQuick(timeout: timeout);
     } catch (_) {
       return false;
     }
@@ -1175,7 +1193,7 @@ class AuthRepository extends ChangeNotifier {
   }
 
   Future<void> _bindAuthStateWhenApiReady() async {
-    const deadline = Duration(seconds: 15);
+    const deadline = Duration(seconds: 6);
     final end = DateTime.now().add(deadline);
     while (!_apiReady && DateTime.now().isBefore(end)) {
       await Future<void>.delayed(const Duration(milliseconds: 50));

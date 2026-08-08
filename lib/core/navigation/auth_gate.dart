@@ -55,7 +55,7 @@ class _AuthGateState extends State<AuthGate> {
       }
       return;
     }
-    _loadingRetryTimer = Timer(const Duration(seconds: 8), () {
+    _loadingRetryTimer = Timer(const Duration(seconds: 5), () {
       if (!mounted) return;
       final stillWaiting = !AuthRepository.instance.initialized ||
           AuthRepository.instance.pendingWebSessionRestore;
