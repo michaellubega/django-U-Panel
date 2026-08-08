@@ -17,6 +17,27 @@
   <title>U-Panel</title>
   <link rel="manifest" href="manifest.json">
 
+  <script>
+    (function upanelApiBaseUrl() {
+      var host = location.hostname;
+      var origin = location.protocol + '//' + location.host;
+      if (host === '169.58.135.136') {
+        window.upanelApiBaseUrl = 'http://169.58.135.136';
+        return;
+      }
+      if (host === 'api.orion13.us') {
+        window.upanelApiBaseUrl = origin;
+        return;
+      }
+      if (host === 'kiu.orion13.us' || host === 'www.kiu.orion13.us') {
+        // HTTPS site must call an HTTPS API (set DNS: api.orion13.us → VPS + Cloudflare).
+        window.upanelApiBaseUrl = 'https://api.orion13.us';
+        return;
+      }
+      window.upanelApiBaseUrl = 'http://169.58.135.136';
+    })();
+  </script>
+
   <link rel="preload" href="flutter_bootstrap.js" as="script">
   <script>
     (function upanelPreloadCanvasKit() {

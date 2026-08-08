@@ -23,7 +23,7 @@ on:
       api_base_url:
         description: 'UPANEL_API_BASE_URL baked into the web build'
         required: false
-        default: 'https://api.orion13.us'
+        default: 'http://169.58.135.136'
 
 permissions:
   contents: write
@@ -47,7 +47,7 @@ jobs:
 
       - name: Build web app
         env:
-          API_URL: ${{ github.event.inputs.api_base_url || 'https://api.orion13.us' }}
+          API_URL: ${{ github.event.inputs.api_base_url || 'http://169.58.135.136' }}
         run: |
           flutter pub get
           flutter build web --release \

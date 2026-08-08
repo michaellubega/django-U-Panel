@@ -2,12 +2,21 @@
 ///
 /// Override at compile time:
 /// `flutter run --dart-define=UPANEL_API_BASE_URL=http://192.168.1.10:8000`
+///
+/// On web, [web/index.html] may set `window.upanelApiBaseUrl` at runtime
+/// (same-origin on Contabo, or https://api.orion13.us when configured).
+import 'api_config_stub.dart' if (dart.library.js_interop) 'api_config_web.dart';
+
 const String _kApiBaseUrlFromEnv = String.fromEnvironment(
   'UPANEL_API_BASE_URL',
   defaultValue: 'http://127.0.0.1:8000',
 );
 
 String get uPanelApiBaseUrl {
+  final runtime = webRuntimeApiBaseUrl;
+  if (runtime != null && runtime.isNotEmpty) {
+    return runtime.endsWith('/') ? runtime.substring(0, runtime.length - 1) : runtime;
+  }
   final v = _kApiBaseUrlFromEnv.trim();
   if (v.isEmpty) return 'http://127.0.0.1:8000';
   return v.endsWith('/') ? v.substring(0, v.length - 1) : v;
@@ -15,7 +24,7 @@ String get uPanelApiBaseUrl {
 
 bool get isApiConfigured => uPanelApiBaseUrl.trim().isNotEmpty;
 
-/// True when the compile-time API URL uses plain HTTP (blocked from HTTPS web pages).
+/// True when the API URL uses plain HTTP (blocked from HTTPS web pages).
 bool get isInsecureApiBaseUrl =>
     uPanelApiBaseUrl.toLowerCase().startsWith('http://');
 
