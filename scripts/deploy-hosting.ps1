@@ -10,7 +10,7 @@
 #   Landing  -> https://kiu.orion13.us/  (git push website/)
 
 param(
-    [string]$ApiBaseUrl = "https://api.orion13.us",
+    [string]$ApiBaseUrl = "http://169.58.135.136",
     [string]$WebBaseHref = "/app/"
 )
 

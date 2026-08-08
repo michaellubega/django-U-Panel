@@ -6,13 +6,14 @@ abstract final class UserFacingErrors {
 
   /// Shown when the web app (HTTPS) cannot reach an HTTP-only API (browser blocks it).
   static const secureWebInsecureApi =
-      'The web app cannot reach the server securely yet. '
-      'Use https://kiu.orion13.us/app/ after HTTPS is enabled, or https://api.orion13.us/app/. '
-      'Ask ICT to finish Cloudflare setup for api.orion13.us.';
+      'The web app cannot reach the server securely. '
+      'Set up Cloudflare for api.orion13.us (see scripts/contabo/setup-cloudflare-https.sh), '
+      'or use http://169.58.135.136/app/ on the VPS until HTTPS is ready.';
 
   static const apiConnectionBlocked =
-      'Could not reach the server. Check your connection, then try again. '
-      'Web: https://kiu.orion13.us/app/ — API: https://api.orion13.us/api/health/';
+      'Could not reach the server. If you use https://kiu.orion13.us/app/, '
+      'add DNS api.orion13.us → your VPS with Cloudflare HTTPS. '
+      'Or open http://169.58.135.136/app/ instead.';
 
   static const serviceUnavailable =
       'The service is temporarily unavailable. Check your connection, restart the app, and try again.';
