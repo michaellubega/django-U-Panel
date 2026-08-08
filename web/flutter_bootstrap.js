@@ -1,12 +1,14 @@
 {{flutter_js}}
 {{flutter_build_config}}
 
-// Load CanvasKit from bundled /canvaskit/ (not gstatic CDN) so boot works on
-// slow or restricted networks.
-// No serviceWorkerSettings — hosting cache headers handle boot assets;
-// Flutter's deprecated SW caused MIME/caching issues when files were missing.
-_flutter.loader.load({
-  config: {
-    canvasKitBaseUrl: '/canvaskit/',
-  },
-});
+// Load CanvasKit from bundled canvaskit/ under the page <base href> (e.g. /app/canvaskit/).
+(function () {
+  var baseEl = document.querySelector('base');
+  var root = (baseEl && baseEl.getAttribute('href')) || '/';
+  if (!root.endsWith('/')) root += '/';
+  _flutter.loader.load({
+    config: {
+      canvasKitBaseUrl: root + 'canvaskit/',
+    },
+  });
+})();
