@@ -15,21 +15,21 @@ STAFF_NUMBERS = "accounts/staff-numbers"
 
 def sync_user_profile(user: User) -> None:
     uid = str(user.pk)
-    _upsert(
-        USERS,
-        uid,
-        {
-            "fullName": user.full_name,
-            "email": user.email,
-            "role": user.role,
-            "isStudent": user.is_student,
-            "registrationNumber": user.registration_number,
-            "staffNumber": user.staff_number,
-            "kiuAdminJobTitle": user.kiu_admin_job_title,
-            "kiuAdminOnboardingComplete": user.kiu_admin_onboarding_complete,
-            "emailVerified": user.email_verified,
-        },
-    )
+    user_data = {
+        "fullName": user.full_name,
+        "email": user.email,
+        "role": user.role,
+        "isStudent": user.is_student,
+        "registrationNumber": user.registration_number,
+        "staffNumber": user.staff_number,
+        "kiuAdminJobTitle": user.kiu_admin_job_title,
+        "kiuAdminOnboardingComplete": user.kiu_admin_onboarding_complete,
+        "emailVerified": user.email_verified,
+    }
+    reg = (user.registration_number or "").strip().upper()
+    if user.is_student and not user.email_verified and reg:
+        user_data["pendingRegistrationNumber"] = reg
+    _upsert(USERS, uid, user_data)
 
     if user.is_administrator:
         admin_data = {
@@ -62,7 +62,6 @@ def sync_user_profile(user: User) -> None:
     else:
         _delete_if_exists(LECTURERS, uid)
 
-    reg = (user.registration_number or "").strip().upper()
     if reg:
         _upsert(
             STUDENT_REGS,

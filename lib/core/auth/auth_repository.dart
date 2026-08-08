@@ -2585,14 +2585,13 @@ class AuthRepository extends ChangeNotifier {
       }
       clearAuthFormError();
 
-      await apiStore().collection(ApiCollections.appUsers).doc(uid).set({
-        'email': em,
-        'fullName': name,
-        pendingRegistrationNumberField: reg,
-        appUserIsStudentField: true,
-        'createdAt': ApiFieldValue.serverTimestamp(),
-      }, ApiSetOptions(merge: true));
-      _cachedIsStudentProfile = true;
+      // Django post_save already mirrors accounts/users; this merge adds pending reg.
+      await _saveStudentProfileAtSignup(
+        uid: uid,
+        email: em,
+        fullName: name,
+        registrationNumber: reg,
+      );
 
       try {
         await user.updateDisplayName(name);
@@ -2627,6 +2626,7 @@ class AuthRepository extends ChangeNotifier {
         _describeAuthChannelFailure(ex) ?? UserFacingErrors.saveAccountFailed,
       );
     } on ApiException catch (fe) {
+      // Should not happen after profile save was isolated; keep rollback for safety.
       await _rollbackIncompleteRegistration(cred?.user, registrationNumber: reg);
       if (fe.code == 'permission-denied') {
         return _authActionError(UserFacingErrors.saveProfileFailed);
@@ -2649,6 +2649,56 @@ class AuthRepository extends ChangeNotifier {
       _endAuthenticating();
       notifyListeners();
     }
+  }
+
+  /// Merges student signup fields into [accounts/users/{uid}]. Returns false on failure.
+  Future<bool> _saveStudentProfileAtSignup({
+    required String uid,
+    required String email,
+    required String fullName,
+    required String registrationNumber,
+  }) async {
+    final reg = StudentRegistrationNumber.normalize(registrationNumber);
+    final em = StudentAuthEmail.normalizeStudentEmail(email);
+    final name = fullName.trim();
+    for (var attempt = 0; attempt < 3; attempt++) {
+      try {
+        await apiStore().collection(ApiCollections.appUsers).doc(uid).set({
+          'email': em,
+          'fullName': name,
+          pendingRegistrationNumberField: reg,
+          appUserIsStudentField: true,
+          'createdAt': ApiFieldValue.serverTimestamp(),
+        }, ApiSetOptions(merge: true));
+        _cachedIsStudentProfile = true;
+        _cachedReg = reg;
+        return true;
+      } on ApiException catch (fe) {
+        if (kDebugMode) {
+          debugPrint(
+            'AuthRepository._saveStudentProfileAtSignup attempt ${attempt + 1}: '
+            '${fe.code} ${fe.message}',
+          );
+        }
+        if (attempt < 2) {
+          await Future<void>.delayed(Duration(milliseconds: 250 * (attempt + 1)));
+          continue;
+        }
+      } catch (ex, st) {
+        if (kDebugMode) {
+          debugPrint('AuthRepository._saveStudentProfileAtSignup: $ex');
+          debugPrint('$st');
+        }
+        if (attempt < 2) {
+          await Future<void>.delayed(Duration(milliseconds: 250 * (attempt + 1)));
+          continue;
+        }
+      }
+    }
+    // Account + server-side sync already exist — signup can continue.
+    _cachedIsStudentProfile = true;
+    _cachedReg = reg;
+    return false;
   }
 
   String _mapAuthError(ApiAuthException ex) {

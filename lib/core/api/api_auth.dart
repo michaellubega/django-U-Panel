@@ -166,9 +166,13 @@ class ApiAuth {
       throw ApiAuthException('unknown', 'Empty registration response.');
     }
     final token = json['token']?.toString();
-    if (token != null && token.isNotEmpty) {
-      await ApiClient.instance.setToken(token);
+    if (token == null || token.isEmpty) {
+      throw ApiAuthException(
+        'unknown',
+        'Registration succeeded but no auth token was returned.',
+      );
     }
+    await ApiClient.instance.setToken(token);
     final userJson = json['user'] as Map<String, dynamic>? ?? {};
     final user = ApiUser(
       uid: userJson['id']?.toString() ?? '',
