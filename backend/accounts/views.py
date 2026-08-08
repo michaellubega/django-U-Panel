@@ -11,8 +11,11 @@ from rest_framework.views import APIView
 
 from .models import PushDevice, User
 from .serializers import PushDeviceSerializer, RegisterSerializer, UserSerializer
-from .services.email_verification import EmailVerificationError, send_verification_email, verify_email_token
-from .services.mailjet_email import MailDeliveryError
+from .services.email_verification import (
+    EmailVerificationError,
+    queue_verification_email,
+    verify_email_token,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,14 +76,6 @@ class RegisterView(APIView):
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
         token, _ = Token.objects.get_or_create(user=user)
-        try:
-            send_verification_email(user)
-        except EmailVerificationError as exc:
-            logger.warning("Register verification throttled for %s: %s", user.email, exc.message)
-        except MailDeliveryError as exc:
-            logger.error("Register verification email failed for %s: %s", user.email, exc.message)
-        except Exception:
-            logger.exception("Register verification email failed for %s", user.email)
         return Response(
             {"token": token.key, "user": UserSerializer(user).data},
             status=status.HTTP_201_CREATED,
@@ -109,19 +104,13 @@ class RequestVerificationView(APIView):
         if user.email_verified:
             return Response({"detail": "Email is already verified."})
         try:
-            send_verification_email(user)
+            queue_verification_email(user)
         except EmailVerificationError as exc:
             return Response({"detail": exc.message}, status=status.HTTP_429_TOO_MANY_REQUESTS)
-        except MailDeliveryError as exc:
-            logger.error("Verification email failed for %s: %s", user.email, exc.message)
-            return Response(
-                {"detail": exc.message or "Could not send verification email."},
-                status=status.HTTP_503_SERVICE_UNAVAILABLE,
-            )
         except Exception:
-            logger.exception("Verification email failed for %s", user.email)
+            logger.exception("Failed to queue verification email for %s", user.email)
             return Response(
-                {"detail": "Could not send verification email. Try again later."},
+                {"detail": "Could not queue verification email. Try again later."},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE,
             )
         return Response({"detail": "Verification email sent."})
