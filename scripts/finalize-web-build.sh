@@ -43,4 +43,33 @@ for gate in android_web_gate.js upanel_brand.js; do
   [[ -f "$ROOT/web/$gate" ]] && cp "$ROOT/web/$gate" "$WEB/$gate"
 done
 
+# Ensure CanvasKit loads under <base href> (e.g. /app/canvaskit/), not site root.
+if [[ -f "$WEB/flutter_bootstrap.js" ]]; then
+  python3 - "$WEB/flutter_bootstrap.js" <<'PY'
+import re, sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text(encoding="utf-8")
+if "canvasKitBaseUrl: '/canvaskit/'" in text or 'canvasKitBaseUrl: "/canvaskit/"' in text:
+    text = re.sub(
+        r"_flutter\.loader\.load\(\{\s*config:\s*\{\s*canvasKitBaseUrl:\s*['\"]/canvaskit/['\"],\s*\},\s*\}\);",
+        """(function () {
+  var baseEl = document.querySelector('base');
+  var root = (baseEl && baseEl.getAttribute('href')) || '/';
+  if (!root.endsWith('/')) root += '/';
+  _flutter.loader.load({
+    config: {
+      canvasKitBaseUrl: root + 'canvaskit/',
+    },
+  });
+})();""",
+        text,
+        count=1,
+    )
+    path.write_text(text, encoding="utf-8")
+    print("Patched flutter_bootstrap.js canvasKitBaseUrl for subpath deploy")
+PY
+fi
+
 echo "Web build verification passed."
