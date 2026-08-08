@@ -35,16 +35,16 @@ def queue_verification_email(user: User) -> None:
     if user.email_verified:
         return
     _enforce_rate_limit(user.pk)
+    _record_send(user.pk)
     from accounts.tasks import send_verification_email_task
 
     send_verification_email_task.delay(user.pk)
 
 
 def send_verification_email(user: User) -> None:
+    """Send verification mail (called from Celery — rate limits apply at queue time)."""
     if user.email_verified:
         return
-
-    _enforce_rate_limit(user.pk)
 
     raw_token = secrets.token_urlsafe(TOKEN_BYTES)
     token_hash = _hash_token(raw_token)
@@ -77,7 +77,6 @@ def send_verification_email(user: User) -> None:
         text_body=message,
         html_body=html,
     )
-    _record_send(user.pk)
 
 
 def verify_email_token(raw_token: str) -> User:

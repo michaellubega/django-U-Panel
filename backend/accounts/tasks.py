@@ -8,7 +8,10 @@ logger = logging.getLogger(__name__)
 def send_verification_email_task(self, user_id: int) -> None:
     """Send signup verification email in the background (SMTP must not block HTTP)."""
     from accounts.models import User
-    from accounts.services.email_verification import send_verification_email
+    from accounts.services.email_verification import (
+        EmailVerificationError,
+        send_verification_email,
+    )
     from accounts.services.mailjet_email import MailDeliveryError
 
     try:
@@ -19,6 +22,13 @@ def send_verification_email_task(self, user_id: int) -> None:
     try:
         send_verification_email(user)
         logger.info("Verification email sent for user %s (%s)", user_id, user.email)
+    except EmailVerificationError as exc:
+        logger.warning(
+            "Verification email skipped for user %s: %s",
+            user_id,
+            exc.message,
+        )
+        return
     except MailDeliveryError as exc:
         logger.error(
             "Verification email failed for user %s (%s): %s",
