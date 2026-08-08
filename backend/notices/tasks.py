@@ -7,7 +7,7 @@ def push_notice_created(notice_id: int) -> None:
     from notices.models import Notice
     from upanel.services.onesignal import send_push, tag_for_list
 
-kPushAllNoticesTag = "all_notices"
+    k_push_all_notices_tag = "all_notices"
 
     try:
         notice = Notice.objects.select_related("author").get(pk=notice_id)
@@ -20,7 +20,7 @@ kPushAllNoticesTag = "all_notices"
     if notice.target_list_id:
         tags = {tag_for_list(notice.target_list_id): "true"}
     else:
-        tags = {kPushAllNoticesTag: "true"}
+        tags = {k_push_all_notices_tag: "true"}
 
     send_push(
         headings=title,
