@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import math
+from datetime import datetime, timezone as dt_timezone
+
+from django.utils.dateparse import parse_datetime
 
 from ..models import ApiDocument
 
 CHECK_IN_COLLECTION = "attendance/check-in-attempts"
 SESSIONS_COLLECTION = "attendance/sessions"
 RECORDS_COLLECTION = "attendance/records"
+
+GEOFENCE_BUFFER_METERS = 15
 
 
 def maybe_process_check_in(doc: ApiDocument) -> None:
@@ -20,35 +25,53 @@ def maybe_process_check_in(doc: ApiDocument) -> None:
         return
 
     session_id = (data.get("sessionId") or "").strip()
-    if not session_id or data.get("awaitingSession"):
+    awaiting = bool(data.get("awaitingSession"))
+    if not session_id or awaiting:
         session_id = _link_session_by_code(doc, data)
         if not session_id:
+            # Offline / lecturer-not-started-yet: keep pending for retry.
+            if awaiting or (data.get("sessionCodeRaw") or "").strip():
+                return
+            _reject(doc, data, "session code not found")
             return
         data = dict(doc.data or {})
 
     student_id = (data.get("studentId") or "").strip()
     if not student_id:
+        _reject(doc, data, "missing student id")
         return
 
     session = _load_session(session_id)
     if session is None:
+        _reject(doc, data, "session does not match")
         return
 
-    if not _within_geofence(session.data or {}, data):
-        data["status"] = "rejected"
-        data["rejectionReason"] = "outside_geofence"
+    session_data = session.data or {}
+    if not _within_session_time(session_data, data):
+        _reject(doc, data, "outside session time")
+        return
+
+    if not _within_geofence(session_data, data):
+        _reject(doc, data, "outside class location")
+        return
+
+    record_id = f"{session_id}_{student_id}"
+    if _record_exists(record_id):
+        data["status"] = "accepted"
+        data["sessionId"] = session_id
+        data["listId"] = data.get("listId") or session_data.get("listId", "")
+        data["awaitingSession"] = False
         doc.data = data
         doc.save(update_fields=["data", "updated_at"])
         return
 
     data["status"] = "accepted"
     data["sessionId"] = session_id
-    data["listId"] = data.get("listId") or (session.data or {}).get("listId", "")
+    data["listId"] = data.get("listId") or session_data.get("listId", "")
     data["awaitingSession"] = False
     doc.data = data
     doc.save(update_fields=["data", "updated_at"])
 
-    record_id = f"{session_id}_{student_id}"
     record_payload = {
         "sessionId": session_id,
         "studentId": student_id,
@@ -68,6 +91,20 @@ def maybe_process_check_in(doc: ApiDocument) -> None:
     )
 
 
+def _reject(doc: ApiDocument, data: dict, reason: str) -> None:
+    data["status"] = "rejected"
+    data["rejectionReason"] = reason
+    doc.data = data
+    doc.save(update_fields=["data", "updated_at"])
+
+
+def _record_exists(record_id: str) -> bool:
+    return ApiDocument.objects.filter(
+        collection=RECORDS_COLLECTION,
+        doc_id=record_id,
+    ).exists()
+
+
 def _link_session_by_code(doc: ApiDocument, data: dict) -> str:
     code = (data.get("sessionCodeRaw") or "").strip().upper()
     if not code:
@@ -75,7 +112,7 @@ def _link_session_by_code(doc: ApiDocument, data: dict) -> str:
     session = (
         ApiDocument.objects.filter(
             collection=SESSIONS_COLLECTION,
-            data__sessionCode=code,
+            data__sessionCode__iexact=code,
             data__status="active",
         )
         .order_by("-updated_at")
@@ -102,6 +139,47 @@ def _load_session(session_id: str) -> ApiDocument | None:
         return None
 
 
+def _parse_timestamp(value) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=dt_timezone.utc)
+        return value
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(value / 1000.0, tz=dt_timezone.utc)
+        except (OSError, OverflowError, ValueError):
+            try:
+                return datetime.fromtimestamp(value, tz=dt_timezone.utc)
+            except (OSError, OverflowError, ValueError):
+                return None
+    text = str(value).strip()
+    if not text:
+        return None
+    parsed = parse_datetime(text)
+    if parsed is None:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=dt_timezone.utc)
+    return parsed
+
+
+def _within_session_time(session_data: dict, attempt_data: dict) -> bool:
+    captured = _parse_timestamp(attempt_data.get("capturedAt"))
+    if captured is None:
+        return True
+    start = _parse_timestamp(session_data.get("startTime"))
+    end = _parse_timestamp(session_data.get("endTime"))
+    if start is not None and captured < start:
+        return False
+    if end is not None:
+        status = (session_data.get("status") or "").strip().lower()
+        if captured > end and status != "active":
+            return False
+    return True
+
+
 def _within_geofence(session_data: dict, attempt_data: dict) -> bool:
     if session_data.get("remoteLearning"):
         return True
@@ -117,8 +195,10 @@ def _within_geofence(session_data: dict, attempt_data: dict) -> bool:
         return False
     if center_lat == 0 and center_lng == 0:
         return True
+    if abs(lat) < 0.001 and abs(lng) < 0.001:
+        return False
     distance = _haversine_meters(center_lat, center_lng, lat, lng)
-    return distance <= radius + 15
+    return distance <= radius + GEOFENCE_BUFFER_METERS
 
 
 def _haversine_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
