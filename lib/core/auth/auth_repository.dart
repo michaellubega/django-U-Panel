@@ -2554,6 +2554,7 @@ class AuthRepository extends ChangeNotifier {
     _beginAuthenticating();
     notifyListeners();
     try {
+      await ApiClient.instance.ensureLoaded();
       cred = await ApiAuth.instance.createUserWithEmailAndPassword(
         email: em,
         password: password,
@@ -2567,32 +2568,24 @@ class AuthRepository extends ChangeNotifier {
         );
       }
       final uid = user.uid;
+      if (uid.trim().isEmpty) {
+        return _authActionError(
+          'Account created but user id is missing. Try signing in.',
+        );
+      }
 
       if (!await _ensureApiAuthReady(user)) {
-        await _rollbackIncompleteRegistration(user);
-        return _authActionError(UserFacingErrors.saveAccountFailed);
+        return _authActionError(
+          'Your account was created. Sign in with your email and password, '
+          'then complete email verification.',
+        );
       }
 
-      final lockErr = await _reserveStudentRegistrationPendingAtSignup(
-        uid: uid,
-        email: em,
-        registrationNumber: reg,
-        fullName: name,
-      );
-      if (lockErr != null) {
-        await _rollbackIncompleteRegistration(user, registrationNumber: reg);
-        return _authActionError(lockErr);
-      }
-      clearAuthFormError();
-
-      await apiStore().collection(ApiCollections.appUsers).doc(uid).set({
-        'email': em,
-        'fullName': name,
-        pendingRegistrationNumberField: reg,
-        appUserIsStudentField: true,
-        'createdAt': ApiFieldValue.serverTimestamp(),
-      }, ApiSetOptions(merge: true));
+      // RegisterSerializer + sync_user_profile already create student_registrations
+      // and accounts/users on the server — no extra document writes required here.
       _cachedIsStudentProfile = true;
+      _cachedReg = reg;
+      clearAuthFormError();
 
       try {
         await user.updateDisplayName(name);
@@ -2604,10 +2597,6 @@ class AuthRepository extends ChangeNotifier {
         if (kDebugMode) {
           debugPrint('registerWithEmail: verification email failed: ${ex.code} ${ex.message}');
         }
-        // Account + profile are saved — user can resend from EmailVerificationScreen.
-        if (ex.code != 'too-many-requests' && kDebugMode) {
-          debugPrint('registerWithEmail: continuing to verification screen despite email failure');
-        }
       } catch (ex) {
         if (kDebugMode) {
           debugPrint('registerWithEmail: verification email failed: $ex');
@@ -2617,7 +2606,14 @@ class AuthRepository extends ChangeNotifier {
       _forceSignedOut = false;
       clearAuthFormError();
       clearAuthFormDraft();
-      await _hydrateUser(user, allowDuringAuth: true);
+      try {
+        await _hydrateUser(user, allowDuringAuth: true);
+      } catch (e, st) {
+        if (kDebugMode) {
+          debugPrint('registerWithEmail: hydrate after signup: $e');
+          debugPrint('$st');
+        }
+      }
       notifyListeners();
       return const AuthActionResult(needsEmailVerification: true);
     } on ApiAuthException catch (ex) {
@@ -2627,9 +2623,10 @@ class AuthRepository extends ChangeNotifier {
         _describeAuthChannelFailure(ex) ?? UserFacingErrors.saveAccountFailed,
       );
     } on ApiException catch (fe) {
-      await _rollbackIncompleteRegistration(cred?.user, registrationNumber: reg);
-      if (fe.code == 'permission-denied') {
-        return _authActionError(UserFacingErrors.saveProfileFailed);
+      if (cred?.user != null) {
+        return _authActionError(
+          'Your account was created. Sign in with your email and password.',
+        );
       }
       if (fe.code.startsWith('http-4')) {
         return _authActionError(
@@ -2641,7 +2638,11 @@ class AuthRepository extends ChangeNotifier {
       }
       return _authActionError(UserFacingErrors.saveAccountFailed);
     } catch (ex) {
-      await _rollbackIncompleteRegistration(cred?.user, registrationNumber: reg);
+      if (cred?.user != null) {
+        return _authActionError(
+          'Your account was created. Sign in with your email and password.',
+        );
+      }
       return _authActionError(
         _describeAuthChannelFailure(ex) ?? UserFacingErrors.saveAccountFailed,
       );

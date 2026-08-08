@@ -6,7 +6,7 @@
     "ios":  {
                 "label":  "iPhone \u0026 iPad",
                 "status":  "coming_soon",
-                "webUrl":  "https://kiu.orion13.us/app/",
+                "webUrl":  "http://169.58.135.136/app/",
                 "message":  "Native iOS app coming soon. Use the web app in Safari for now."
             },
     "android":  {
@@ -22,7 +22,7 @@
                     "available":  false
                 },
     "web":  {
-                "url":  "https://kiu.orion13.us/app/",
+                "url":  "http://169.58.135.136/app/",
                 "label":  "Web app",
                 "available":  true
             }
