@@ -50,6 +50,10 @@ CheckInRejectionCategory categorizeCheckInRejectionReason(String? reason) {
 
       r.contains('outside class location') ||
 
+      r.contains('outside_geofence') ||
+
+      r.contains('outside geofence') ||
+
       r.contains('session does not match') ||
 
       r.contains('session code not found') ||
@@ -174,7 +178,11 @@ String userMessageForSessionMismatch(String? rejectionReason) {
 
   }
 
-  if (r.contains('outside class location')) {
+  if (r.contains('outside class location') ||
+
+      r.contains('outside_geofence') ||
+
+      r.contains('outside geofence')) {
 
     return 'Check-in was outside the allowed class location for this session.';
 

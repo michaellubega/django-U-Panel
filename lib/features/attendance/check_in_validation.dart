@@ -2,6 +2,9 @@ import 'package:geolocator/geolocator.dart';
 
 import 'models/attendance_models.dart';
 
+/// Matches server-side buffer in `documents/services/check_in.py`.
+const double kCheckInGeofenceBufferMeters = 15;
+
 // Client-trusted time/GPS (same model as before). Queued check-ins re-validate
 // using capture-time coordinates against the session center when syncing.
 
