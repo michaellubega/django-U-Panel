@@ -1,73 +1,48 @@
-# Fix login: Cloudflare + DNS for https://kiu.orion13.us/app/
+# Fix login on https://kiu.orion13.us/app/
 
-The HTTPS web app **cannot** call `http://169.58.135.136` directly (browsers block mixed content). You need an **HTTPS API** endpoint.
-
-Choose **one** option below.
+HTTPS pages cannot call `http://169.58.135.136` (browser blocks it). You need **Cloudflare** in front of your VPS so `https://kiu.orion13.us/api/` works.
 
 ---
 
-## Option A — Recommended: Cloudflare Worker (one domain)
+## Fastest fix (recommended): point `kiu` at the VPS
 
-Use `https://kiu.orion13.us/api/` proxied to your VPS. No separate `api` subdomain required.
+One DNS record — app and API on the same domain.
 
-### 1. Add orion13.us to Cloudflare
+### 1. Cloudflare
 
 1. Sign up at [cloudflare.com](https://cloudflare.com) (free).
-2. **Add site** → enter `orion13.us`.
-3. Cloudflare shows two nameservers (e.g. `ada.ns.cloudflare.com`).
+2. **Add site** → `orion13.us`.
+3. Copy Cloudflare’s two nameservers.
 
-### 2. Point Spaceship nameservers to Cloudflare
+### 2. Spaceship
 
-In **Spaceship** → Domain `orion13.us` → Nameservers → use Cloudflare’s two NS values.
+Domain `orion13.us` → **Nameservers** → paste Cloudflare NS → save.
 
-Wait 5–30 minutes for DNS to propagate.
+Wait 10–30 minutes.
 
-### 3. Cloudflare DNS records
+### 3. Cloudflare DNS
 
 | Type | Name | Content | Proxy |
 |------|------|---------|-------|
-| CNAME | `kiu` | `michaellubega.github.io` | **Proxied** (orange cloud) |
-| CNAME | `www` | `michaellubega.github.io` | Proxied (optional) |
+| **A** | `kiu` | `169.58.135.136` | **Proxied** (orange cloud) |
 
-### 4. Deploy the API Worker
+Remove any `kiu` CNAME to `michaellubega.github.io` (VPS serves the app instead of GitHub Pages).
 
-1. Cloudflare → **Workers & Pages** → **Create** → **Worker**.
-2. Paste the code from [`cloudflare/worker-api-proxy.js`](../cloudflare/worker-api-proxy.js).
-3. **Deploy**.
-4. **Triggers** → **Add route**:
-   - `kiu.orion13.us/api/*`
-   - `kiu.orion13.us/admin/*`
+**SSL/TLS** → **Flexible**
 
-### 5. SSL mode
-
-Cloudflare → **SSL/TLS** → **Overview** → **Flexible**
-
-(Cloudflare serves HTTPS; your VPS stays on HTTP port 80.)
-
-### 6. Server environment (SSH)
+### 4. Server (SSH)
 
 ```bash
 ssh -p 443 root@169.58.135.136
 cd /opt/upanel
+git pull origin main
+bash scripts/contabo/fix-production-env.sh
+bash scripts/contabo/deploy-web-on-server.sh
 ```
 
-Ensure `.env.production` includes:
+`fix-production-env.sh` fixes `PUBLIC_API_URL=PUBLIC_API_URL=...` typos and sets CORS/CSRF.
 
-```env
-DJANGO_ALLOWED_HOSTS=kiu.orion13.us,api.orion13.us,169.58.135.136,localhost,127.0.0.1
-PUBLIC_API_URL=https://kiu.orion13.us
-CORS_ALLOWED_ORIGINS=https://kiu.orion13.us,https://api.orion13.us,http://169.58.135.136
-CSRF_TRUSTED_ORIGINS=https://kiu.orion13.us,https://api.orion13.us
-APP_RETURN_URL=https://kiu.orion13.us/app/
-```
-
-Restart:
-
-```bash
-docker compose -f docker-compose.prod.yml --env-file .env.production restart web worker beat
-```
-
-### 7. Verify
+### 5. Verify
 
 ```bash
 curl -s https://kiu.orion13.us/api/health/
@@ -75,50 +50,32 @@ curl -s https://kiu.orion13.us/api/health/
 
 Expected: `{"status": "ok", "service": "upanel-api"}`
 
-Open https://kiu.orion13.us/app/ and sign in.
+Open **https://kiu.orion13.us/app/** and sign in.
 
 ---
 
-## Option B — Separate API subdomain (`api.orion13.us`)
+## Alternative: GitHub Pages + API subdomain
 
-### Cloudflare DNS
+Keep `kiu` on GitHub Pages (CNAME `michaellubega.github.io`) and add:
 
 | Type | Name | Content | Proxy |
 |------|------|---------|-------|
-| CNAME | `kiu` | `michaellubega.github.io` | Proxied |
-| A | `api` | `169.58.135.136` | **Proxied** |
+| A | `api` | `169.58.135.136` | Proxied |
 
-SSL: **Flexible**
+Set `PUBLIC_API_URL=https://api.orion13.us` in `.env.production`.
 
-Server `.env.production`:
-
-```env
-PUBLIC_API_URL=https://api.orion13.us
-CORS_ALLOWED_ORIGINS=https://kiu.orion13.us,https://api.orion13.us
-```
-
-Verify:
-
-```bash
-curl -s https://api.orion13.us/api/health/
-```
+Or deploy `cloudflare/worker-api-proxy.js` on routes `kiu.orion13.us/api/*` and `kiu.orion13.us/admin/*`.
 
 ---
 
-## Temporary workaround (no DNS changes)
+## Temporary (no DNS)
 
-Use the app on the VPS over HTTP:
-
-**http://169.58.135.136/app/**
-
-Login works there today. Switch to https://kiu.orion13.us/app/ after Option A or B is complete.
+**http://169.58.135.136/app/** — login works today over HTTP.
 
 ---
 
-## GitHub Pages settings
+## GitHub Pages (landing only)
 
-https://github.com/michaellubega/django-U-Panel/settings/pages
+If `kiu` points at the VPS, use **www.orion13.us** or GitHub default URL for the marketing site, or serve landing from the VPS.
 
-- Branch: `gh-pages` / `(root)`
-- Custom domain: `kiu.orion13.us`
-- Enforce HTTPS: On
+Settings: https://github.com/michaellubega/django-U-Panel/settings/pages
