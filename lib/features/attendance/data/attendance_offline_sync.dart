@@ -126,6 +126,21 @@ class AttendanceOfflineSync {
     await drainSessionValidationFirst();
   }
 
+  /// Upload-only pass for the active check-in hot path — skips list/session drains.
+  static Future<void> drainCheckInUploadsOnly() async {
+    await _withDrainLock(() async {
+      if (!AppConnectivity.instance.hasNetworkInterface) return;
+      await _runStep(
+        'AttendanceRepository.syncUnuploadedSignIns',
+        AttendanceRepository.instance.syncUnuploadedSignIns,
+      );
+      await _runStep(
+        '_drainCheckInsWithoutReload',
+        _drainCheckInsWithoutReload,
+      );
+    });
+  }
+
   static Future<void> _withDrainLock(Future<void> Function() body) async {
     final previous = _drainTail;
     final gate = Completer<void>();
@@ -161,45 +176,43 @@ class AttendanceOfflineSync {
 
   /// Pending session creates → session-code validation → GPS check-ins → UI refresh.
   static Future<void> _drainSessionValidationFirstBody() async {
-    if (AppConnectivity.instance.hasNetworkInterface) {
-      PendingSessionCodeSync.refreshSessionPublishWatchesFromQueue();
-      await _runStep(
-        'PendingListCreateSync.drain',
-        PendingListCreateSync.drain,
-      );
-      await _runStep(
-        'PendingSessionCreateSync.drainUrgent',
-        PendingSessionCreateSync.drainUrgent,
-      );
-      await _runStep(
-        'PendingSessionCodeSync.drainUrgent',
-        PendingSessionCodeSync.drainUrgent,
-      );
-    }
-    await _runStep('purgeExpiredPendingOnly', purgeExpiredPendingOnly);
-    // Upload/compare on any network — do not gate on Firestore reachability probe.
-    // Captive portals and slow probes left queues stuck at Pending while urgent
-    // drains at the top had already succeeded.
-    if (AppConnectivity.instance.hasNetworkInterface) {
-      await _runStep(
-        'AttendanceRepository.syncUnuploadedSignIns',
-        AttendanceRepository.instance.syncUnuploadedSignIns,
-      );
-      await _runStep(
-        '_drainSessionCodesWithRetry',
-        _drainSessionCodesWithRetry,
-      );
-      await _runStep(
-        '_drainCheckInsWithoutReload',
-        _drainCheckInsWithoutReload,
-      );
-      await _runStep(
-        '_refreshAfterSessionValidation',
-        _refreshAfterSessionValidation,
-      );
-    } else {
+    if (!AppConnectivity.instance.hasNetworkInterface) {
+      await _runStep('purgeExpiredPendingOnly', purgeExpiredPendingOnly);
       return;
     }
+    PendingSessionCodeSync.refreshSessionPublishWatchesFromQueue();
+    await _runStep(
+      'PendingListCreateSync.drain',
+      PendingListCreateSync.drain,
+    );
+    await _runStep(
+      'PendingSessionCreateSync.drainUrgent',
+      PendingSessionCreateSync.drainUrgent,
+    );
+    await _runStep(
+      'PendingSessionCodeSync.drainUrgent',
+      PendingSessionCodeSync.drainUrgent,
+    );
+    await _runStep('purgeExpiredPendingOnly', purgeExpiredPendingOnly);
+    // Upload/compare on any network — do not gate on API reachability probe.
+    // Captive portals and slow probes left queues stuck at Pending while urgent
+    // drains at the top had already succeeded.
+    await _runStep(
+      'AttendanceRepository.syncUnuploadedSignIns',
+      AttendanceRepository.instance.syncUnuploadedSignIns,
+    );
+    await _runStep(
+      '_drainSessionCodesWithRetry',
+      _drainSessionCodesWithRetry,
+    );
+    await _runStep(
+      '_drainCheckInsWithoutReload',
+      _drainCheckInsWithoutReload,
+    );
+    await _runStep(
+      '_refreshAfterSessionValidation',
+      _refreshAfterSessionValidation,
+    );
     if (await _onlineForDrain()) {
       await _runStep(
         'correctMetadataMatchedAbsentRollForSignedInLists',

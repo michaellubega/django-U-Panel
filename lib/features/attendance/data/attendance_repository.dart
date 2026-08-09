@@ -6553,8 +6553,10 @@ class AttendanceRepository extends ChangeNotifier {
       await AuthRepository.instance.ensureStudentRegistrationHydrated();
     }
     if (AppConnectivity.instance.hasNetworkInterface) {
-      await AppConnectivity.instance.ensureReachable(
-        timeout: _sessionPublishFastTimeout,
+      unawaited(
+        AppConnectivity.instance.ensureReachable(
+          timeout: _sessionPublishFastTimeout,
+        ),
       );
     }
     await recoverUnqueuedLocalPresentCheckIns();
@@ -7184,7 +7186,7 @@ class AttendanceRepository extends ChangeNotifier {
     required String sessionId,
     required String studentId,
     String? sessionCodeRaw,
-    Duration timeout = const Duration(seconds: 5),
+    Duration timeout = const Duration(seconds: 3),
   }) async {
     final recordId = attendanceRecordIdForSessionStudent(sessionId, studentId);
     final listId = AttendanceStore.sessionById(sessionId)?.listId;
@@ -7215,7 +7217,7 @@ class AttendanceRepository extends ChangeNotifier {
 
       if (await isCheckInAttemptRejected(recordId)) return false;
 
-      await Future<void>.delayed(const Duration(milliseconds: 350));
+      await Future<void>.delayed(const Duration(milliseconds: 180));
     }
 
     return AttendanceStore.attendanceRecordForSessionStudent(
@@ -7290,6 +7292,22 @@ class AttendanceRepository extends ChangeNotifier {
     required String recordId,
     String? sessionCodeRaw,
   }) async {
+    if (await _isCheckInAttemptAccepted(recordId)) {
+      _promoteLocalPresentToVerified(sessionId, studentId);
+      await _refreshProfileStatsAfterCheckIn(
+        sessionId: sessionId,
+        studentId: studentId,
+        listId: AttendanceStore.sessionById(sessionId)?.listId,
+      );
+      unawaited(
+        refreshOfficialRecordFromApi(
+          sessionId: sessionId,
+          studentId: studentId,
+        ),
+      );
+      return true;
+    }
+
     final rtdKey = checkInRtdConfirmationKey(
       sessionId: sessionId,
       sessionCodeRaw: sessionCodeRaw ??
@@ -7298,7 +7316,8 @@ class AttendanceRepository extends ChangeNotifier {
     final rtdConf = await CheckInRtdConfirmationWatch.awaitTerminal(
       sessionId: rtdKey,
       studentId: studentId,
-      timeout: const Duration(milliseconds: 1800),
+      timeout: const Duration(milliseconds: 900),
+      pollInterval: const Duration(milliseconds: 120),
     );
     if (rtdConf?.isAccepted == true) {
       return _applyAcceptedCheckInConfirmation(
@@ -7310,7 +7329,7 @@ class AttendanceRepository extends ChangeNotifier {
       return false;
     }
 
-    const fastDelaysMs = [40, 80, 120, 180, 250, 350, 500, 700];
+    const fastDelaysMs = [25, 50, 80, 120, 180, 250, 350];
     for (var i = 0; i < fastDelaysMs.length; i++) {
       if (await _isCheckInAttemptAccepted(recordId)) {
         _promoteLocalPresentToVerified(sessionId, studentId);
@@ -8162,7 +8181,7 @@ class AttendanceRepository extends ChangeNotifier {
     if (!submitted &&
         !permissionDenied &&
         AppConnectivity.instance.hasNetworkInterface) {
-      await Future<void>.delayed(const Duration(milliseconds: 250));
+      await Future<void>.delayed(const Duration(milliseconds: 80));
       uploadResult = await _trySubmitCheckInAttemptDetailed(
         sessionId: record.sessionId,
         studentId: record.studentId,
@@ -8267,8 +8286,8 @@ class AttendanceRepository extends ChangeNotifier {
           sessionCodeRaw: codeForAttempt,
         ).timeout(
           AppConnectivity.instance.isOnline
-              ? const Duration(milliseconds: 3500)
-              : const Duration(milliseconds: 400),
+              ? const Duration(milliseconds: 1100)
+              : const Duration(milliseconds: 300),
           onTimeout: () => false,
         );
       } catch (_) {
@@ -8306,22 +8325,13 @@ class AttendanceRepository extends ChangeNotifier {
           sessionCodeRaw: codeForAttempt,
         );
       }
-      final attemptOnServer = await checkInAttemptExistsOnServer(record.id);
-      if (attemptOnServer) {
-        unawaited(PendingCheckInQueue.markUploaded(record.id));
-        await _upsertPendingCheckInFromRecord(
-          record: localRow,
-          listId: listId,
-          course: resolvedCourse,
-        );
-        return StudentOfflineCheckInOutcome.submittedPendingVerification;
-      }
-      await _enqueuePendingCheckInRow(
-        localRow: localRow,
+      unawaited(PendingCheckInQueue.markUploaded(record.id));
+      await _upsertPendingCheckInFromRecord(
+        record: localRow,
         listId: listId,
         course: resolvedCourse,
       );
-      return StudentOfflineCheckInOutcome.queuedOffline;
+      return StudentOfflineCheckInOutcome.submittedPendingVerification;
     }
 
     _applyLocalPresentCheckInRow(
