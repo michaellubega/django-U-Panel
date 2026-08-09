@@ -65,6 +65,16 @@ class PendingOfflineCoordinator {
     }
   }
 
+  /// Fast upload for an in-progress student check-in (no full offline drain).
+  void requestCheckInSync() {
+    if (!_running) {
+      start();
+    }
+    if (!AuthRepository.instance.isLoggedIn) return;
+    if (!_canAttemptUploadSync) return;
+    unawaited(AttendanceOfflineSync.drainCheckInUploadsOnly());
+  }
+
   /// Debounced sync when pending work is enqueued; immediate when connectivity returns.
   void requestSync({bool immediate = false}) {
     if (!_running) {
@@ -135,7 +145,8 @@ class PendingOfflineCoordinator {
     if (!_canAttemptUploadSync) return;
     _tickInFlight = true;
     try {
-      await AttendanceOfflineSync.drainSessionValidationFirst();
+      await AttendanceOfflineSync.drainCheckInUploadsOnly();
+      unawaited(AttendanceOfflineSync.drainSessionValidationFirst());
     } catch (e, st) {
       if (kDebugMode) {
         debugPrint('PendingOfflineCoordinator: urgent sync failed: $e');
