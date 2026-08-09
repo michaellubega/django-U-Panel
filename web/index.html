@@ -254,15 +254,22 @@
 
     window.upanelShowApiSetupHelp = function () {
       var msg =
-        'Could not reach the U-Panel server. Set up Cloudflare DNS (see docs/CLOUDFLARE_DNS_SETUP.md in the repo) ' +
-        'or use the app at http://169.58.135.136/app/ until DNS is ready.';
+        'Server not reachable over HTTPS yet. Use the VPS app now, or finish Cloudflare DNS setup.';
       window.upanelShowBootRetry(msg);
       var retry = document.getElementById('upanel-boot-retry');
       if (retry) {
-        retry.textContent = 'Open VPS app';
+        retry.textContent = 'Open working app (VPS)';
         retry.onclick = function () {
           location.href = 'http://169.58.135.136/app/';
         };
+      }
+      var splash = document.getElementById('upanel-splash-status');
+      if (splash) {
+        splash.innerHTML =
+          'HTTPS API not configured.<br><br>' +
+          '<strong>Works now:</strong> <a href="http://169.58.135.136/app/" style="color:#0175C2">http://169.58.135.136/app/</a><br><br>' +
+          '<strong>Permanent fix:</strong> Cloudflare → A record <code>kiu</code> → 169.58.135.136 (proxied), ' +
+          'then run <code>bash scripts/contabo/fix-production-env.sh</code> on the server.';
       }
     };
 
