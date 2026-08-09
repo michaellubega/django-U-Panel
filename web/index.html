@@ -18,23 +18,87 @@
   <link rel="manifest" href="manifest.json">
 
   <script>
-    (function upanelApiBaseUrl() {
+    (function upanelApiBaseUrlBootstrap() {
       var host = location.hostname;
       var origin = location.protocol + '//' + location.host;
-      if (host === '169.58.135.136') {
-        window.upanelApiBaseUrl = 'http://169.58.135.136';
-        return;
+
+      function stripSlash(url) {
+        return url.replace(/\/$/, '');
       }
-      if (host === 'api.orion13.us') {
-        window.upanelApiBaseUrl = origin;
-        return;
+
+      function defaultApiBase() {
+        if (host === '169.58.135.136') return 'http://169.58.135.136';
+        if (host === 'api.orion13.us') return origin;
+        if (host === 'kiu.orion13.us' || host === 'www.kiu.orion13.us') {
+          return 'https://kiu.orion13.us';
+        }
+        return 'http://169.58.135.136';
       }
-      if (host === 'kiu.orion13.us' || host === 'www.kiu.orion13.us') {
-        // HTTPS site must call an HTTPS API (set DNS: api.orion13.us → VPS + Cloudflare).
-        window.upanelApiBaseUrl = 'https://api.orion13.us';
-        return;
+
+      function apiCandidates() {
+        if (host === 'kiu.orion13.us' || host === 'www.kiu.orion13.us') {
+          return [origin, 'https://api.orion13.us'];
+        }
+        if (host === '169.58.135.136') return ['http://169.58.135.136'];
+        if (host === 'api.orion13.us') return [origin];
+        return ['http://169.58.135.136'];
       }
-      window.upanelApiBaseUrl = 'http://169.58.135.136';
+
+      function probeApiBase(base) {
+        var url = stripSlash(base) + '/api/health/';
+        return fetch(url, {
+          method: 'GET',
+          mode: 'cors',
+          cache: 'no-store',
+          credentials: 'omit',
+        })
+          .then(function (res) {
+            return res.ok ? stripSlash(base) : null;
+          })
+          .catch(function () {
+            return null;
+          });
+      }
+
+      window.upanelApiBaseUrl = defaultApiBase();
+      window.upanelApiProbeFailed = false;
+
+      window.upanelResolveApiBaseUrl = function () {
+        var list = apiCandidates();
+        if (list.length <= 1) {
+          window.upanelApiBaseUrl = list[0] || defaultApiBase();
+          return Promise.resolve(window.upanelApiBaseUrl);
+        }
+
+        var index = 0;
+        function tryNext() {
+          if (index >= list.length) {
+            window.upanelApiProbeFailed = true;
+            window.upanelApiBaseUrl = defaultApiBase();
+            return Promise.resolve(null);
+          }
+          var candidate = list[index++];
+          return probeApiBase(candidate).then(function (ok) {
+            if (ok) {
+              window.upanelApiBaseUrl = ok;
+              window.upanelApiProbeFailed = false;
+              return ok;
+            }
+            return tryNext();
+          });
+        }
+
+        return Promise.race([
+          tryNext(),
+          new Promise(function (resolve) {
+            window.setTimeout(function () {
+              resolve(null);
+            }, 3500);
+          }),
+        ]).then(function () {
+          return window.upanelApiBaseUrl;
+        });
+      };
     })();
   </script>
 
@@ -188,6 +252,20 @@
       if (retry) retry.style.display = 'none';
     };
 
+    window.upanelShowApiSetupHelp = function () {
+      var msg =
+        'Could not reach the U-Panel server. Set up Cloudflare DNS (see docs/CLOUDFLARE_DNS_SETUP.md in the repo) ' +
+        'or use the app at http://169.58.135.136/app/ until DNS is ready.';
+      window.upanelShowBootRetry(msg);
+      var retry = document.getElementById('upanel-boot-retry');
+      if (retry) {
+        retry.textContent = 'Open VPS app';
+        retry.onclick = function () {
+          location.href = 'http://169.58.135.136/app/';
+        };
+      }
+    };
+
     window.upanelRetryBoot = function () {
       var retry = document.getElementById('upanel-boot-retry');
       if (retry) retry.style.display = 'none';
@@ -309,8 +387,28 @@
     });
 
     (function upanelEarlyBoot() {
-      window.upanelBootFlutter();
-      window.upanelScheduleBootTimeout();
+      var host = location.hostname;
+      var needsProbe =
+        host === 'kiu.orion13.us' || host === 'www.kiu.orion13.us';
+
+      function startBoot() {
+        if (window.upanelApiProbeFailed) {
+          window.upanelShowApiSetupHelp();
+          return;
+        }
+        window.upanelBootFlutter();
+        window.upanelScheduleBootTimeout();
+      }
+
+      if (!needsProbe || !window.upanelResolveApiBaseUrl) {
+        startBoot();
+        return;
+      }
+
+      window.upanelSetBootStatus('Connecting to server…');
+      window.upanelResolveApiBaseUrl().then(function () {
+        startBoot();
+      });
     })();
   </script>
 
