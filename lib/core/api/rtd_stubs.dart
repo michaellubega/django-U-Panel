@@ -122,13 +122,18 @@ abstract final class CheckInRtdConfirmationWatch {
     required String sessionId,
     required String studentId,
     Duration timeout = const Duration(seconds: 45),
+    Duration pollInterval = const Duration(seconds: 2),
   }) async {
     if (!isApiConfigured) return null;
     final deadline = DateTime.now().add(timeout);
     while (DateTime.now().isBefore(deadline)) {
       final conf = await fetchOnce(sessionId: sessionId, studentId: studentId);
       if (conf != null && !conf.isPending) return conf;
-      await Future<void>.delayed(const Duration(seconds: 2));
+      final remaining = deadline.difference(DateTime.now());
+      if (remaining <= Duration.zero) break;
+      await Future<void>.delayed(
+        remaining < pollInterval ? remaining : pollInterval,
+      );
     }
     return fetchOnce(sessionId: sessionId, studentId: studentId);
   }

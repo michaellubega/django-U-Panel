@@ -126,6 +126,21 @@ class AttendanceOfflineSync {
     await drainSessionValidationFirst();
   }
 
+  /// Upload-only pass for the active check-in hot path — skips list/session drains.
+  static Future<void> drainCheckInUploadsOnly() async {
+    await _withDrainLock(() async {
+      if (!AppConnectivity.instance.hasNetworkInterface) return;
+      await _runStep(
+        'AttendanceRepository.syncUnuploadedSignIns',
+        AttendanceRepository.instance.syncUnuploadedSignIns,
+      );
+      await _runStep(
+        '_drainCheckInsWithoutReload',
+        _drainCheckInsWithoutReload,
+      );
+    });
+  }
+
   static Future<void> _withDrainLock(Future<void> Function() body) async {
     final previous = _drainTail;
     final gate = Completer<void>();
