@@ -4,10 +4,13 @@ import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 
 import '../../core/connectivity/app_connectivity.dart';
+import '../../core/api/api_client.dart';
+import '../../core/auth/auth_repository.dart';
 import '../../core/device/device_identity.dart';
 import '../../core/location/location_permission.dart';
 import '../../core/location/location_resolving_panel.dart';
 import '../../core/location/student_location_priming.dart';
+import '../../core/offline/pending_offline_coordinator.dart';
 import '../../core/theme/app_theme.dart';
 import 'check_in_validation.dart';
 import 'check_in_outcome.dart';
@@ -394,6 +397,10 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
     }
 
     await _advanceToStage(0);
+    if (likelyOnline) {
+      unawaited(AuthRepository.instance.ensureStudentRegistrationHydrated());
+      unawaited(ApiClient.instance.ensureLoaded());
+    }
     if (!isTimestampWithinSessionBounds(session, captureIntentAt)) {
       _showError(
         'Check-in is only allowed during the scheduled session window.',
@@ -490,6 +497,9 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
       listIdOverride: widget.list.id,
       sessionCodeRaw: session.sessionCode,
     );
+    if (AppConnectivity.instance.hasNetworkInterface) {
+      PendingOfflineCoordinator.instance.requestCheckInSync();
+    }
     if (!mounted) return;
 
     switch (outcome) {
@@ -568,6 +578,7 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
           sessionId: session.id,
           studentId: widget.student.id,
           sessionCodeRaw: session.sessionCode,
+          timeout: const Duration(seconds: 2),
         );
         if (!mounted) return;
         if (verified) {

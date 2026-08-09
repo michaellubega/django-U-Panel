@@ -76,6 +76,19 @@ class RegisterView(APIView):
         serializer.is_valid(raise_exception=True)
         user = serializer.save()
         token, _ = Token.objects.get_or_create(user=user)
+        if not user.email_verified:
+            try:
+                queue_verification_email(user)
+            except EmailVerificationError as exc:
+                logger.warning(
+                    "Register: could not queue verification for %s: %s",
+                    user.email,
+                    exc.message,
+                )
+            except Exception:
+                logger.exception(
+                    "Register: failed to queue verification for %s", user.email
+                )
         return Response(
             {"token": token.key, "user": UserSerializer(user).data},
             status=status.HTTP_201_CREATED,

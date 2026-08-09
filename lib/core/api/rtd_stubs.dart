@@ -1,7 +1,10 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart' show debugPrint, kDebugMode;
+
 import '../auth/auth_repository.dart';
 import '../auth/student_registration_number.dart';
+import 'api_client.dart';
 import 'api_collections.dart';
 import 'api_config.dart';
 import 'api_datetime.dart';
@@ -119,13 +122,18 @@ abstract final class CheckInRtdConfirmationWatch {
     required String sessionId,
     required String studentId,
     Duration timeout = const Duration(seconds: 45),
+    Duration pollInterval = const Duration(seconds: 2),
   }) async {
     if (!isApiConfigured) return null;
     final deadline = DateTime.now().add(timeout);
     while (DateTime.now().isBefore(deadline)) {
       final conf = await fetchOnce(sessionId: sessionId, studentId: studentId);
       if (conf != null && !conf.isPending) return conf;
-      await Future<void>.delayed(const Duration(seconds: 2));
+      final remaining = deadline.difference(DateTime.now());
+      if (remaining <= Duration.zero) break;
+      await Future<void>.delayed(
+        remaining < pollInterval ? remaining : pollInterval,
+      );
     }
     return fetchOnce(sessionId: sessionId, studentId: studentId);
   }
@@ -237,6 +245,15 @@ abstract final class CheckInRtdAttemptPublish {
     DateTime? pendingUntil,
   }) async {
     if (!isApiConfigured) return false;
+    await ApiClient.instance.ensureLoaded();
+    if (ApiClient.instance.token == null || ApiClient.instance.token!.isEmpty) {
+      if (kDebugMode) {
+        debugPrint(
+          'CheckInRtdAttemptPublish: skip upload for $recordId — not signed in.',
+        );
+      }
+      return false;
+    }
     final payload = _attemptPayload(
       studentId: studentId,
       deviceId: deviceId,
@@ -259,7 +276,11 @@ abstract final class CheckInRtdAttemptPublish {
           .doc(recordId)
           .set(payload, const ApiSetOptions(merge: true));
       return true;
-    } catch (_) {
+    } catch (e, st) {
+      if (kDebugMode) {
+        debugPrint('CheckInRtdAttemptPublish.uploadPending $recordId failed: $e');
+        debugPrint('$st');
+      }
       return false;
     }
   }

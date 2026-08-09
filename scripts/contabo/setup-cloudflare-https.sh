@@ -18,7 +18,10 @@ HTTPS setup for U-Panel (Cloudflare + GitHub Pages)
 ================================================================================
 
 STEP 1 — Cloudflare DNS (orion13.us zone)
-  Add record:
+  Recommended: deploy cloudflare/worker-api-proxy.js on route kiu.orion13.us/api/*
+  (see docs/CLOUDFLARE_DNS_SETUP.md)
+
+  Or add A record:
     Type: A
     Name: api
     Content: ${VPS_IP}
