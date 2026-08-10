@@ -14,11 +14,8 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 API_URL="${UPANEL_API_BASE_URL:-https://kiu.orion13.us}"
-DART_DEFINES=(--dart-define="UPANEL_API_BASE_URL=${API_URL}")
-
-if [[ -n "${ONESIGNAL_APP_ID:-}" ]]; then
-  DART_DEFINES+=(--dart-define="ONESIGNAL_APP_ID=${ONESIGNAL_APP_ID}")
-fi
+ONESIGNAL_ID="${ONESIGNAL_APP_ID:-882dcbec-c505-4c12-95c5-78da7e8ef25c}"
+DART_DEFINES=(--dart-define="UPANEL_API_BASE_URL=${API_URL}" --dart-define="ONESIGNAL_APP_ID=${ONESIGNAL_ID}")
 
 if [[ -n "${SENTRY_DSN:-}" ]]; then
   DART_DEFINES+=(--dart-define="SENTRY_DSN=${SENTRY_DSN}")
