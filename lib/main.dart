@@ -11,6 +11,8 @@ import 'core/auth/auth_repository.dart';
 import 'core/api/api_auth.dart';
 import 'core/api/api_client.dart';
 import 'core/monitoring/app_sentry.dart';
+import 'core/push/onesignal_service.dart';
+import 'core/push/onesignal_integration_verification.dart';
 import 'core/push/push_controller.dart';
 import 'core/notifications/background_notification_entry.dart';
 import 'core/session/app_session_reset.dart';
@@ -21,6 +23,7 @@ Future<void> main() async {
 
 Future<void> _bootstrap() async {
   WidgetsFlutterBinding.ensureInitialized();
+  OneSignalService.initializeSdk();
 
   if (WebFastBoot.enabled) {
     unawaited(_initStorageForWeb());
@@ -105,6 +108,9 @@ class _UPanelAppState extends State<UPanelApp> {
     super.initState();
     AuthRepository.instance.addListener(_onAuthChanged);
     AuthRepository.instance.loadInitialSession();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      OneSignalIntegrationVerification.wireIfNeeded(context);
+    });
   }
 
   void _onAuthChanged() {

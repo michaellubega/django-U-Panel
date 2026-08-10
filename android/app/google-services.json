@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "928489005368",
+    "project_id": "u-panel",
+    "storage_bucket": "u-panel.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:928489005368:android:0379d499738d0642a1a1cd",
+        "android_client_info": {
+          "package_name": "com.u_panel"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBL0of9zKOZSJPTDFEJ7JFAQzqNxWxWCvw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
