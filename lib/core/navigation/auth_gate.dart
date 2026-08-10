@@ -99,6 +99,13 @@ class _AuthGateState extends State<AuthGate> {
                 : message,
             onRetry: _showLoadingRetry ? _retryFromLoadingScreen : null,
           );
+        } else if (auth.isLoggedIn && auth.needsEmailVerification) {
+          // After signup/sign-in, show verification before login/register UI — even
+          // while [_beginAuthenticating] is winding down (otherwise users stay on
+          // the create-account form after a successful registration).
+          child = const EmailVerificationScreen(
+            key: ValueKey('email_verify'),
+          );
         } else if (!auth.isLoggedIn || auth.isAuthenticating) {
           if (auth.pendingWebSessionRestore) {
             child = WebAppLoadingScreen(
@@ -110,10 +117,6 @@ class _AuthGateState extends State<AuthGate> {
             // are not lost when Firebase briefly emits a session (e.g. rollback).
             child = AuthScreen(key: ValueKey('auth_${auth.sessionEpoch}'));
           }
-        } else if (auth.needsEmailVerification) {
-          child = const EmailVerificationScreen(
-            key: ValueKey('email_verify'),
-          );
         } else if (auth.needsKiuAdminOnboarding) {
           child = const KiuAdminOnboardingScreen(
             key: ValueKey('kiu_admin_onboarding'),
