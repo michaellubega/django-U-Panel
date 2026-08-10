@@ -30,11 +30,12 @@ class EmailVerificationError(Exception):
         self.message = message
 
 
-def queue_verification_email(user: User) -> None:
+def queue_verification_email(user: User, *, is_signup: bool = False) -> None:
     """Apply rate limits, then enqueue SMTP send so HTTP handlers return immediately."""
     if user.email_verified:
         return
-    _enforce_rate_limit(user.pk)
+    if not is_signup:
+        _enforce_rate_limit(user.pk)
     _record_send(user.pk)
     from accounts.tasks import send_verification_email_task
 
