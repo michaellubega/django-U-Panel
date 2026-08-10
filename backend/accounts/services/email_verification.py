@@ -36,7 +36,7 @@ def queue_verification_email(user: User, *, is_signup: bool = False) -> None:
         return
     if not is_signup:
         _enforce_rate_limit(user.pk)
-    _record_send(user.pk)
+    _record_send(user.pk, apply_cooldown=not is_signup)
     from accounts.tasks import send_verification_email_task
 
     send_verification_email_task.delay(user.pk)
@@ -161,9 +161,12 @@ def _enforce_rate_limit(user_id: int) -> None:
         return
 
 
-def _record_send(user_id: int) -> None:
+def _record_send(user_id: int, *, apply_cooldown: bool = True) -> None:
     try:
-        cache.set(f"verify_email:cooldown:{user_id}", 1, RESEND_COOLDOWN_SECONDS)
+        if apply_cooldown:
+            cache.set(
+                f"verify_email:cooldown:{user_id}", 1, RESEND_COOLDOWN_SECONDS
+            )
         hour_key = f"verify_email:hour:{user_id}"
         try:
             cache.incr(hour_key)

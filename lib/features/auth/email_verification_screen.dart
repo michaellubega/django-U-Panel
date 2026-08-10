@@ -29,18 +29,21 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen>
     AuthRepository.instance.addListener(_onAuthChanged);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(_tryAlreadyVerified(silent: true));
-      unawaited(_sendInitialVerificationEmail());
+      _showSignupVerificationHintIfNeeded();
     });
   }
 
-  Future<void> _sendInitialVerificationEmail() async {
+  void _showSignupVerificationHintIfNeeded() {
     final auth = AuthRepository.instance;
-    if (!auth.isLoggedIn || !auth.needsEmailVerification) return;
-    final err = await auth.sendEmailVerificationForCurrentUser();
-    if (!mounted || err == null) return;
-    setState(() {
-      _status = err;
-    });
+    if (!auth.shouldShowEmailVerificationUi) return;
+    if (auth.verificationEmailQueuedAtSignup) {
+      auth.clearVerificationEmailQueuedAtSignup();
+      if (!mounted) return;
+      setState(() {
+        _status =
+            'Verification email sent. Check your inbox and Spam/Junk folder.';
+      });
+    }
   }
 
   @override
