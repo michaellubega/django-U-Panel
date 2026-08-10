@@ -993,6 +993,17 @@ class AuthRepository extends ChangeNotifier {
   bool get needsEmailVerification =>
       needsStudentEmailVerification || needsKiuStaffEmailVerification;
 
+  /// True when the signed-in user must verify a KIU mailbox before using the app.
+  /// Unlike [needsEmailVerification], does not require [_apiReady] so signup can
+  /// transition immediately after register returns a session token.
+  bool get shouldShowEmailVerificationUi {
+    if (_forceSignedOut || _signingOut) return false;
+    final user = ApiAuth.instance.currentUser;
+    if (user == null) return false;
+    return _needsStudentEmailVerification(user) ||
+        _needsKiuStaffEmailVerification(user);
+  }
+
   /// After staff email is verified, ask whether the user is a KIU administrator.
   bool get needsKiuAdminOnboarding {
     if (!_apiReady || _forceSignedOut || !isLoggedIn) return false;
@@ -3807,9 +3818,10 @@ class AuthRepository extends ChangeNotifier {
       } catch (_) {}
       notifyListeners();
 
-      final needsVerify = !skipVerify &&
-          (_needsKiuStaffEmailVerification(user) || !user.emailVerified);
-      return AuthActionResult(needsEmailVerification: needsVerify);
+      if (!skipVerify) {
+        clearAuthFormDraft();
+      }
+      return AuthActionResult(needsEmailVerification: !skipVerify);
     } on ApiAuthException catch (ex) {
       if (ex.code == 'email-already-in-use') {
         final signInResult = await signInWithEmail(

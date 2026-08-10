@@ -616,7 +616,7 @@ class _LoginVerificationScreenState extends State<_LoginVerificationScreen>
     setState(() => _done = true);
     if (!mounted) return;
     if (result.needsEmailVerification) {
-      popToRootRoute();
+      AuthRepository.instance.clearAuthFormDraft();
       return;
     }
     Navigator.of(context).pop(result);
