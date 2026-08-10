@@ -5,3 +5,7 @@ import 'push_foreground_display_stub.dart'
 void showForegroundPushDisplay(String title, String body) {
   impl.showForegroundPushDisplay(title, body);
 }
+
+/// Requests browser notification permission on web.
+Future<bool> requestWebNotificationPermission() =>
+    impl.requestWebNotificationPermission();

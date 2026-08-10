@@ -4,6 +4,7 @@ import 'package:flutter/foundation.dart'
 import '../api/api_client.dart';
 import '../auth/auth_repository.dart';
 import '../../features/attendance/attendance_list_hierarchy.dart';
+import '../../features/attendance/models/attendance_models.dart';
 import 'push_topic_names.dart';
 
 import 'onesignal_bridge_stub.dart'
@@ -15,13 +16,22 @@ abstract final class OneSignalService {
 
   static bool get supported => bridge.bridgeOneSignalSupported;
 
-  static Future<void> initialize() => bridge.bridgeInitOneSignal();
+  static Future<void> initialize({
+    void Function(Map<String, dynamic>)? onOpened,
+    void Function(Map<String, dynamic>)? onForeground,
+    void Function()? onSubscriptionChanged,
+  }) =>
+      bridge.bridgeInitOneSignal(
+        onOpened: onOpened,
+        onForeground: onForeground,
+        onSubscriptionChanged: onSubscriptionChanged,
+      );
 
   static Future<void> syncForCurrentUser() async {
     if (!supported) return;
     final auth = AuthRepository.instance;
     if (!auth.isLoggedIn || auth.needsEmailVerification || !auth.roleCheckDone) {
-      await bridge.bridgeLogoutOneSignal();
+      await logout();
       return;
     }
 
@@ -33,7 +43,22 @@ abstract final class OneSignalService {
     await _registerWithBackend(playerId, tags);
   }
 
-  static Future<void> logout() => bridge.bridgeLogoutOneSignal();
+  static Future<void> logout() async {
+    if (supported) {
+      final playerId = await bridge.bridgeGetPlayerId();
+      if (playerId != null && playerId.isNotEmpty) {
+        try {
+          await ApiClient.instance.delete(
+            '/api/push/register/?player_id=${Uri.encodeComponent(playerId)}',
+          );
+        } catch (e, st) {
+          debugPrint('OneSignalService backend unregister: $e');
+          debugPrint('$st');
+        }
+      }
+    }
+    await bridge.bridgeLogoutOneSignal();
+  }
 
   static Map<String, String> _tagsForUser(AuthRepository auth) {
     final tags = <String, String>{kPushAllNoticesTag: 'true'};
@@ -46,7 +71,11 @@ abstract final class OneSignalService {
 
     final reg = auth.currentRegistrationNumber?.trim();
     if (reg != null && reg.isNotEmpty) {
-      tags[pushStudentNoticeTag(reg)] = 'true';
+      final student = AttendanceStore.findStudentByReg(reg);
+      final studentId = student?.id.trim();
+      if (studentId != null && studentId.isNotEmpty) {
+        tags[pushStudentNoticeTag(studentId)] = 'true';
+      }
     }
 
     for (final list in attendanceListsForCurrentStaff()) {
