@@ -2114,6 +2114,32 @@ class AuthRepository extends ChangeNotifier {
     return e;
   }
 
+  /// Email, KIU4235S registration number, or KIU-#### staff id for [/api/auth/login/].
+  static String? resolveLoginCredentialForApi(String rawLogin) {
+    final trimmed = rawLogin.trim();
+    if (trimmed.isEmpty) return null;
+
+    final staffResolved = StaffAuthEmail.resolveLoginEmail(trimmed);
+    if (staffResolved != null && staffResolved.contains('@')) {
+      return _loginEmailForApi(staffResolved);
+    }
+
+    if (KiuAdminRegistrationNumber.looksLikeRegistrationNumberOnly(trimmed)) {
+      return KiuAdminRegistrationNumber.normalize(trimmed);
+    }
+
+    final flexStaff = StaffAuthEmail.normalizeStaffNumberFlexible(trimmed);
+    if (flexStaff != null) {
+      return StaffAuthEmail.staffNumberToSyntheticEmail(flexStaff);
+    }
+
+    if (trimmed.contains('@')) {
+      return _loginEmailForApi(trimmed);
+    }
+
+    return null;
+  }
+
   /// Sign-in / password reset: student [@studmc|studwc.kiu.ac.ug], staff [@kiu.ac.ug], or KIU-####.
   static String? validateLoginEmailFormat(String raw) =>
       LoginEmail.validateForPasswordReset(raw);
@@ -2250,25 +2276,21 @@ class AuthRepository extends ChangeNotifier {
     if (!_apiReady) {
       return _authActionError(_apiNotReadyMessage());
     }
-    final resolved = StaffAuthEmail.resolveLoginEmail(email) ?? '';
-    final e = _loginEmailForApi(resolved);
-    if (e.isEmpty) {
-      return _authActionError('Enter your email or staff ID (KIU-####).');
-    }
-    if (!e.contains('@')) {
-      if (StaffAuthEmail.looksLikeStaffNumberOnly(email)) {
-        return _authActionError(
-          'Invalid staff ID. Use format KIU-#### (e.g. KIU-0001).',
-        );
-      }
-      return _authActionError('Enter a valid email address.');
+    final loginCredential = resolveLoginCredentialForApi(email);
+    if (loginCredential == null || loginCredential.isEmpty) {
+      return _authActionError(
+        'Enter your email, staff ID (${KiuAdminRegistrationNumber.example}), '
+        'or KIU-####.',
+      );
     }
     if (password.isEmpty) {
       return _authActionError('Enter your password.');
     }
-    final isStaffLogin = StaffAuthEmail.syntheticEmailToStaffNumber(e) != null ||
-        StaffAuthEmail.looksLikeStaffNumberOnly(email);
-    if (e.contains('@') && !isStaffLogin) {
+    final isStaffLogin =
+        StaffAuthEmail.syntheticEmailToStaffNumber(loginCredential) != null ||
+            StaffAuthEmail.looksLikeStaffNumberOnly(email) ||
+            KiuAdminRegistrationNumber.looksLikeRegistrationNumberOnly(email);
+    if (loginCredential.contains('@') && !isStaffLogin) {
       final schoolErr = validateLoginEmailFormat(email);
       if (schoolErr != null) {
         return _authActionError(schoolErr);
@@ -2282,7 +2304,7 @@ class AuthRepository extends ChangeNotifier {
     notifyListeners();
     try {
       await ApiAuth.instance.signInWithEmailAndPassword(
-        email: e,
+        email: loginCredential,
         password: password,
       );
       _forceSignedOut = false;
@@ -3719,6 +3741,8 @@ class AuthRepository extends ChangeNotifier {
       cred = await ApiAuth.instance.createUserWithEmailAndPassword(
         email: em,
         password: password,
+        fullName: name,
+        registrationNumber: reg,
       );
       final user = cred.user;
       if (user == null) {
@@ -3849,6 +3873,8 @@ class AuthRepository extends ChangeNotifier {
       cred = await regAuth.createUserWithEmailAndPassword(
         email: emRaw,
         password: password,
+        fullName: name,
+        registrationNumber: reg,
       );
       final user = cred.user;
       if (user == null) {

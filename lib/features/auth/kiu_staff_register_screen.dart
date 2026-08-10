@@ -68,15 +68,16 @@ class _KiuStaffRegisterScreenState extends State<KiuStaffRegisterScreen> {
       return;
     }
 
+    if (!mounted) return;
     if (result.needsEmailVerification) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text(
-            'Account created. Check your @kiu.ac.ug inbox to verify your email.',
-          ),
-        ),
-      );
+      // Close registration so [AuthGate] can show [EmailVerificationScreen].
+      Navigator.of(context).popUntil((route) => route.isFirst);
+      return;
     }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Account created. You can sign in now.')),
+    );
     if (mounted) Navigator.of(context).pop();
   }
 
