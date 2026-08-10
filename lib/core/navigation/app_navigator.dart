@@ -26,6 +26,21 @@ Future<T?> pushAppPage<T>(
   );
 }
 
+/// Push on the root [MaterialApp] navigator (above [AuthGate] overlays).
+Future<T?> pushRootAppPage<T>(
+  Widget page, {
+  bool fullscreenDialog = false,
+}) {
+  final navigator = uPanelRootNavigatorKey.currentState;
+  if (navigator == null) return Future<T?>.value(null);
+  return navigator.push<T>(
+    UPanelPageRoute<T>(
+      fullscreenDialog: fullscreenDialog,
+      builder: (_) => page,
+    ),
+  );
+}
+
 /// Pops every route above the root so sign-out always lands on login.
 void popToRootRoute() {
   uPanelRootNavigatorKey.currentState?.popUntil((route) => route.isFirst);
