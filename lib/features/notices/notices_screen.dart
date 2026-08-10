@@ -23,7 +23,7 @@ class NoticesScreen extends StatefulWidget {
 
 class _NoticesScreenState extends State<NoticesScreen>
     with WidgetsBindingObserver {
-  static const Duration _autoRefreshInterval = Duration(minutes: 5);
+  static const Duration _autoRefreshInterval = Duration(seconds: 60);
   Timer? _autoRefreshTimer;
 
   List<NoticeRecord> _notices = [];
