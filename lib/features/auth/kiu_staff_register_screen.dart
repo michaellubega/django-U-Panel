@@ -71,6 +71,9 @@ class _KiuStaffRegisterScreenState extends State<KiuStaffRegisterScreen> {
     if (!mounted) return;
     if (result.needsEmailVerification) {
       AuthRepository.instance.clearAuthFormDraft();
+      if (mounted) {
+        Navigator.of(context).popUntil((route) => route.isFirst);
+      }
       return;
     }
 
