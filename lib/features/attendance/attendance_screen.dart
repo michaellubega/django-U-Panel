@@ -279,11 +279,14 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           _loadError = null;
         });
       }
-    } catch (_) {
+    } catch (e) {
       if (mounted) {
+        final message = e is TimeoutException
+            ? 'Loading attendance took too long. Pull down to retry.'
+            : 'Could not load attendance lists. Check your connection and try again.';
         setState(() {
           _loading = false;
-          _loadError = null;
+          _loadError = message;
         });
       }
     }
