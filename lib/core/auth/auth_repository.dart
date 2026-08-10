@@ -2630,9 +2630,7 @@ class AuthRepository extends ChangeNotifier {
         await user.updateDisplayName(name);
       } catch (_) {}
 
-      // Queue verification email (fast API); delivery happens in the background.
-      unawaited(_sendSignupVerificationEmail(user));
-
+      // Register API already queues the verification email.
       _forceSignedOut = false;
       clearAuthFormError();
       clearAuthFormDraft();
@@ -2782,6 +2780,10 @@ class AuthRepository extends ChangeNotifier {
         return 'An account already exists for that email.';
       case 'weak-password':
         return 'Password is too weak. Use at least 6 characters.';
+      case 'too-many-requests':
+        return ex.message.trim().isNotEmpty
+            ? ex.message
+            : 'Please wait a minute before requesting another verification email.';
       case 'network-request-failed':
       case 'unavailable':
         if (kIsWeb && isInsecureApiBaseUrl) {
@@ -3745,9 +3747,8 @@ class AuthRepository extends ChangeNotifier {
       );
 
       final skipVerify = KiuStaffAuthEmail.skipsVerification(em);
-      if (!skipVerify) {
-        await user.sendEmailVerification();
-      }
+      // Register API already queues the verification email — do not request again here
+      // (a second request hits the 60s cooldown and used to fail signup).
 
       if (skipVerify || user.emailVerified) {
         await _applyKiuStaffAccountRole(
@@ -3760,13 +3761,22 @@ class AuthRepository extends ChangeNotifier {
         );
       }
 
+      _forceSignedOut = false;
+      clearAuthFormError();
+      try {
+        await _hydrateUser(user, allowDuringAuth: true);
+      } catch (_) {}
+      notifyListeners();
+
       return AuthActionResult(
         needsEmailVerification: !skipVerify && !user.emailVerified,
       );
     } on ApiAuthException catch (ex) {
-      try {
-        await cred?.user?.delete();
-      } catch (_) {}
+      if (ex.code == 'email-already-in-use') {
+        try {
+          await cred?.user?.delete();
+        } catch (_) {}
+      }
       return AuthActionResult(error: _mapAuthError(ex));
     } catch (ex) {
       try {
