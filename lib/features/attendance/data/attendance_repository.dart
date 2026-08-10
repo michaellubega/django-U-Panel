@@ -2661,6 +2661,11 @@ class AttendanceRepository extends ChangeNotifier {
         listSignIns: signIns,
       );
       if (!_loadsAllowedForSession(loadGeneration)) return;
+      final namesRefresh = _refreshRosterNamesForList(
+        listId: listId,
+        listSessions: mergedSessions,
+        listSignIns: signIns,
+      );
 
       final records = await _fetchAttendanceRecordsForDetailLoad(
         sessionIds: sessionIds,
@@ -2683,8 +2688,10 @@ class AttendanceRepository extends ChangeNotifier {
       final rosterStudents = await _augmentRosterStudents(
         signIns: signIns,
         fetched: students,
+        extraStudentIds: records.map((r) => r.studentId),
       );
       if (!_loadsAllowedForSession(loadGeneration)) return;
+      await namesRefresh.catchError((_) {});
 
       await _serializedListDetailMerge(
         () => _mergeListDetailIntoStore(
@@ -2834,6 +2841,7 @@ class AttendanceRepository extends ChangeNotifier {
       final rosterStudents = await _augmentRosterStudents(
         signIns: allSignIns,
         fetched: students,
+        extraStudentIds: allRecords.map((r) => r.studentId),
       );
       if (!_loadsAllowedForSession(loadGeneration)) return;
 
@@ -2974,55 +2982,143 @@ class AttendanceRepository extends ChangeNotifier {
   List<StudentRecord> _rosterStudentsFromSignInsSync({
     required List<SignInRecord> signIns,
     required List<StudentRecord> fetched,
+    Iterable<String> extraStudentIds = const [],
   }) {
     final byId = <String, StudentRecord>{for (final s in fetched) s.id: s};
     final out = List<StudentRecord>.from(fetched);
 
-    for (final si in signIns) {
-      final sid = si.studentId.trim();
-      if (sid.isEmpty) continue;
-
+    void upsertSynthetic(String studentId, {String? name, String? signInReg}) {
+      final sid = studentId.trim();
+      if (sid.isEmpty) return;
+      final resolvedReg = _registrationForRoster(
+        studentId: sid,
+        signInReg: signInReg,
+        existing: byId[sid],
+      );
+      var resolvedName = name?.trim() ?? '';
       final existing = byId[sid];
-      var name = si.studentName?.trim() ?? '';
-      var reg = si.registrationNumber?.trim().toUpperCase() ?? '';
-
       if (existing != null) {
-        if (name.isEmpty) name = existing.name.trim();
-        if (reg.isEmpty) reg = existing.registrationNumber.trim().toUpperCase();
-        if (name.isNotEmpty &&
+        if (resolvedName.isEmpty) resolvedName = existing.name.trim();
+        if (resolvedReg.isEmpty) {
+          final existingReg = existing.registrationNumber.trim().toUpperCase();
+          if (existingReg.isNotEmpty && existingReg != '—') {
+            // keep existing reg via _registrationForRoster on next pass
+          }
+        }
+        if (resolvedName.isNotEmpty &&
             (existing.name.trim().isEmpty ||
                 existing.name.trim() == 'Unknown')) {
           final upgraded = _upgradeStudentIfNeeded(
             existing,
-            name,
-            deriveStudentInitialsFromName(name),
+            resolvedName,
+            deriveStudentInitialsFromName(resolvedName),
           );
           byId[sid] = upgraded;
           final idx = out.indexWhere((s) => s.id == sid);
-          if (idx >= 0) out[idx] = upgraded;
+          if (idx >= 0) {
+            out[idx] = upgraded;
+          } else {
+            out.add(upgraded);
+          }
         }
-        continue;
+        return;
       }
 
-      if (isStudentScopedUser() && reg.isEmpty) {
+      if (isStudentScopedUser() && resolvedReg.isEmpty) {
         final ownReg = currentStudentLoadRegistration()?.trim().toUpperCase();
-        if (ownReg != null && ownReg.isNotEmpty) reg = ownReg;
+        if (ownReg != null && ownReg.isNotEmpty) {
+          // resolvedReg filled below via _registrationForRoster if own reg matches sid
+        }
       }
-      if (name.isEmpty && reg.isEmpty) continue;
+      final reg = resolvedReg.isNotEmpty
+          ? resolvedReg
+          : (isStudentScopedUser()
+              ? currentStudentLoadRegistration()?.trim().toUpperCase() ?? ''
+              : '');
+      if (resolvedName.isEmpty && reg.isEmpty) return;
 
       final synthetic = StudentRecord(
         id: sid,
-        name: name.isNotEmpty ? name : 'Unknown',
+        name: resolvedName.isNotEmpty ? resolvedName : 'Unknown',
         registrationNumber: reg.isNotEmpty ? reg : '—',
         threeDigitCode: '000',
-        initials: name.isNotEmpty
-            ? deriveStudentInitialsFromName(name)
+        initials: resolvedName.isNotEmpty
+            ? deriveStudentInitialsFromName(resolvedName)
             : '??',
       );
       byId[sid] = synthetic;
       out.add(synthetic);
     }
+
+    for (final si in signIns) {
+      upsertSynthetic(
+        si.studentId,
+        name: si.studentName,
+        signInReg: si.registrationNumber,
+      );
+    }
+    for (final raw in extraStudentIds) {
+      upsertSynthetic(raw);
+    }
     return out;
+  }
+
+  String _registrationForRoster({
+    required String studentId,
+    String? signInReg,
+    StudentRecord? existing,
+  }) {
+    var reg = signInReg?.trim().toUpperCase() ?? '';
+    if (reg.isEmpty && existing != null) {
+      final existingReg = existing.registrationNumber.trim().toUpperCase();
+      if (existingReg.isNotEmpty && existingReg != '—') reg = existingReg;
+    }
+    final sid = studentId.trim();
+    if (reg.isEmpty && StudentRegistrationNumber.isCanonicalFormat(sid)) {
+      reg = StudentRegistrationNumber.normalize(sid);
+    }
+    return reg;
+  }
+
+  Future<void> _refreshRosterNamesForList({
+    required String listId,
+    required List<AttendanceSession> listSessions,
+    required List<SignInRecord> listSignIns,
+  }) async {
+    final listSessionIds = listSessions.map((s) => s.id).toSet();
+    final recordIds = AttendanceStore.attendanceRecords
+        .where((r) => listSessionIds.contains(r.sessionId))
+        .map((r) => r.studentId);
+    final students = await _augmentRosterStudents(
+      signIns: listSignIns,
+      fetched: AttendanceStore.students,
+      extraStudentIds: recordIds,
+    );
+    final otherStudents = AttendanceStore.students
+        .where((s) => !students.any((resolved) => resolved.id == s.id))
+        .toList();
+    final otherSessions =
+        AttendanceStore.sessions.where((s) => s.listId != listId).toList();
+    final otherSignIns =
+        AttendanceStore.signIns.where((si) => si.listId != listId).toList();
+    final keptRecords = AttendanceStore.attendanceRecords
+        .where((r) => !listSessionIds.contains(r.sessionId))
+        .toList();
+    final listRecords = AttendanceStore.attendanceRecords
+        .where((r) => listSessionIds.contains(r.sessionId))
+        .toList();
+
+    await _serializedListDetailMerge(
+      () => _replaceStoreFromRemote(
+        remoteLists: List<AttendanceList>.from(AttendanceStore.lists),
+        remoteSessions: [...otherSessions, ...listSessions],
+        remoteRecords: [...keptRecords, ...listRecords],
+        remoteStudents: [...otherStudents, ...students],
+        remoteSignIns: [...otherSignIns, ...listSignIns],
+        rosterAlreadyAugmented: true,
+      ),
+    );
+    _notifyStoreUpdated(refreshRecordWatch: false);
   }
 
   /// Chunked [whereIn] queries with per-value fallback when rules reject a chunk.
@@ -3589,9 +3685,43 @@ class AttendanceRepository extends ChangeNotifier {
       idsToFetch.add(trimmed);
     }
     if (idsToFetch.isEmpty) return out;
+
+    final regsForBatch = <String>{
+      for (final id in idsToFetch)
+        if (StudentRegistrationNumber.isCanonicalFormat(id))
+          StudentRegistrationNumber.normalize(id),
+      if (regByStudentId != null)
+        for (final reg in regByStudentId.values)
+          if (StudentRegistrationNumber.isCanonicalFormat(reg))
+            StudentRegistrationNumber.normalize(reg),
+    };
+    if (regsForBatch.isNotEmpty) {
+      final docs = await _queryDocsWhereFieldIn(
+        collection: _firestore.collection(ApiCollections.students),
+        field: 'registrationNumber',
+        values: regsForBatch.toList(),
+        options: options,
+      );
+      for (final doc in docs) {
+        final student = _studentFromDoc(doc);
+        final trimmed = student.id.trim();
+        final reg = student.registrationNumber.trim().toUpperCase();
+        for (final alias in <String>{trimmed, reg}) {
+          if (alias.isEmpty || seenIds.contains(alias)) continue;
+          out.add(student);
+          seenIds.add(alias);
+        }
+      }
+    }
+
+    final remaining = idsToFetch
+        .where((id) => !seenIds.contains(id.trim()))
+        .toList();
+    if (remaining.isEmpty) return out;
+
     const batchSize = 8;
-    for (var i = 0; i < idsToFetch.length; i += batchSize) {
-      final chunk = idsToFetch.skip(i).take(batchSize);
+    for (var i = 0; i < remaining.length; i += batchSize) {
+      final chunk = remaining.skip(i).take(batchSize);
       final batch = await Future.wait(
         chunk.map(
           (trimmed) => _fetchStudentDocByIdOrReg(
@@ -4940,45 +5070,81 @@ class AttendanceRepository extends ChangeNotifier {
   Future<List<StudentRecord>> _augmentRosterStudents({
     required List<SignInRecord> signIns,
     required List<StudentRecord> fetched,
+    Iterable<String> extraStudentIds = const [],
   }) async {
     final sync = _rosterStudentsFromSignInsSync(
       signIns: signIns,
       fetched: fetched,
+      extraStudentIds: extraStudentIds,
     );
     final byId = <String, StudentRecord>{for (final s in sync) s.id: s};
     final out = List<StudentRecord>.from(sync);
 
     final regsNeedingNames = <String>{};
-    final remoteFetchTargets = <SignInRecord>[];
+    final uidsNeedingProfiles = <String>{};
+    final remoteFetchTargets = <({String studentId, String? reg})>[];
 
-    for (final si in signIns) {
-      final sid = si.studentId.trim();
-      if (sid.isEmpty) continue;
+    void considerStudent({
+      required String studentId,
+      String? signInName,
+      String? signInReg,
+    }) {
+      final sid = studentId.trim();
+      if (sid.isEmpty) return;
       final existing = byId[sid];
-      var name = si.studentName?.trim() ?? '';
-      var reg = si.registrationNumber?.trim().toUpperCase() ?? '';
+      var name = signInName?.trim() ?? '';
+      var reg = _registrationForRoster(
+        studentId: sid,
+        signInReg: signInReg,
+        existing: existing,
+      );
       if (existing != null) {
         if (name.isEmpty) name = existing.name.trim();
-        if (reg.isEmpty) reg = existing.registrationNumber.trim().toUpperCase();
         if (name.isEmpty && reg.isNotEmpty) regsNeedingNames.add(reg);
-        continue;
+        if (name.isEmpty || name == 'Unknown') {
+          if (reg.isNotEmpty) {
+            regsNeedingNames.add(reg);
+          } else if (!StudentRegistrationNumber.isCanonicalFormat(sid)) {
+            uidsNeedingProfiles.add(sid);
+          }
+        }
+        return;
       }
       if (!isStudentScopedUser() && (name.isEmpty || reg.isEmpty)) {
-        remoteFetchTargets.add(si);
+        remoteFetchTargets.add((studentId: sid, reg: reg.isNotEmpty ? reg : null));
       }
-      if (name.isEmpty && reg.isNotEmpty) regsNeedingNames.add(reg);
+      if (name.isEmpty && reg.isNotEmpty) {
+        regsNeedingNames.add(reg);
+      } else if (name.isEmpty &&
+          reg.isEmpty &&
+          !StudentRegistrationNumber.isCanonicalFormat(sid)) {
+        uidsNeedingProfiles.add(sid);
+      }
+    }
+
+    for (final si in signIns) {
+      considerStudent(
+        studentId: si.studentId,
+        signInName: si.studentName,
+        signInReg: si.registrationNumber,
+      );
+    }
+    for (final raw in extraStudentIds) {
+      considerStudent(studentId: raw);
     }
 
     final nameByReg = await _lookupFullNamesOnRegistrationDocs(regsNeedingNames);
+    final profilesByUid =
+        await _lookupStudentProfilesByUserIds(uidsNeedingProfiles);
 
     if (!isStudentScopedUser() && remoteFetchTargets.isNotEmpty) {
       const batchSize = 8;
       for (var i = 0; i < remoteFetchTargets.length; i += batchSize) {
         final chunk = remoteFetchTargets.skip(i).take(batchSize);
         final batch = await Future.wait(
-          chunk.map((si) async {
-            final sid = si.studentId.trim();
-            final reg = si.registrationNumber?.trim().toUpperCase() ?? '';
+          chunk.map((target) async {
+            final sid = target.studentId.trim();
+            final reg = target.reg?.trim().toUpperCase() ?? '';
             return _fetchStudentDocByIdOrReg(
               sid,
               registrationNumber: reg.isNotEmpty ? reg : null,
@@ -4988,59 +5154,189 @@ class AttendanceRepository extends ChangeNotifier {
         );
         for (final remote in batch) {
           if (remote == null) continue;
-          final sid = remote.id.trim();
-          if (sid.isEmpty || byId.containsKey(sid)) continue;
-          byId[sid] = remote;
-          out.add(remote);
+          for (final sid in <String>{remote.id.trim(), remote.registrationNumber.trim().toUpperCase()}) {
+            if (sid.isEmpty) continue;
+            if (byId.containsKey(sid)) {
+              final existing = byId[sid]!;
+              if (existing.name.trim().isEmpty ||
+                  existing.name.trim() == 'Unknown') {
+                byId[sid] = remote;
+                final idx = out.indexWhere((s) => s.id == sid);
+                if (idx >= 0) out[idx] = remote;
+              }
+              continue;
+            }
+            byId[sid] = remote;
+            out.add(remote);
+          }
         }
       }
     }
 
-    for (final si in signIns) {
-      final sid = si.studentId.trim();
-      if (sid.isEmpty || byId.containsKey(sid)) continue;
+    void applyResolvedProfile(String studentId) {
+      final sid = studentId.trim();
+      if (sid.isEmpty) return;
+      final existing = byId[sid];
+      var name = existing?.name.trim() ?? '';
+      var reg = _registrationForRoster(
+        studentId: sid,
+        existing: existing,
+      );
 
-      var name = si.studentName?.trim() ?? '';
-      var reg = si.registrationNumber?.trim().toUpperCase() ?? '';
-      if (isStudentScopedUser() && reg.isEmpty) {
-        final ownReg = currentStudentLoadRegistration()?.trim().toUpperCase();
-        if (ownReg != null && ownReg.isNotEmpty) reg = ownReg;
+      final profile = profilesByUid[sid];
+      if (profile != null) {
+        if (name.isEmpty || name == 'Unknown') {
+          name = profile.name.trim();
+        }
+        if (reg.isEmpty || reg == '—') {
+          final profileReg = profile.reg.trim().toUpperCase();
+          if (profileReg.isNotEmpty) reg = profileReg;
+        }
       }
-      if (name.isEmpty && reg.isNotEmpty) {
-        name = nameByReg[StudentRegistrationNumber.normalize(reg)] ?? '';
+      if ((name.isEmpty || name == 'Unknown') && reg.isNotEmpty) {
+        name = nameByReg[StudentRegistrationNumber.normalize(reg)] ?? name;
       }
-      if (name.isEmpty && reg.isEmpty) continue;
+      if (name.isEmpty && reg.isEmpty) return;
 
-      final synthetic = StudentRecord(
+      final record = StudentRecord(
         id: sid,
         name: name.isNotEmpty ? name : 'Unknown',
         registrationNumber: reg.isNotEmpty ? reg : '—',
-        threeDigitCode: '000',
+        threeDigitCode: existing?.threeDigitCode ?? '000',
         initials: name.isNotEmpty
             ? deriveStudentInitialsFromName(name)
-            : '??',
+            : (existing?.initials ?? '??'),
       );
-      byId[sid] = synthetic;
-      out.add(synthetic);
+      if (existing == null) {
+        byId[sid] = record;
+        out.add(record);
+        return;
+      }
+      if (name.isNotEmpty && name != 'Unknown') {
+        final upgraded = _upgradeStudentIfNeeded(
+          existing,
+          name,
+          deriveStudentInitialsFromName(name),
+        );
+        byId[sid] = upgraded;
+        final idx = out.indexWhere((s) => s.id == sid);
+        if (idx >= 0) out[idx] = upgraded;
+      }
+    }
+
+    for (final si in signIns) {
+      applyResolvedProfile(si.studentId);
+    }
+    for (final raw in extraStudentIds) {
+      applyResolvedProfile(raw);
     }
 
     for (var i = 0; i < out.length; i++) {
       final student = out[i];
-      final reg = student.registrationNumber.trim().toUpperCase();
       if (student.name.trim().isNotEmpty && student.name.trim() != 'Unknown') {
         continue;
       }
-      if (reg.isEmpty) continue;
-      final lookedUp =
-          nameByReg[StudentRegistrationNumber.normalize(reg)] ?? '';
+      var reg = student.registrationNumber.trim().toUpperCase();
+      if (reg.isEmpty || reg == '—') {
+        reg = _registrationForRoster(studentId: student.id, existing: student);
+      }
+      var lookedUp = reg.isNotEmpty
+          ? nameByReg[StudentRegistrationNumber.normalize(reg)] ?? ''
+          : '';
+      if (lookedUp.isEmpty) {
+        final profile = profilesByUid[student.id.trim()];
+        lookedUp = profile?.name.trim() ?? '';
+        if ((reg.isEmpty || reg == '—') && profile != null) {
+          final profileReg = profile.reg.trim().toUpperCase();
+          if (profileReg.isNotEmpty) reg = profileReg;
+        }
+      }
       if (lookedUp.isEmpty) continue;
       final upgraded = _upgradeStudentIfNeeded(
-        student,
+        StudentRecord(
+          id: student.id,
+          name: student.name,
+          registrationNumber:
+              reg.isNotEmpty ? reg : student.registrationNumber,
+          threeDigitCode: student.threeDigitCode,
+          initials: student.initials,
+        ),
         lookedUp,
         deriveStudentInitialsFromName(lookedUp),
       );
       byId[student.id] = upgraded;
       out[i] = upgraded;
+    }
+
+    return out;
+  }
+
+  Future<Map<String, ({String name, String reg})>> _lookupStudentProfilesByUserIds(
+    Iterable<String> userIds,
+  ) async {
+    final ids = userIds
+        .map((id) => id.trim())
+        .where((id) => id.isNotEmpty)
+        .toSet();
+    if (ids.isEmpty) return const {};
+
+    final out = <String, ({String name, String reg})>{};
+    const batchSize = 8;
+    final list = ids.toList();
+
+    for (var i = 0; i < list.length; i += batchSize) {
+      final chunk = list.skip(i).take(batchSize);
+      final snaps = await Future.wait(
+        chunk.map((uid) async {
+          try {
+            final snap = await _firestore
+                .collection(ApiCollections.appUsers)
+                .doc(uid)
+                .get();
+            return (uid, snap);
+          } catch (_) {
+            return (uid, null);
+          }
+        }),
+      );
+      for (final (uid, snap) in snaps) {
+        if (snap == null || !snap.exists || snap.data() == null) continue;
+        final data = snap.data()!;
+        final name = (data['fullName'] as String?)?.trim() ?? '';
+        final reg =
+            (data['registrationNumber'] as String?)?.trim().toUpperCase() ??
+                '';
+        if (name.isEmpty && reg.isEmpty) continue;
+        out[uid] = (
+          name: name.isNotEmpty ? name : 'Unknown',
+          reg: reg.isNotEmpty ? reg : '—',
+        );
+      }
+    }
+
+    for (var i = 0; i < list.length; i += batchSize) {
+      final chunk = list.skip(i).take(batchSize).toList();
+      try {
+        final snap = await _firestore
+            .collection(ApiCollections.studentRegistrations)
+            .where('uid', whereIn: chunk)
+            .get();
+        for (final doc in snap.docs) {
+          final data = doc.data();
+          if (data == null) continue;
+          final uid = (data['uid'] as String?)?.trim() ?? '';
+          if (uid.isEmpty || out.containsKey(uid)) continue;
+          final name = (data['fullName'] as String?)?.trim() ?? '';
+          final reg =
+              (data['registrationNumber'] as String?)?.trim().toUpperCase() ??
+                  doc.id.trim().toUpperCase();
+          if (name.isEmpty) continue;
+          out[uid] = (
+            name: name,
+            reg: reg.isNotEmpty ? reg : '—',
+          );
+        }
+      } catch (_) {}
     }
 
     return out;
