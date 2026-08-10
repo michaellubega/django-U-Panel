@@ -3,6 +3,7 @@ import 'dart:math';
 import '../student_session_grace.dart';
 import '../../../core/api/api_store.dart';
 import '../../../core/api/api_collections.dart';
+import '../../../core/auth/student_registration_number.dart';
 
 /// Short labels for [DateTime.weekday] (1 = Monday … 7 = Sunday).
 const kAttendanceWeekdayShortLabels = [
@@ -1357,7 +1358,11 @@ class AttendanceStore {
       if (sid.isEmpty) continue;
 
       final signInName = si.studentName?.trim() ?? '';
-      final signInReg = si.registrationNumber?.trim().toUpperCase() ?? '';
+      var signInReg = si.registrationNumber?.trim().toUpperCase() ?? '';
+      if (signInReg.isEmpty &&
+          StudentRegistrationNumber.isCanonicalFormat(sid)) {
+        signInReg = StudentRegistrationNumber.normalize(sid);
+      }
       final existing = byId[sid];
 
       if (existing != null) {
@@ -1381,7 +1386,13 @@ class AttendanceStore {
         continue;
       }
 
-      if (signInName.isEmpty && signInReg.isEmpty) continue;
+      if (signInName.isEmpty && signInReg.isEmpty) {
+        final fromStore = findStudentByReg(sid);
+        if (fromStore != null) {
+          byId[sid] = fromStore;
+        }
+        continue;
+      }
       byId[sid] = StudentRecord(
         id: sid,
         name: signInName.isNotEmpty ? signInName : 'Unknown',
