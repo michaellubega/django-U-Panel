@@ -13,3 +13,15 @@ void showForegroundPushDisplay(String title, String body) {
     );
   } catch (_) {}
 }
+
+Future<bool> requestWebNotificationPermission() async {
+  if (!html.Notification.supported) return false;
+  if (html.Notification.permission == 'granted') return true;
+  if (html.Notification.permission == 'denied') return false;
+  try {
+    final result = await html.Notification.requestPermission();
+    return result == 'granted';
+  } catch (_) {
+    return false;
+  }
+}

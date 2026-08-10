@@ -8,27 +8,28 @@ import '../../features/attendance/attendance_list_hierarchy.dart';
 import '../../features/attendance/models/attendance_models.dart';
 import '../../features/notices/create_notice_screen.dart' show NoticeAudienceKind;
 import '../../features/notices/data/notices_repository.dart';
+import 'push_foreground_display.dart';
 import 'local_push_display.dart';
 import 'push_message_copy.dart';
 
-/// Desktop (Windows / Linux / macOS) has no FCM client — poll Firestore for new
-/// notices and show native toasts while the app is running.
+/// Polls the notices API on web and desktop (no OneSignal client) and shows
+/// native/browser toasts while the app is running.
 class DesktopNoticeWatch {
   DesktopNoticeWatch._();
   static final DesktopNoticeWatch instance = DesktopNoticeWatch._();
 
   static const _prefPrefix = 'desktop_push_watermark_ms_v1_';
-  static const _pollInterval = Duration(seconds: 45);
+  static const _pollInterval = Duration(seconds: 20);
 
   Timer? _timer;
   bool _polling = false;
   String? _activeUid;
 
   bool get supported =>
-      !kIsWeb &&
-      (defaultTargetPlatform == TargetPlatform.windows ||
-          defaultTargetPlatform == TargetPlatform.linux ||
-          defaultTargetPlatform == TargetPlatform.macOS);
+      kIsWeb ||
+      defaultTargetPlatform == TargetPlatform.windows ||
+      defaultTargetPlatform == TargetPlatform.linux ||
+      defaultTargetPlatform == TargetPlatform.macOS;
 
   Future<void> restart() async {
     if (!supported) return;
@@ -49,6 +50,9 @@ class DesktopNoticeWatch {
     }
 
     await localPushEnsureInitialized();
+    if (kIsWeb) {
+      await requestWebNotificationPermission();
+    }
     _timer ??= Timer.periodic(_pollInterval, (_) => unawaited(_pollOnce()));
     unawaited(_pollOnce());
   }
@@ -101,11 +105,15 @@ class DesktopNoticeWatch {
         );
         if (!_shouldShowPushForNotice(n)) continue;
         if (isRemoteLearningSessionCodeNotice(n)) continue;
-        await localPushShow(
-          id: n.id.hashCode,
-          title: title,
-          body: body,
-        );
+        if (kIsWeb) {
+          showForegroundPushDisplay(title, body);
+        } else {
+          await localPushShow(
+            id: n.id.hashCode,
+            title: title,
+            body: body,
+          );
+        }
       }
 
       if (newest != null) {

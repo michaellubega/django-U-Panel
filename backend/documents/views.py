@@ -68,6 +68,10 @@ def _create_document(request, collection: str) -> Response:
         defaults={"data": payload},
     )
     maybe_process_check_in(doc)
+    if collection == "notices":
+        from notices.push_from_document import maybe_enqueue_notice_push
+
+        maybe_enqueue_notice_push(doc)
     code = status.HTTP_201_CREATED if created else status.HTTP_200_OK
     return Response(serialize_document(doc), status=code)
 
