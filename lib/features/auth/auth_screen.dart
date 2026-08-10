@@ -615,6 +615,10 @@ class _LoginVerificationScreenState extends State<_LoginVerificationScreen>
     _stopStageAnimation();
     setState(() => _done = true);
     if (!mounted) return;
+    if (result.needsEmailVerification) {
+      popToRootRoute();
+      return;
+    }
     Navigator.of(context).pop(result);
   }
 

@@ -3792,9 +3792,9 @@ class AuthRepository extends ChangeNotifier {
       } catch (_) {}
       notifyListeners();
 
-      return AuthActionResult(
-        needsEmailVerification: !skipVerify && !user.emailVerified,
-      );
+      final needsVerify = !skipVerify &&
+          (_needsKiuStaffEmailVerification(user) || !user.emailVerified);
+      return AuthActionResult(needsEmailVerification: needsVerify);
     } on ApiAuthException catch (ex) {
       if (ex.code == 'email-already-in-use') {
         try {
