@@ -16,9 +16,9 @@ class AppConnectivity extends ChangeNotifier {
   AppConnectivity._();
   static final AppConnectivity instance = AppConnectivity._();
 
-  static const Duration _probeTimeout = Duration(seconds: 6);
-  static const Duration _probeInterval = Duration(seconds: 30);
-  static const Duration _reachabilityGrace = Duration(seconds: 25);
+  static const Duration _probeTimeout = Duration(seconds: 4);
+  static const Duration _probeInterval = Duration(seconds: 10);
+  static const Duration _reachabilityGrace = Duration(seconds: 8);
   static const Duration _minProbeGap = Duration(seconds: 2);
   static const int _failuresBeforeOffline = 2;
 
@@ -107,7 +107,6 @@ class AppConnectivity extends ChangeNotifier {
   void _maybeAttachApi() {
     if (_apiAttached || !isApiConfigured) return;
     _apiAttached = true;
-    if (kIsWeb) return;
     unawaited(_runApiProbe(force: true));
     _periodicProbe?.cancel();
     _periodicProbe = Timer.periodic(_probeInterval, (_) {
