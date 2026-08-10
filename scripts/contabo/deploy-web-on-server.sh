@@ -26,6 +26,27 @@ git fetch origin main
 git checkout main
 git pull origin main
 
+# Prefer a fresh Flutter web build from gh-pages CI when available (website/app on
+# main is often stale because it is not rebuilt on every lib/ merge).
+if git fetch origin gh-pages 2>/dev/null && git cat-file -e origin/gh-pages:app/index.html 2>/dev/null; then
+  echo "==> Sync website/app from origin/gh-pages (CI-built Flutter web)"
+  rm -rf website/app
+  mkdir -p website/app
+  git archive origin/gh-pages app | tar -x --strip-components=1 -C website/app
+elif command -v flutter >/dev/null 2>&1; then
+  echo "==> gh-pages unavailable — build Flutter web locally"
+  flutter pub get
+  flutter build web --release \
+    --dart-define=UPANEL_API_BASE_URL="${UPANEL_API_BASE_URL:-http://169.58.135.136}" \
+    --base-href=/app/
+  bash scripts/finalize-web-build.sh
+  rm -rf website/app
+  mkdir -p website/app
+  cp -a build/web/. website/app/
+else
+  echo "WARN: Using committed website/app (may be stale). Install Flutter or enable gh-pages CI." >&2
+fi
+
 if [[ ! -f website/app/index.html ]]; then
   echo "==> website/app missing on main — try gh-pages CI build"
   if git fetch origin gh-pages 2>/dev/null && git cat-file -e origin/gh-pages:app/index.html 2>/dev/null; then
