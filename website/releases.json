@@ -1,7 +1,7 @@
 {
     "version":  "1.0.0",
-    "build":  5,
-    "releasedAt":  "2026-08-07",
+    "build":  7,
+    "releasedAt":  "2026-08-10",
     "hostBase":  "https://kiu.orion13.us",
     "ios":  {
                 "label":  "iPhone \u0026 iPad",

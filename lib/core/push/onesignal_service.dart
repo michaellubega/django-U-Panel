@@ -7,25 +7,33 @@ import '../../features/attendance/attendance_list_hierarchy.dart';
 import '../../features/attendance/models/attendance_models.dart';
 import 'push_topic_names.dart';
 
-import 'onesignal_bridge_stub.dart'
-    if (dart.library.io) 'onesignal_bridge_mobile.dart' as bridge;
+import 'onesignal_service_impl_stub.dart'
+    if (dart.library.io) 'onesignal_service_impl_mobile.dart' as impl;
 
-/// OneSignal push (replaces Firebase Cloud Messaging).
+/// Centralized OneSignal wrapper — all SDK calls go through this class.
 abstract final class OneSignalService {
   OneSignalService._();
 
-  static bool get supported => bridge.bridgeOneSignalSupported;
+  static bool get supported => impl.oneSignalImplSupported;
+
+  /// Call from [main] before [runApp].
+  static void initializeSdk() => impl.oneSignalImplInitializeSdk();
 
   static Future<void> initialize({
     void Function(Map<String, dynamic>)? onOpened,
     void Function(Map<String, dynamic>)? onForeground,
     void Function()? onSubscriptionChanged,
   }) =>
-      bridge.bridgeInitOneSignal(
+      impl.oneSignalImplAttachHandlers(
         onOpened: onOpened,
         onForeground: onForeground,
         onSubscriptionChanged: onSubscriptionChanged,
       );
+
+  static void setupIntegrationVerification(
+    void Function(void Function() onRequestPermission) showDialog,
+  ) =>
+      impl.oneSignalImplSetupIntegrationVerification(showDialog);
 
   static Future<void> syncForCurrentUser() async {
     if (!supported) return;
@@ -35,17 +43,22 @@ abstract final class OneSignalService {
       return;
     }
 
-    final playerId = await bridge.bridgeGetPlayerId();
+    final userId = auth.currentUserId?.trim();
+    if (userId != null && userId.isNotEmpty) {
+      await impl.oneSignalImplLogin(userId);
+    }
+
+    final playerId = await impl.oneSignalImplGetPlayerId();
     if (playerId == null || playerId.isEmpty) return;
 
     final tags = _tagsForUser(auth);
-    await bridge.bridgeSetTags(tags);
+    await impl.oneSignalImplSetTags(tags);
     await _registerWithBackend(playerId, tags);
   }
 
   static Future<void> logout() async {
     if (supported) {
-      final playerId = await bridge.bridgeGetPlayerId();
+      final playerId = await impl.oneSignalImplGetPlayerId();
       if (playerId != null && playerId.isNotEmpty) {
         try {
           await ApiClient.instance.delete(
@@ -57,8 +70,10 @@ abstract final class OneSignalService {
         }
       }
     }
-    await bridge.bridgeLogoutOneSignal();
+    await impl.oneSignalImplLogout();
   }
+
+  static Future<bool> requestPermission() => impl.oneSignalImplRequestPermission();
 
   static Map<String, String> _tagsForUser(AuthRepository auth) {
     final tags = <String, String>{kPushAllNoticesTag: 'true'};
