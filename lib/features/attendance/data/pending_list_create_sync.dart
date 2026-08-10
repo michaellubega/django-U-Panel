@@ -78,7 +78,9 @@ class PendingListCreateSync {
               .set(AttendanceRepository.listToFirestoreMapForSync(list))
               .timeout(AttendanceRepository.listPublishTimeout);
           AttendanceStore.addList(list);
+          AttendanceRepository.instance.markListPublishedOnServer(list.id);
           await PendingListCreateQueue.removeByListId(list.id);
+          AttendanceRepository.instance.notifyAttendanceStoreUpdated();
         } catch (err) {
           if (kDebugMode) {
             debugPrint(
