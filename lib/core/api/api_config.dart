@@ -38,6 +38,20 @@ bool get isSentryConfigured => uPanelSentryDsn.isNotEmpty;
 /// Compile-time OneSignal App ID (`--dart-define=ONESIGNAL_APP_ID=...`).
 const String _kOneSignalAppIdFromEnv = String.fromEnvironment('ONESIGNAL_APP_ID');
 
-String get uPanelOneSignalAppId => _kOneSignalAppIdFromEnv.trim();
+String _runtimeOneSignalAppId = '';
+
+/// Set from [loadClientConfig] when the API exposes a OneSignal App ID.
+void setRuntimeOneSignalAppId(String value) {
+  final trimmed = value.trim();
+  if (trimmed.isNotEmpty) {
+    _runtimeOneSignalAppId = trimmed;
+  }
+}
+
+String get uPanelOneSignalAppId {
+  final compiled = _kOneSignalAppIdFromEnv.trim();
+  if (compiled.isNotEmpty) return compiled;
+  return _runtimeOneSignalAppId;
+}
 
 bool get isOneSignalConfigured => uPanelOneSignalAppId.isNotEmpty;

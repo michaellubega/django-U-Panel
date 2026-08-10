@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import '../api/client_config.dart';
 import '../auth/auth_repository.dart';
 import '../monitoring/app_sentry.dart';
 import '../../features/attendance/data/session_code_auto_check_in.dart';
@@ -25,6 +26,7 @@ class PushController {
 
     AuthRepository.instance.addListener(_onAuthChanged);
     await localPushEnsureInitialized();
+    await loadClientConfig();
     await OneSignalService.initialize(
       onOpened: _handlePushOpened,
       onForeground: _handlePushForeground,
