@@ -16,6 +16,7 @@ from .services.email_verification import (
     queue_verification_email,
     verify_email_token,
 )
+from .services.login_identifier import resolve_user_for_login
 
 logger = logging.getLogger(__name__)
 
@@ -45,20 +46,25 @@ class LoginView(APIView):
     permission_classes = [AllowAny]
 
     def post(self, request):
-        email = (request.data.get("email") or "").strip().lower()
+        login_id = (request.data.get("email") or request.data.get("login") or "").strip()
         password = request.data.get("password") or ""
-        if not email or not password:
+        if not login_id or not password:
             return Response(
                 {"detail": "Email and password are required."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        user = authenticate(username=email, password=password)
-        if user is None:
-            try:
-                user = User.objects.get(email=email)
-                user = authenticate(username=user.username, password=password)
-            except User.DoesNotExist:
-                user = None
+        user = resolve_user_for_login(login_id)
+        if user is not None:
+            user = authenticate(username=user.username, password=password)
+        if user is None and "@" in login_id:
+            email = login_id.lower()
+            user = authenticate(username=email, password=password)
+            if user is None:
+                try:
+                    user = User.objects.get(email=email)
+                    user = authenticate(username=user.username, password=password)
+                except User.DoesNotExist:
+                    user = None
         if user is None:
             return Response(
                 {"detail": "Wrong email or password."},

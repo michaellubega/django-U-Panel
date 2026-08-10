@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:u_panel/core/auth/kiu_admin_registration_number.dart';
 import 'package:u_panel/core/auth/kiu_staff_auth_email.dart';
 import 'package:u_panel/core/auth/login_email.dart';
 import 'package:u_panel/core/auth/student_auth_email.dart';
@@ -44,6 +45,19 @@ void main() {
     test('rejects staff id without real mailbox', () {
       expect(LoginEmail.validateForPasswordReset('KIU-0001'), isNull);
       expect(LoginEmail.isSyntheticStaff('KIU-0001'), isTrue);
+    });
+
+    test('accepts KIU staff registration numbers for sign-in', () {
+      expect(
+        LoginEmail.validateForPasswordReset(KiuAdminRegistrationNumber.example),
+        isNotNull,
+      );
+      expect(
+        KiuAdminRegistrationNumber.looksLikeRegistrationNumberOnly(
+          KiuAdminRegistrationNumber.example,
+        ),
+        isTrue,
+      );
     });
   });
 

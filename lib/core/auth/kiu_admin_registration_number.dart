@@ -15,4 +15,11 @@ abstract final class KiuAdminRegistrationNumber {
     }
     return null;
   }
+
+  /// True when [raw] is only a KIU staff registration id (no @), e.g. KIU4235S.
+  static bool looksLikeRegistrationNumberOnly(String raw) {
+    final t = raw.trim();
+    if (t.isEmpty || t.contains('@')) return false;
+    return validateFormat(t) == null;
+  }
 }
