@@ -1117,8 +1117,8 @@ class AttendanceRepository extends ChangeNotifier {
   static const int _maxRecentListDetailIds = 8;
   final Map<String, DateTime> _listDetailFetchedAt = {};
   DateTime? _listsCatalogFetchedAt;
-  static const int _maxConcurrentListDetailLoads = 3;
-  static const int _maxPrefetchListDetailLoads = 4;
+  static const int _maxConcurrentListDetailLoads = 4;
+  static const int _maxPrefetchListDetailLoads = 6;
   static const int _maxBatchListDetailLoads = 16;
   static const int _maxSessionsPerListDetailLoad = 30;
   int _activeListDetailLoads = 0;
@@ -2217,6 +2217,7 @@ class AttendanceRepository extends ChangeNotifier {
     required List<AttendanceRecord> remoteRecords,
     required List<StudentRecord> remoteStudents,
     required List<SignInRecord> remoteSignIns,
+    bool rosterAlreadyAugmented = false,
   }) async {
     if (!AuthRepository.instance.isLoggedIn) return;
 
@@ -2463,10 +2464,12 @@ class AttendanceRepository extends ChangeNotifier {
     for (final s in AttendanceStore.students) {
       studentsById.putIfAbsent(s.id, () => s);
     }
-    final mergedStudents = await _augmentRosterStudents(
-      signIns: mergedSignIns,
-      fetched: studentsById.values.toList(),
-    );
+    final mergedStudents = rosterAlreadyAugmented
+        ? List<StudentRecord>.from(studentsById.values)
+        : await _augmentRosterStudents(
+            signIns: mergedSignIns,
+            fetched: studentsById.values.toList(),
+          );
 
     AttendanceStore.lists
       ..clear()
@@ -2652,6 +2655,13 @@ class AttendanceRepository extends ChangeNotifier {
         }
       }
 
+      await _publishListDetailEarlyProgress(
+        listId: listId,
+        listSessions: mergedSessions,
+        listSignIns: signIns,
+      );
+      if (!_loadsAllowedForSession(loadGeneration)) return;
+
       final records = await _fetchAttendanceRecordsForDetailLoad(
         sessionIds: sessionIds,
         scopedStudentIds: scopedStudentIds,
@@ -2683,6 +2693,7 @@ class AttendanceRepository extends ChangeNotifier {
           listSignIns: signIns,
           listRecords: records,
           listStudents: rosterStudents,
+          rosterAlreadyAugmented: true,
         ),
       );
       _loadedListDetailIds.add(listId);
@@ -2791,6 +2802,16 @@ class AttendanceRepository extends ChangeNotifier {
             .toList();
       }
 
+      for (final listId in targetListIds) {
+        await _publishListDetailEarlyProgress(
+          listId: listId,
+          listSessions:
+              allSessions.where((s) => s.listId == listId).toList(),
+          listSignIns: allSignIns.where((si) => si.listId == listId).toList(),
+        );
+      }
+      if (!_loadsAllowedForSession(loadGeneration)) return;
+
       final sessionIds = allSessions.map((s) => s.id).toList();
       final allRecords = await _fetchAttendanceRecordsForDetailLoad(
         sessionIds: sessionIds,
@@ -2823,6 +2844,7 @@ class AttendanceRepository extends ChangeNotifier {
           batchSignIns: allSignIns,
           batchRecords: allRecords,
           batchStudents: rosterStudents,
+          rosterAlreadyAugmented: true,
         ),
       );
 
@@ -2856,6 +2878,7 @@ class AttendanceRepository extends ChangeNotifier {
     required List<SignInRecord> batchSignIns,
     required List<AttendanceRecord> batchRecords,
     required List<StudentRecord> batchStudents,
+    bool rosterAlreadyAugmented = false,
   }) async {
     final batchSessionIds = batchSessions.map((s) => s.id).toSet();
     final otherSessions = AttendanceStore.sessions
@@ -2874,6 +2897,7 @@ class AttendanceRepository extends ChangeNotifier {
       remoteRecords: [...otherRecords, ...batchRecords],
       remoteStudents: batchStudents,
       remoteSignIns: [...otherSignIns, ...batchSignIns],
+      rosterAlreadyAugmented: rosterAlreadyAugmented,
     );
   }
 
@@ -2883,6 +2907,7 @@ class AttendanceRepository extends ChangeNotifier {
     required List<SignInRecord> listSignIns,
     required List<AttendanceRecord> listRecords,
     required List<StudentRecord> listStudents,
+    bool rosterAlreadyAugmented = false,
   }) async {
     final listSessionIds = listSessions.map((s) => s.id).toSet();
     final otherSessions =
@@ -2899,7 +2924,105 @@ class AttendanceRepository extends ChangeNotifier {
       remoteRecords: [...otherRecords, ...listRecords],
       remoteStudents: listStudents,
       remoteSignIns: [...otherSignIns, ...listSignIns],
+      rosterAlreadyAugmented: rosterAlreadyAugmented,
     );
+  }
+
+  /// Paints roster names/regs as soon as sign-ins arrive (before student doc fetches).
+  Future<void> _publishListDetailEarlyProgress({
+    required String listId,
+    required List<AttendanceSession> listSessions,
+    required List<SignInRecord> listSignIns,
+  }) async {
+    if (listSignIns.isEmpty && listSessions.isEmpty) return;
+
+    final listSessionIds = listSessions.map((s) => s.id).toSet();
+    final listStudentIds = listSignIns.map((si) => si.studentId.trim()).toSet();
+    final otherStudents = AttendanceStore.students
+        .where((s) => !listStudentIds.contains(s.id.trim()))
+        .toList();
+    final listStudents = _rosterStudentsFromSignInsSync(
+      signIns: listSignIns,
+      fetched: AttendanceStore.students
+          .where((s) => listStudentIds.contains(s.id.trim()))
+          .toList(),
+    );
+    final otherSessions =
+        AttendanceStore.sessions.where((s) => s.listId != listId).toList();
+    final otherSignIns =
+        AttendanceStore.signIns.where((si) => si.listId != listId).toList();
+    final keptRecords = AttendanceStore.attendanceRecords
+        .where((r) => !listSessionIds.contains(r.sessionId))
+        .toList();
+    final listRecords = AttendanceStore.attendanceRecords
+        .where((r) => listSessionIds.contains(r.sessionId))
+        .toList();
+
+    await _serializedListDetailMerge(
+      () => _replaceStoreFromRemote(
+        remoteLists: List<AttendanceList>.from(AttendanceStore.lists),
+        remoteSessions: [...otherSessions, ...listSessions],
+        remoteRecords: [...keptRecords, ...listRecords],
+        remoteStudents: [...otherStudents, ...listStudents],
+        remoteSignIns: [...otherSignIns, ...listSignIns],
+        rosterAlreadyAugmented: true,
+      ),
+    );
+    _notifyStoreUpdated(refreshRecordWatch: false);
+  }
+
+  List<StudentRecord> _rosterStudentsFromSignInsSync({
+    required List<SignInRecord> signIns,
+    required List<StudentRecord> fetched,
+  }) {
+    final byId = <String, StudentRecord>{for (final s in fetched) s.id: s};
+    final out = List<StudentRecord>.from(fetched);
+
+    for (final si in signIns) {
+      final sid = si.studentId.trim();
+      if (sid.isEmpty) continue;
+
+      final existing = byId[sid];
+      var name = si.studentName?.trim() ?? '';
+      var reg = si.registrationNumber?.trim().toUpperCase() ?? '';
+
+      if (existing != null) {
+        if (name.isEmpty) name = existing.name.trim();
+        if (reg.isEmpty) reg = existing.registrationNumber.trim().toUpperCase();
+        if (name.isNotEmpty &&
+            (existing.name.trim().isEmpty ||
+                existing.name.trim() == 'Unknown')) {
+          final upgraded = _upgradeStudentIfNeeded(
+            existing,
+            name,
+            deriveStudentInitialsFromName(name),
+          );
+          byId[sid] = upgraded;
+          final idx = out.indexWhere((s) => s.id == sid);
+          if (idx >= 0) out[idx] = upgraded;
+        }
+        continue;
+      }
+
+      if (isStudentScopedUser() && reg.isEmpty) {
+        final ownReg = currentStudentLoadRegistration()?.trim().toUpperCase();
+        if (ownReg != null && ownReg.isNotEmpty) reg = ownReg;
+      }
+      if (name.isEmpty && reg.isEmpty) continue;
+
+      final synthetic = StudentRecord(
+        id: sid,
+        name: name.isNotEmpty ? name : 'Unknown',
+        registrationNumber: reg.isNotEmpty ? reg : '—',
+        threeDigitCode: '000',
+        initials: name.isNotEmpty
+            ? deriveStudentInitialsFromName(name)
+            : '??',
+      );
+      byId[sid] = synthetic;
+      out.add(synthetic);
+    }
+    return out;
   }
 
   /// Chunked [whereIn] queries with per-value fallback when rules reject a chunk.
@@ -4818,62 +4941,73 @@ class AttendanceRepository extends ChangeNotifier {
     required List<SignInRecord> signIns,
     required List<StudentRecord> fetched,
   }) async {
-    final byId = <String, StudentRecord>{for (final s in fetched) s.id: s};
-    final out = List<StudentRecord>.from(fetched);
+    final sync = _rosterStudentsFromSignInsSync(
+      signIns: signIns,
+      fetched: fetched,
+    );
+    final byId = <String, StudentRecord>{for (final s in sync) s.id: s};
+    final out = List<StudentRecord>.from(sync);
+
+    final regsNeedingNames = <String>{};
+    final remoteFetchTargets = <SignInRecord>[];
 
     for (final si in signIns) {
       final sid = si.studentId.trim();
       if (sid.isEmpty) continue;
-
       final existing = byId[sid];
       var name = si.studentName?.trim() ?? '';
       var reg = si.registrationNumber?.trim().toUpperCase() ?? '';
-
       if (existing != null) {
         if (name.isEmpty) name = existing.name.trim();
-        if (reg.isEmpty) {
-          reg = existing.registrationNumber.trim().toUpperCase();
-        }
-        if (name.isEmpty && reg.isNotEmpty) {
-          name = await _lookupFullNameOnRegistrationDoc(reg) ?? '';
-        }
-        if (name.isNotEmpty &&
-            (existing.name.trim().isEmpty ||
-                existing.name.trim() == 'Unknown')) {
-          final upgraded = _upgradeStudentIfNeeded(
-            existing,
-            name,
-            deriveStudentInitialsFromName(name),
-          );
-          byId[sid] = upgraded;
-          final idx = out.indexWhere((s) => s.id == sid);
-          if (idx >= 0) {
-            out[idx] = upgraded;
-          }
-        }
+        if (reg.isEmpty) reg = existing.registrationNumber.trim().toUpperCase();
+        if (name.isEmpty && reg.isNotEmpty) regsNeedingNames.add(reg);
         continue;
       }
-
       if (!isStudentScopedUser() && (name.isEmpty || reg.isEmpty)) {
-        final remote = await _fetchStudentDocByIdOrReg(
-          sid,
-          registrationNumber: reg.isNotEmpty ? reg : null,
-          options: null,
+        remoteFetchTargets.add(si);
+      }
+      if (name.isEmpty && reg.isNotEmpty) regsNeedingNames.add(reg);
+    }
+
+    final nameByReg = await _lookupFullNamesOnRegistrationDocs(regsNeedingNames);
+
+    if (!isStudentScopedUser() && remoteFetchTargets.isNotEmpty) {
+      const batchSize = 8;
+      for (var i = 0; i < remoteFetchTargets.length; i += batchSize) {
+        final chunk = remoteFetchTargets.skip(i).take(batchSize);
+        final batch = await Future.wait(
+          chunk.map((si) async {
+            final sid = si.studentId.trim();
+            final reg = si.registrationNumber?.trim().toUpperCase() ?? '';
+            return _fetchStudentDocByIdOrReg(
+              sid,
+              registrationNumber: reg.isNotEmpty ? reg : null,
+              options: null,
+            );
+          }),
         );
-        if (remote != null) {
+        for (final remote in batch) {
+          if (remote == null) continue;
+          final sid = remote.id.trim();
+          if (sid.isEmpty || byId.containsKey(sid)) continue;
           byId[sid] = remote;
           out.add(remote);
-          continue;
         }
       }
+    }
 
+    for (final si in signIns) {
+      final sid = si.studentId.trim();
+      if (sid.isEmpty || byId.containsKey(sid)) continue;
+
+      var name = si.studentName?.trim() ?? '';
+      var reg = si.registrationNumber?.trim().toUpperCase() ?? '';
       if (isStudentScopedUser() && reg.isEmpty) {
         final ownReg = currentStudentLoadRegistration()?.trim().toUpperCase();
         if (ownReg != null && ownReg.isNotEmpty) reg = ownReg;
       }
-
       if (name.isEmpty && reg.isNotEmpty) {
-        name = await _lookupFullNameOnRegistrationDoc(reg) ?? '';
+        name = nameByReg[StudentRegistrationNumber.normalize(reg)] ?? '';
       }
       if (name.isEmpty && reg.isEmpty) continue;
 
@@ -4888,6 +5022,56 @@ class AttendanceRepository extends ChangeNotifier {
       );
       byId[sid] = synthetic;
       out.add(synthetic);
+    }
+
+    for (var i = 0; i < out.length; i++) {
+      final student = out[i];
+      final reg = student.registrationNumber.trim().toUpperCase();
+      if (student.name.trim().isNotEmpty && student.name.trim() != 'Unknown') {
+        continue;
+      }
+      if (reg.isEmpty) continue;
+      final lookedUp =
+          nameByReg[StudentRegistrationNumber.normalize(reg)] ?? '';
+      if (lookedUp.isEmpty) continue;
+      final upgraded = _upgradeStudentIfNeeded(
+        student,
+        lookedUp,
+        deriveStudentInitialsFromName(lookedUp),
+      );
+      byId[student.id] = upgraded;
+      out[i] = upgraded;
+    }
+
+    return out;
+  }
+
+  Future<Map<String, String>> _lookupFullNamesOnRegistrationDocs(
+    Iterable<String> regs,
+  ) async {
+    final normalized = <String>{
+      for (final raw in regs)
+        if (StudentRegistrationNumber.normalize(raw).isNotEmpty)
+          StudentRegistrationNumber.normalize(raw),
+    };
+    if (normalized.isEmpty) return const {};
+
+    final out = <String, String>{};
+    final list = normalized.toList();
+    const batchSize = 10;
+    for (var i = 0; i < list.length; i += batchSize) {
+      final chunk = list.skip(i).take(batchSize);
+      final results = await Future.wait(
+        chunk.map((reg) async {
+          final name = await _lookupFullNameOnRegistrationDoc(reg);
+          return (reg, name);
+        }),
+      );
+      for (final (reg, name) in results) {
+        if (name != null && name.trim().isNotEmpty) {
+          out[reg] = name.trim();
+        }
+      }
     }
     return out;
   }

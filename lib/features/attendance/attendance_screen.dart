@@ -1181,6 +1181,9 @@ class _AttendanceProgramListsScreenState
       detailLoading: detailLoading,
       allowListMaintenance: attendanceListAllowsMaintenance(list),
       onOpenDetail: () {
+        unawaited(
+          AttendanceRepository.instance.loadListAttendanceData(list.id),
+        );
         Navigator.of(context).push(
           MaterialPageRoute<void>(
             builder: (ctx) => SessionCheckInsScreen(list: list),
@@ -1188,6 +1191,9 @@ class _AttendanceProgramListsScreenState
         );
       },
       onHistory: () {
+        unawaited(
+          AttendanceRepository.instance.loadListAttendanceData(list.id),
+        );
         Navigator.of(context).push(
           MaterialPageRoute<void>(
             builder: (ctx) => SessionCheckInsScreen(list: list),
