@@ -16,6 +16,11 @@ from .services.email_verification import (
     queue_verification_email,
     verify_email_token,
 )
+from .services.password_reset import (
+    PasswordResetError,
+    queue_password_reset_email,
+    reset_password_with_token,
+)
 from .services.login_identifier import resolve_user_for_login
 
 logger = logging.getLogger(__name__)
@@ -111,8 +116,103 @@ class PasswordResetView(APIView):
                 {"detail": "Email is required."},
                 status=status.HTTP_400_BAD_REQUEST,
             )
-        # TODO: send reset email via Django auth tokens.
+        try:
+            queue_password_reset_email(email)
+        except PasswordResetError as exc:
+            if exc.code == "too-many-requests":
+                return Response(
+                    {"detail": exc.message},
+                    status=status.HTTP_429_TOO_MANY_REQUESTS,
+                )
+            return Response(
+                {"detail": exc.message},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        except Exception:
+            logger.exception("Failed to queue password reset for %s", email)
+            return Response(
+                {"detail": "Could not send reset email. Try again later."},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
         return Response({"detail": "If that account exists, a reset link was sent."})
+
+
+class PasswordResetConfirmView(APIView):
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        raw_token = request.query_params.get("token", "")
+        return render(
+            request,
+            "accounts/password_reset_confirm.html",
+            {
+                "success": False,
+                "title": "Choose a new password",
+                "message": "Enter a new password for your U-Panel account.",
+                "show_form": True,
+                "token": raw_token,
+                "form_error": None,
+            },
+        )
+
+    def post(self, request):
+        raw_token = (
+            request.data.get("token")
+            or request.POST.get("token")
+            or request.query_params.get("token")
+            or ""
+        )
+        new_password = (
+            request.data.get("new_password")
+            or request.POST.get("new_password")
+            or ""
+        )
+        confirm = (
+            request.data.get("confirm_password")
+            or request.POST.get("confirm_password")
+            or ""
+        )
+        if new_password != confirm:
+            return render(
+                request,
+                "accounts/password_reset_confirm.html",
+                {
+                    "success": False,
+                    "title": "Choose a new password",
+                    "message": "Enter a new password for your U-Panel account.",
+                    "show_form": True,
+                    "token": raw_token,
+                    "form_error": "Passwords do not match.",
+                },
+                status=400,
+            )
+        try:
+            reset_password_with_token(raw_token, new_password)
+        except PasswordResetError as exc:
+            return render(
+                request,
+                "accounts/password_reset_confirm.html",
+                {
+                    "success": False,
+                    "title": "Reset failed",
+                    "message": exc.message,
+                    "show_form": exc.code in {"weak-password"},
+                    "token": raw_token,
+                    "form_error": exc.message if exc.code == "weak-password" else None,
+                },
+                status=400,
+            )
+        return render(
+            request,
+            "accounts/password_reset_confirm.html",
+            {
+                "success": True,
+                "title": "Password updated",
+                "message": "Your password has been changed. You can now sign in to U-Panel.",
+                "show_form": False,
+                "return_url": settings.APP_RETURN_URL,
+            },
+        )
 
 
 class RequestVerificationView(APIView):
