@@ -2828,8 +2828,9 @@ class AuthRepository extends ChangeNotifier {
       case 'weak-password':
         return 'Password is too weak. Use at least 6 characters.';
       case 'too-many-requests':
-        return ex.message.trim().isNotEmpty
-            ? ex.message
+        final msg = ex.message?.trim();
+        return (msg != null && msg.isNotEmpty)
+            ? msg
             : 'Please wait a minute before requesting another verification email.';
       case 'network-request-failed':
       case 'unavailable':
