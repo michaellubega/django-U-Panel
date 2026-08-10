@@ -160,6 +160,40 @@ class EmailVerificationToken(models.Model):
 
 
 
+class PasswordResetToken(models.Model):
+
+    """One-time token emailed to reset account password."""
+
+    user = models.ForeignKey(
+
+        User,
+
+        on_delete=models.CASCADE,
+
+        related_name="password_reset_tokens",
+
+    )
+
+    token_hash = models.CharField(max_length=64, db_index=True)
+
+    expires_at = models.DateTimeField()
+
+    used_at = models.DateTimeField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+
+        indexes = [
+
+            models.Index(fields=["user", "created_at"]),
+
+        ]
+
+
+
+
+
 class PushDevice(models.Model):
 
     """OneSignal player id registered by a client (replaces FCM tokens)."""
