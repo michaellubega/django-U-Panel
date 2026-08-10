@@ -11,9 +11,8 @@ abstract final class UserFacingErrors {
       'or open http://169.58.135.136/app/ until DNS is ready.';
 
   static const apiConnectionBlocked =
-      'Could not reach the server. Add Cloudflare DNS for kiu.orion13.us '
-      '(Worker proxy for /api) or api.orion13.us → 169.58.135.136. '
-      'See docs/CLOUDFLARE_DNS_SETUP.md. '
+      'Could not reach the server. Check that https://kiu.orion13.us/api/health/ '
+      'returns OK, then redeploy: bash scripts/contabo/deploy-web-on-server.sh. '
       'Temporary: http://169.58.135.136/app/';
 
   static const serviceUnavailable =

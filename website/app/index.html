@@ -18,23 +18,24 @@
   <link rel="manifest" href="manifest.json">
 
   <script>
-    (function upanelApiBaseUrl() {
+    (function upanelApiBaseUrlBootstrap() {
       var host = location.hostname;
       var origin = location.protocol + '//' + location.host;
-      if (host === '169.58.135.136') {
-        window.upanelApiBaseUrl = 'http://169.58.135.136';
-        return;
+
+      function stripSlash(url) {
+        return url.replace(/\/$/, '');
       }
-      if (host === 'api.orion13.us') {
-        window.upanelApiBaseUrl = origin;
-        return;
+
+      function defaultApiBase() {
+        if (host === '169.58.135.136') return 'http://169.58.135.136';
+        if (host === 'api.orion13.us') return origin;
+        if (host === 'kiu.orion13.us' || host === 'www.kiu.orion13.us') {
+          return origin;
+        }
+        return 'http://169.58.135.136';
       }
-      if (host === 'kiu.orion13.us' || host === 'www.kiu.orion13.us') {
-        // HTTPS site must call an HTTPS API (set DNS: api.orion13.us → VPS + Cloudflare).
-        window.upanelApiBaseUrl = 'https://api.orion13.us';
-        return;
-      }
-      window.upanelApiBaseUrl = 'http://169.58.135.136';
+
+      window.upanelApiBaseUrl = defaultApiBase();
     })();
   </script>
 
