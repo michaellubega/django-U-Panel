@@ -78,7 +78,7 @@ class RegisterView(APIView):
         token, _ = Token.objects.get_or_create(user=user)
         if not user.email_verified:
             try:
-                queue_verification_email(user)
+                queue_verification_email(user, is_signup=True)
             except EmailVerificationError as exc:
                 logger.warning(
                     "Register: could not queue verification for %s: %s",
