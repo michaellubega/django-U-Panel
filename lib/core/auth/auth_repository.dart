@@ -243,6 +243,7 @@ class AuthRepository extends ChangeNotifier {
   int _authenticatingCount = 0;
   int _sessionEpoch = 0;
   bool _verificationEmailQueuedAtSignup = false;
+  bool _pendingSignupEmailVerification = false;
 
   /// True while sign-in or registration is in flight (avoids login-screen flash).
   bool get isAuthenticating => _authenticatingCount > 0;
@@ -256,6 +257,17 @@ class AuthRepository extends ChangeNotifier {
 
   void clearVerificationEmailQueuedAtSignup() {
     _verificationEmailQueuedAtSignup = false;
+  }
+
+  /// Set when signup succeeded and the UI must show email verification next.
+  bool get pendingSignupEmailVerification => _pendingSignupEmailVerification;
+
+  void markPendingSignupEmailVerification() {
+    _pendingSignupEmailVerification = true;
+  }
+
+  void clearPendingSignupEmailVerification() {
+    _pendingSignupEmailVerification = false;
   }
 
   /// True while [logout] is waiting for the API — UI shows a blocking overlay.
@@ -999,9 +1011,11 @@ class AuthRepository extends ChangeNotifier {
   bool get shouldShowEmailVerificationUi {
     if (_forceSignedOut || _signingOut) return false;
     final user = ApiAuth.instance.currentUser;
-    if (user == null) return false;
-    return _needsStudentEmailVerification(user) ||
-        _needsKiuStaffEmailVerification(user);
+    if (user != null) {
+      return _needsStudentEmailVerification(user) ||
+          _needsKiuStaffEmailVerification(user);
+    }
+    return _pendingSignupEmailVerification && hasApiSession;
   }
 
   /// After staff email is verified, ask whether the user is a KIU administrator.
@@ -1450,6 +1464,7 @@ class AuthRepository extends ChangeNotifier {
     _apiRoleCheckDenied = false;
     _lastRoleHydrateUid = null;
     _verificationEmailQueuedAtSignup = false;
+    _pendingSignupEmailVerification = false;
     unawaited(AuthSessionCache.clear());
   }
 
@@ -2282,6 +2297,7 @@ class AuthRepository extends ChangeNotifier {
       );
     }
     if (verified) {
+      clearPendingSignupEmailVerification();
       final current = ApiAuth.instance.currentUser;
       if (current != null) {
         await _linkStudentRegistrationAfterEmailVerified(current);
@@ -2679,6 +2695,7 @@ class AuthRepository extends ChangeNotifier {
       // Register API already queues the verification email.
       _forceSignedOut = false;
       markVerificationEmailQueuedAtSignup();
+      markPendingSignupEmailVerification();
       clearAuthFormError();
       clearAuthFormDraft();
       try {
@@ -3781,20 +3798,27 @@ class AuthRepository extends ChangeNotifier {
         await user.getIdToken(true);
       } catch (_) {}
 
-      await apiStore().collection(ApiCollections.appUsers).doc(uid).set(
-        <String, dynamic>{
-          'email': em,
-          'registrationNumber': reg,
-          'fullName': name,
-          appUserIsStudentField: false,
-          staffAccountRoleField: isKiuAdministrator
-              ? staffAccountRoleKiuAdministrator
-              : staffAccountRoleStaff,
-          if (normalizedTitle != null) kiuAdminJobTitleField: normalizedTitle,
-          'createdAt': ApiFieldValue.serverTimestamp(),
-        },
-        ApiSetOptions(merge: true),
-      );
+      try {
+        await apiStore().collection(ApiCollections.appUsers).doc(uid).set(
+          <String, dynamic>{
+            'email': em,
+            'registrationNumber': reg,
+            'fullName': name,
+            appUserIsStudentField: false,
+            staffAccountRoleField: isKiuAdministrator
+                ? staffAccountRoleKiuAdministrator
+                : staffAccountRoleStaff,
+            if (normalizedTitle != null) kiuAdminJobTitleField: normalizedTitle,
+            'createdAt': ApiFieldValue.serverTimestamp(),
+          },
+          ApiSetOptions(merge: true),
+        );
+      } catch (e, st) {
+        if (kDebugMode) {
+          debugPrint('registerKiuStaffWithEmail: app_users write: $e');
+          debugPrint('$st');
+        }
+      }
 
       final skipVerify = KiuStaffAuthEmail.skipsVerification(em);
       // Register API already queues the verification email — do not request again here
@@ -3813,6 +3837,9 @@ class AuthRepository extends ChangeNotifier {
 
       _forceSignedOut = false;
       markVerificationEmailQueuedAtSignup();
+      if (!skipVerify) {
+        markPendingSignupEmailVerification();
+      }
       clearAuthFormError();
       try {
         await _hydrateUser(user, allowDuringAuth: true);
@@ -3831,6 +3858,9 @@ class AuthRepository extends ChangeNotifier {
         );
         if (signInResult.ok) {
           markVerificationEmailQueuedAtSignup();
+          if (signInResult.needsEmailVerification) {
+            markPendingSignupEmailVerification();
+          }
           return signInResult;
         }
         return AuthActionResult(
@@ -3840,6 +3870,17 @@ class AuthRepository extends ChangeNotifier {
       }
       return AuthActionResult(error: _mapAuthError(ex));
     } catch (ex) {
+      final created = cred?.user ?? ApiAuth.instance.currentUser;
+      if (created != null && !KiuStaffAuthEmail.skipsVerification(em)) {
+        _forceSignedOut = false;
+        markVerificationEmailQueuedAtSignup();
+        markPendingSignupEmailVerification();
+        try {
+          await _hydrateUser(created, allowDuringAuth: true);
+        } catch (_) {}
+        notifyListeners();
+        return const AuthActionResult(needsEmailVerification: true);
+      }
       try {
         await cred?.user?.delete();
       } catch (_) {}

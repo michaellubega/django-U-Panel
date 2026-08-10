@@ -42,7 +42,7 @@ class _AuthGateState extends State<AuthGate> {
   void _onAuthChanged() {
     if (!mounted) return;
     final auth = AuthRepository.instance;
-    if (auth.shouldShowEmailVerificationUi) {
+    if (auth.shouldShowEmailVerificationUi || auth.pendingSignupEmailVerification) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         popToRootRoute();
       });
@@ -106,7 +106,8 @@ class _AuthGateState extends State<AuthGate> {
                 : message,
             onRetry: _showLoadingRetry ? _retryFromLoadingScreen : null,
           );
-        } else if (auth.shouldShowEmailVerificationUi) {
+        } else if (auth.shouldShowEmailVerificationUi ||
+            auth.pendingSignupEmailVerification) {
           // After signup/sign-in, show verification before login/register UI — even
           // while [_beginAuthenticating] is winding down (otherwise users stay on
           // the create-account form after a successful registration).

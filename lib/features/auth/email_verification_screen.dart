@@ -35,7 +35,7 @@ class _EmailVerificationScreenState extends State<EmailVerificationScreen>
 
   void _showSignupVerificationHintIfNeeded() {
     final auth = AuthRepository.instance;
-    if (!auth.isLoggedIn || !auth.needsEmailVerification) return;
+    if (!auth.shouldShowEmailVerificationUi) return;
     if (auth.verificationEmailQueuedAtSignup) {
       auth.clearVerificationEmailQueuedAtSignup();
       if (!mounted) return;
