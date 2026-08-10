@@ -85,8 +85,14 @@ class SessionCodeAutoCheckIn {
     return false;
   }
 
-  /// Attempts GPS check-in (or offline queue) for [rawCode]. Safe to call from
-  /// push handlers; shows a root snackbar when [showFeedback] is true.
+  /// Handles session-code pushes from OneSignal click / foreground handlers.
+  static Future<void> handlePushData(Map<String, dynamic> data) async {
+    final code = codeFromPushData(data);
+    if (code == null || code.isEmpty) return;
+    if (await isRemoteLearningSessionCode(code)) return;
+    await run(rawCode: code, showFeedback: true);
+  }
+
   static Future<SessionCodeAutoCheckInResult> run({
     required String rawCode,
     bool showFeedback = true,

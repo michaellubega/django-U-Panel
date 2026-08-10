@@ -128,6 +128,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     PendingOfflineCoordinator.instance.onLifecycleState(state);
     if (state == AppLifecycleState.resumed) {
       unawaited(AppConnectivity.instance.probeNow());
+      unawaited(PushController.instance.syncTopicsForCurrentUser());
       unawaited(_bootstrapAttendanceStore());
       unawaited(StudentLocationPriming.instance.primeOnAppOpen());
     }
