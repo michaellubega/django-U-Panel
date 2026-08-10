@@ -242,9 +242,21 @@ class AuthRepository extends ChangeNotifier {
   bool _changingPassword = false;
   int _authenticatingCount = 0;
   int _sessionEpoch = 0;
+  bool _verificationEmailQueuedAtSignup = false;
 
   /// True while sign-in or registration is in flight (avoids login-screen flash).
   bool get isAuthenticating => _authenticatingCount > 0;
+
+  /// Set after register API queues the first verification email (skip auto-resend).
+  bool get verificationEmailQueuedAtSignup => _verificationEmailQueuedAtSignup;
+
+  void markVerificationEmailQueuedAtSignup() {
+    _verificationEmailQueuedAtSignup = true;
+  }
+
+  void clearVerificationEmailQueuedAtSignup() {
+    _verificationEmailQueuedAtSignup = false;
+  }
 
   /// True while [logout] is waiting for the API — UI shows a blocking overlay.
   bool get signingOut => _signingOut;
@@ -1426,6 +1438,7 @@ class AuthRepository extends ChangeNotifier {
     _cachedIsStudentProfile = null;
     _apiRoleCheckDenied = false;
     _lastRoleHydrateUid = null;
+    _verificationEmailQueuedAtSignup = false;
     unawaited(AuthSessionCache.clear());
   }
 
@@ -2654,6 +2667,7 @@ class AuthRepository extends ChangeNotifier {
 
       // Register API already queues the verification email.
       _forceSignedOut = false;
+      markVerificationEmailQueuedAtSignup();
       clearAuthFormError();
       clearAuthFormDraft();
       try {
@@ -2777,7 +2791,7 @@ class AuthRepository extends ChangeNotifier {
       _forceSignedOut = false;
       clearAuthFormError();
       clearAuthFormDraft();
-      unawaited(_sendSignupVerificationEmail(user));
+      markVerificationEmailQueuedAtSignup();
       try {
         await _hydrateUser(user, allowDuringAuth: true);
       } catch (_) {}
@@ -3786,6 +3800,7 @@ class AuthRepository extends ChangeNotifier {
       }
 
       _forceSignedOut = false;
+      markVerificationEmailQueuedAtSignup();
       clearAuthFormError();
       try {
         await _hydrateUser(user, allowDuringAuth: true);
@@ -3797,9 +3812,18 @@ class AuthRepository extends ChangeNotifier {
       return AuthActionResult(needsEmailVerification: needsVerify);
     } on ApiAuthException catch (ex) {
       if (ex.code == 'email-already-in-use') {
-        try {
-          await cred?.user?.delete();
-        } catch (_) {}
+        final signInResult = await signInWithEmail(
+          email: em,
+          password: password,
+        );
+        if (signInResult.ok) {
+          markVerificationEmailQueuedAtSignup();
+          return signInResult;
+        }
+        return AuthActionResult(
+          error: 'An account already exists for that email. '
+              'Sign in with your password instead.',
+        );
       }
       return AuthActionResult(error: _mapAuthError(ex));
     } catch (ex) {
@@ -4203,9 +4227,14 @@ class AuthRepository extends ChangeNotifier {
     }
     try {
       await user.sendEmailVerification();
+      clearVerificationEmailQueuedAtSignup();
       return null;
     } on ApiAuthException catch (ex) {
       if (ex.code == 'too-many-requests') {
+        if (_verificationEmailQueuedAtSignup) {
+          clearVerificationEmailQueuedAtSignup();
+          return null;
+        }
         return 'Please wait a few minutes before requesting another email.';
       }
       return UserFacingErrors.sanitize(ex.message);
