@@ -96,10 +96,12 @@ describe_bundle
 OLD_SHA="$(bundle_sha)"
 OLD_HEAD="$(git rev-parse HEAD)"
 
-echo "==> Pull latest main"
+echo "==> Pull latest main (discard local website/app edits — bundle is re-synced below)"
 git fetch origin main
 git checkout main
-git pull origin main
+# Production servers often have modified website/app from a prior gh-pages sync;
+# git pull would fail. Reset tracked files to origin/main (.env.production is untracked).
+git reset --hard origin/main
 echo "    now at: $(git log -1 --oneline)"
 
 sync_from_gh_pages() {
