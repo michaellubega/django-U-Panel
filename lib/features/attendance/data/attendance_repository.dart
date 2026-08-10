@@ -1047,7 +1047,7 @@ class AttendanceRepository extends ChangeNotifier {
 
   /// List IDs kept locally while enrollment or check-in is still in flight.
   Future<Set<String>> _localEnrollmentListIds() async {
-    final ids = <String>{};
+    final ids = <String>{..._listsPublishedOnServer};
     for (final e in await PendingListCreateQueue.loadAll()) {
       ids.add(e.list.id);
     }
@@ -3141,15 +3141,28 @@ class AttendanceRepository extends ChangeNotifier {
     return true;
   }
 
+  void _mergeLocallyPublishedListsInto(Map<String, AttendanceList> listsById) {
+    for (final id in _listsPublishedOnServer) {
+      final local = AttendanceStore.listById(id);
+      if (local != null) {
+        listsById[id] = local;
+      }
+    }
+  }
+
   Future<void> _replaceListsOnly(List<AttendanceList> remoteLists) async {
     if (!AuthRepository.instance.isLoggedIn) return;
     // Wrong-scope or in-flight list refresh can return empty before role hydration;
     // keep visible lists until a non-empty server response arrives.
     if (remoteLists.isEmpty && AttendanceStore.lists.isNotEmpty) return;
+    for (final remote in remoteLists) {
+      _listsPublishedOnServer.remove(remote.id);
+    }
     final listsById = {for (final l in remoteLists) l.id: l};
     for (final e in await PendingListCreateQueue.loadAll()) {
       listsById[e.list.id] = e.list;
     }
+    _mergeLocallyPublishedListsInto(listsById);
     final nextIds = listsById.keys.toSet();
     for (final l in AttendanceStore.lists) {
       if (!nextIds.contains(l.id)) {
@@ -4934,6 +4947,8 @@ class AttendanceRepository extends ChangeNotifier {
     String? pendingLecturerStaffNumber,
   }) async {
     AttendanceStore.addList(list);
+    _listsCatalogFetchedAt = null;
+    _notifyStoreUpdated(immediate: true);
     return persistOnlineFirst(
       timeout: _sessionPublishTimeout,
       persistOnline: () async {
@@ -4941,9 +4956,10 @@ class AttendanceRepository extends ChangeNotifier {
             .collection(ApiCollections.attendanceLists)
             .doc(list.id)
             .set(_listToMap(list));
-        _markListPublishedOnServer(list.id);
+        markListPublishedOnServer(list.id);
         await PendingListCreateQueue.removeByListId(list.id);
         unawaited(_persistScopedLocalSnapshot());
+        _notifyStoreUpdated(immediate: true);
         return (list: list, syncedToServer: true);
       },
       persistOffline: () async {
@@ -4952,6 +4968,7 @@ class AttendanceRepository extends ChangeNotifier {
           pendingLecturerStaffNumber: pendingLecturerStaffNumber,
         );
         unawaited(_persistScopedLocalSnapshot());
+        _notifyStoreUpdated(immediate: true);
         return (list: list, syncedToServer: false);
       },
     );
@@ -5354,7 +5371,7 @@ class AttendanceRepository extends ChangeNotifier {
     _invalidateAwaitingUploadCache();
   }
 
-  void _markListPublishedOnServer(String listId) {
+  void markListPublishedOnServer(String listId) {
     final id = listId.trim();
     if (id.isNotEmpty) {
       _listsPublishedOnServer.add(id);
@@ -5376,7 +5393,7 @@ class AttendanceRepository extends ChangeNotifier {
           .get(const ApiGetOptions(source: ApiSource.server))
           .timeout(_sessionPublishFastTimeout);
       if (snap.exists) {
-        _markListPublishedOnServer(id);
+        markListPublishedOnServer(id);
       }
     } catch (_) {}
   }
@@ -5654,7 +5671,7 @@ class AttendanceRepository extends ChangeNotifier {
               .doc(listId)
               .set(_listToMap(updated))
               .timeout(_sessionPublishTimeout)
-              .then((_) => _markListPublishedOnServer(listId))
+              .then((_) => markListPublishedOnServer(listId))
               .catchError((_) {}),
         );
       }
