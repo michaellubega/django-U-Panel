@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import '../platform/web_fast_boot.dart';
 import '../auth/auth_repository.dart';
 import '../widgets/web_app_loading_screen.dart';
+import '../navigation/app_navigator.dart';
 import '../../features/auth/auth_screen.dart';
 import '../../features/auth/email_verification_screen.dart';
 import '../../features/auth/kiu_admin_onboarding_screen.dart';
@@ -40,6 +41,12 @@ class _AuthGateState extends State<AuthGate> {
 
   void _onAuthChanged() {
     if (!mounted) return;
+    final auth = AuthRepository.instance;
+    if (auth.shouldShowEmailVerificationUi) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        popToRootRoute();
+      });
+    }
     setState(() {});
     _scheduleLoadingRetryTimer();
   }
@@ -99,7 +106,7 @@ class _AuthGateState extends State<AuthGate> {
                 : message,
             onRetry: _showLoadingRetry ? _retryFromLoadingScreen : null,
           );
-        } else if (auth.isLoggedIn && auth.needsEmailVerification) {
+        } else if (auth.shouldShowEmailVerificationUi) {
           // After signup/sign-in, show verification before login/register UI — even
           // while [_beginAuthenticating] is winding down (otherwise users stay on
           // the create-account form after a successful registration).
@@ -113,9 +120,12 @@ class _AuthGateState extends State<AuthGate> {
               onRetry: _retryFromLoadingScreen,
             );
           } else {
-            // Keep [AuthScreen] mounted while sign-in/register runs so errors
-            // are not lost when Firebase briefly emits a session (e.g. rollback).
-            child = AuthScreen(key: ValueKey('auth_${auth.sessionEpoch}'));
+            // Nested navigator so staff-register / creating-account routes are
+            // disposed when this branch is replaced by email verification.
+            child = _AuthFlowNavigator(
+              key: ValueKey('auth_flow_${auth.sessionEpoch}'),
+              authScreen: AuthScreen(key: ValueKey('auth_${auth.sessionEpoch}')),
+            );
           }
         } else if (auth.needsKiuAdminOnboarding) {
           child = const KiuAdminOnboardingScreen(
@@ -130,6 +140,28 @@ class _AuthGateState extends State<AuthGate> {
         }
 
         return child;
+      },
+    );
+  }
+}
+
+/// Hosts [AuthScreen] and routes pushed from it (staff register, creating account).
+///
+/// When [AuthGate] swaps to [EmailVerificationScreen], this navigator is removed
+/// from the tree and all stacked auth routes are cleared automatically.
+class _AuthFlowNavigator extends StatelessWidget {
+  const _AuthFlowNavigator({super.key, required this.authScreen});
+
+  final Widget authScreen;
+
+  @override
+  Widget build(BuildContext context) {
+    return Navigator(
+      onGenerateRoute: (settings) {
+        return MaterialPageRoute<void>(
+          settings: settings,
+          builder: (_) => authScreen,
+        );
       },
     );
   }

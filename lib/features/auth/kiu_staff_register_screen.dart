@@ -4,7 +4,6 @@ import '../../core/auth/auth_repository.dart';
 import '../../core/auth/kiu_admin_job_title.dart';
 import '../../core/auth/kiu_admin_registration_number.dart';
 import '../../core/auth/kiu_staff_auth_email.dart';
-import '../../core/navigation/app_navigator.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/widgets/dismissible_error_banner.dart';
 
@@ -71,7 +70,7 @@ class _KiuStaffRegisterScreenState extends State<KiuStaffRegisterScreen> {
 
     if (!mounted) return;
     if (result.needsEmailVerification) {
-      popToRootRoute();
+      AuthRepository.instance.clearAuthFormDraft();
       return;
     }
 
