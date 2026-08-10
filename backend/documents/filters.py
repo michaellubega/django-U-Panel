@@ -72,9 +72,7 @@ def _coerce_value(raw, lookup: str):
         return True
     if text.lower() == "false":
         return False
-    try:
-        if "." in text:
-            return float(text)
-        return int(text)
-    except ValueError:
-        return text
+    # Equality filters must preserve string form — JSON docs store user ids and
+    # registration numbers as strings (e.g. lecturerUid "12"). Coercing "12" to
+    # int breaks PostgreSQL JSONField lookups against string values.
+    return text
