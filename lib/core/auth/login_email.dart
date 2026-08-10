@@ -1,3 +1,4 @@
+import 'kiu_admin_registration_number.dart';
 import 'kiu_staff_auth_email.dart';
 import 'staff_auth_email.dart';
 import 'student_auth_email.dart';
@@ -15,6 +16,9 @@ abstract final class LoginEmail {
 
   static bool isStaffNumberOnly(String raw) =>
       StaffAuthEmail.looksLikeStaffNumberOnly(raw);
+
+  static bool isKiuRegistrationNumberOnly(String raw) =>
+      KiuAdminRegistrationNumber.looksLikeRegistrationNumberOnly(raw);
 
   static bool isKiuStaffMailbox(String raw) =>
       KiuStaffAuthEmail.isStaffMailbox(raw) ||
@@ -35,6 +39,10 @@ abstract final class LoginEmail {
   /// Null when valid for sign-in / password reset; otherwise user-facing error.
   static String? validateForPasswordReset(String raw) {
     if (isStaffNumberOnly(raw)) return null;
+    if (isKiuRegistrationNumberOnly(raw)) {
+      return 'Staff registration numbers cannot reset a password by email. '
+          'Use your @kiu.ac.ug email, or ask your administrator.';
+    }
     final resolved = resolve(raw);
     if (resolved.isEmpty) {
       return 'Enter your KIU school email.';

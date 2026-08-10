@@ -6,6 +6,7 @@ import '../../core/auth/auth_action_result.dart';
 import '../../core/auth/auth_repository.dart';
 import '../../core/auth/staff_auth_email.dart';
 import 'kiu_staff_register_screen.dart';
+import '../../core/auth/kiu_admin_registration_number.dart';
 import '../../core/auth/kiu_staff_auth_email.dart';
 import '../../core/auth/student_auth_email.dart';
 import '../../core/auth/student_registration_number.dart';
@@ -124,6 +125,9 @@ class _AuthScreenState extends State<AuthScreen> {
     if (raw.isEmpty) return false;
     if (StaffAuthEmail.looksLikeStaffNumberOnly(raw)) {
       return StaffAuthEmail.normalizeStaffNumber(raw) != null;
+    }
+    if (KiuAdminRegistrationNumber.looksLikeRegistrationNumberOnly(raw)) {
+      return true;
     }
     final resolved = StaffAuthEmail.resolveLoginEmail(raw) ?? '';
     if (!resolved.contains('@')) return false;
