@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Iterable
 
 import requests
@@ -74,12 +75,19 @@ def send_push(
 
 
 def tag_for_list(list_id: str) -> str:
-    return f"list_{list_id.strip()}"
+    segment = re.sub(r"[^a-zA-Z0-9\-_.~%]", "_", list_id.strip())
+    return f"list_{segment}"
 
 
 def tag_for_student(student_id: str) -> str:
-    return f"stu_{student_id.strip()}"
+    segment = re.sub(r"[^a-zA-Z0-9\-_.~%]", "_", student_id.strip())
+    return f"stu_{segment}"
 
 
 def tag_for_lecturer(user_id: str) -> str:
-    return f"lec_{user_id.strip()}"
+    segment = re.sub(r"[^a-zA-Z0-9\-_.~%]", "_", user_id.strip())
+    return f"lec_{segment}"
+
+
+def tag_for_kiu_admins() -> str:
+    return "kiu_admins"

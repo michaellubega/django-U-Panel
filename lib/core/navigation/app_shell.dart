@@ -107,7 +107,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
       });
     });
     _noticesCounterTimer = Timer.periodic(
-        const Duration(minutes: 5), (_) => _refreshUnseenNotices());
+        const Duration(seconds: 60), (_) => _refreshUnseenNotices());
   }
 
   @override
@@ -128,6 +128,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     PendingOfflineCoordinator.instance.onLifecycleState(state);
     if (state == AppLifecycleState.resumed) {
       unawaited(AppConnectivity.instance.probeNow());
+      unawaited(PushController.instance.syncTopicsForCurrentUser());
       unawaited(_bootstrapAttendanceStore());
       unawaited(StudentLocationPriming.instance.primeOnAppOpen());
     }
@@ -205,6 +206,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     final nowOnline = AppConnectivity.instance.isOnline;
     if (nowOnline && !_wasOnline) {
       unawaited(_onConnectivityRestored());
+      unawaited(_refreshUnseenNotices());
     } else if (!nowOnline && _wasOnline) {
       unawaited(
         AttendanceRepository.instance.loadStudentAttendanceForProfile(

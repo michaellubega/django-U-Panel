@@ -4,18 +4,20 @@ import 'package:flutter/foundation.dart';
 
 import '../auth/auth_repository.dart';
 import '../monitoring/app_sentry.dart';
+import '../../features/attendance/data/session_code_auto_check_in.dart';
 import 'desktop_notice_watch.dart';
 import 'local_push_display.dart';
 import 'onesignal_service.dart';
+import 'push_message_copy.dart';
 
-/// Push: OneSignal on mobile, desktop notice polling on Windows/Linux/macOS.
+/// Push: OneSignal on mobile, notice polling on web/desktop while the app runs.
 class PushController {
   PushController._();
   static final PushController instance = PushController._();
 
   bool _initialized = false;
 
-  bool get _desktopSupported => DesktopNoticeWatch.instance.supported;
+  bool get _foregroundWatchSupported => DesktopNoticeWatch.instance.supported;
 
   Future<void> initialize() async {
     if (_initialized) return;
@@ -23,7 +25,11 @@ class PushController {
 
     AuthRepository.instance.addListener(_onAuthChanged);
     await localPushEnsureInitialized();
-    await OneSignalService.initialize();
+    await OneSignalService.initialize(
+      onOpened: _handlePushOpened,
+      onForeground: _handlePushForeground,
+      onSubscriptionChanged: () => unawaited(syncTopicsForCurrentUser()),
+    );
     await syncTopicsForCurrentUser();
   }
 
@@ -62,9 +68,21 @@ class PushController {
     if (OneSignalService.supported) {
       await OneSignalService.syncForCurrentUser();
     }
-    if (_desktopSupported) {
+    if (_foregroundWatchSupported) {
       await DesktopNoticeWatch.instance.restart();
     }
+  }
+
+  void _handlePushOpened(Map<String, dynamic> data) {
+    unawaited(SessionCodeAutoCheckIn.handlePushData(data));
+  }
+
+  void _handlePushForeground(Map<String, dynamic> data) {
+    final (title, body) = pushDisplayCopyForMessage(data: data);
+    if (kDebugMode) {
+      debugPrint('Push foreground: $title — $body');
+    }
+    unawaited(SessionCodeAutoCheckIn.handlePushData(data));
   }
 
   Future<void> _waitForRoleReady() async {
