@@ -70,6 +70,7 @@ upsert(
 upsert("CSRF_TRUSTED_ORIGINS", "https://kiu.orion13.us,https://api.orion13.us", out)
 upsert("PUBLIC_API_URL", "https://kiu.orion13.us", out)
 upsert("APP_RETURN_URL", "https://kiu.orion13.us/app/", out)
+upsert("ONESIGNAL_APP_ID", "882dcbec-c505-4c12-95c5-78da7e8ef25c", out)
 
 path.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
 print("Updated", path)
@@ -82,6 +83,16 @@ docker compose -f docker-compose.prod.yml --env-file .env.production restart web
 echo ""
 echo "==> Health check (local)"
 curl -sf http://127.0.0.1/api/health/ || curl -sf http://169.58.135.136/api/health/ || true
+echo ""
+echo "==> OneSignal push status"
+curl -sf http://127.0.0.1/api/client-config/ || true
+echo ""
+if ! grep -q '^ONESIGNAL_REST_API_KEY=.\+' "$ENV_FILE" 2>/dev/null; then
+  echo "WARN: ONESIGNAL_REST_API_KEY is empty — server cannot send push notifications."
+  echo "      Set it in OneSignal Dashboard → Settings → Keys & IDs → App API Key"
+  echo "      Then run: ONESIGNAL_REST_API_KEY='os_v2_app_...' bash scripts/contabo/configure-onesignal.sh"
+fi
+
 echo ""
 echo "Done. After Cloudflare DNS (kiu → 169.58.135.136 proxied), verify:"
 echo "  curl -sf https://kiu.orion13.us/api/health/"
