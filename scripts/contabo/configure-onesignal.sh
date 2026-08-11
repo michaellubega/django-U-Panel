@@ -64,12 +64,8 @@ print("Updated OneSignal settings in", path)
 PY
 
 echo ""
-echo "==> Restarting API containers"
-docker compose -f docker-compose.prod.yml --env-file .env.production restart web worker beat
+echo "==> Recreating API containers (reload .env.production)"
+bash scripts/contabo/restart-api-containers.sh
 
-echo ""
-echo "==> Verify push is configured"
-sleep 3
-curl -sf http://127.0.0.1/api/client-config/ | python3 -m json.tool || curl -sf http://127.0.0.1/api/client-config/
 echo ""
 echo "Expected: push_enabled=true and push_delivery_configured=true"
