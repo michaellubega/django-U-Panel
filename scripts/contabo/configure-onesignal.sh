@@ -63,6 +63,34 @@ path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
 print("Updated OneSignal settings in", path)
 PY
 
+# Quote values that docker/env parsers mishandle (e.g. keys with # or spaces).
+python3 - "$ENV_FILE" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+lines = path.read_text(encoding="utf-8").splitlines()
+out = []
+for line in lines:
+    if not line or line.lstrip().startswith("#"):
+        out.append(line)
+        continue
+    m = re.match(r"^(ONESIGNAL_REST_API_KEY)=(.*)$", line)
+    if not m:
+        out.append(line)
+        continue
+    key, val = m.group(1), m.group(2).strip()
+    if (val.startswith('"') and val.endswith('"')) or (val.startswith("'") and val.endswith("'")):
+        out.append(line)
+        continue
+    if re.search(r"[#\s$`!]", val):
+        out.append(f'{key}="{val.replace(chr(34), "")}"')
+    else:
+        out.append(f"{key}={val}")
+path.write_text("\n".join(out).rstrip() + "\n", encoding="utf-8")
+PY
+
 echo ""
 echo "==> Recreating API containers (reload .env.production)"
 bash scripts/contabo/restart-api-containers.sh
