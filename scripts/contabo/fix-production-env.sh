@@ -77,16 +77,9 @@ print("Updated", path)
 PY
 
 echo ""
-echo "==> Restarting API containers"
-docker compose -f docker-compose.prod.yml --env-file .env.production restart web worker beat
+echo "==> Recreating API containers (reload .env.production)"
+bash scripts/contabo/restart-api-containers.sh
 
-echo ""
-echo "==> Health check (local)"
-curl -sf http://127.0.0.1/api/health/ || curl -sf http://169.58.135.136/api/health/ || true
-echo ""
-echo "==> OneSignal push status"
-curl -sf http://127.0.0.1/api/client-config/ || true
-echo ""
 if ! grep -q '^ONESIGNAL_REST_API_KEY=.\+' "$ENV_FILE" 2>/dev/null; then
   echo "WARN: ONESIGNAL_REST_API_KEY is empty — server cannot send push notifications."
   echo "      Set it in OneSignal Dashboard → Settings → Keys & IDs → App API Key"
