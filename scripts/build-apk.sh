@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Build a signed Play Store app bundle (.aab).
+# Build a signed release APK for sideloading / testing.
 #
 # Usage:
-#   bash scripts/build-play-store.sh
-#   ONESIGNAL_APP_ID=your-uuid bash scripts/build-play-store.sh   # optional bake-in
+#   bash scripts/build-apk.sh
+#   ONESIGNAL_APP_ID=your-uuid bash scripts/build-apk.sh
 #
-# Without ONESIGNAL_APP_ID, the app loads it at runtime from GET /api/client-config/
-# (server must have ONESIGNAL_APP_ID in .env.production).
+# Requires release signing: android/key.properties locally, or Cursor Cloud Agent
+# secrets (see scripts/setup-android-signing.sh).
 
 set -euo pipefail
 
@@ -24,11 +24,11 @@ if [[ -n "${SENTRY_DSN:-}" ]]; then
 fi
 
 flutter pub get
-flutter build appbundle --release "${DART_DEFINES[@]}"
+flutter build apk --release "${DART_DEFINES[@]}"
 
-OUT="build/app/outputs/bundle/release/app-release.aab"
+OUT="build/app/outputs/flutter-apk/app-release.apk"
 VERSION="$(grep -E '^version:' pubspec.yaml | sed -E 's/version:[[:space:]]*([^+]+)\+([0-9]+)/\1-build\2/')"
-DEST="/opt/cursor/artifacts/U-Panel-${VERSION}-release.aab"
+DEST="/opt/cursor/artifacts/U-Panel-${VERSION}-release.apk"
 mkdir -p /opt/cursor/artifacts
 cp "$OUT" "$DEST"
 echo ""

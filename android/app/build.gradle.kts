@@ -15,6 +15,30 @@ if (keystorePropertiesFile.exists()) {
     keystoreProperties.load(FileInputStream(keystorePropertiesFile))
 }
 
+fun signingCredential(name: String): String? {
+    val fromFile = keystoreProperties[name]?.toString()?.trim()
+    if (!fromFile.isNullOrEmpty()) return fromFile
+    val envName = when (name) {
+        "storePassword" -> "ANDROID_KEYSTORE_PASSWORD"
+        "keyPassword" -> "ANDROID_KEY_PASSWORD"
+        "keyAlias" -> "ANDROID_KEY_ALIAS"
+        "storeFile" -> "ANDROID_KEYSTORE_PATH"
+        else -> null
+    }
+    return envName?.let { System.getenv(it)?.trim() }?.takeIf { it.isNotEmpty() }
+}
+
+val releaseKeyAlias = signingCredential("keyAlias")
+val releaseKeyPassword = signingCredential("keyPassword") ?: signingCredential("storePassword")
+val releaseStorePassword = signingCredential("storePassword")
+val releaseStoreFile = signingCredential("storeFile")?.let { file(it) }
+    ?: rootProject.file("app/upload-keystore.jks").takeIf { it.exists() }
+
+val hasReleaseSigning = releaseKeyAlias != null &&
+    releaseKeyPassword != null &&
+    releaseStorePassword != null &&
+    releaseStoreFile != null
+
 android {
     namespace = "com.u_panel"
     compileSdk = flutter.compileSdkVersion
@@ -46,17 +70,21 @@ android {
     }
 
     signingConfigs {
-        create("release") {
-            keyAlias = keystoreProperties["keyAlias"] as String
-            keyPassword = keystoreProperties["keyPassword"] as String
-            storeFile = file(keystoreProperties["storeFile"] as String)
-            storePassword = keystoreProperties["storePassword"] as String
+        if (hasReleaseSigning) {
+            create("release") {
+                keyAlias = releaseKeyAlias!!
+                keyPassword = releaseKeyPassword!!
+                storeFile = releaseStoreFile!!
+                storePassword = releaseStorePassword!!
+            }
         }
     }
 
     buildTypes {
         release {
-            signingConfig = signingConfigs.getByName("release")
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
