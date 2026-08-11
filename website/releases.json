@@ -1,29 +1,31 @@
 {
-    "version":  "1.0.0",
-    "build":  7,
-    "releasedAt":  "2026-08-10",
-    "hostBase":  "https://kiu.orion13.us",
-    "ios":  {
-                "label":  "iPhone \u0026 iPad",
-                "status":  "coming_soon",
-                "webUrl":  "http://169.58.135.136/app/",
-                "message":  "Native iOS app coming soon. Use the web app in Safari for now."
-            },
-    "android":  {
-                    "file":  "https://kiu.orion13.us/downloads/U-Panel-1.0.0-android.apk",
-                    "label":  "Android APK",
-                    "minAndroid":  "7.0 (Nougat)",
-                    "available":  false
-                },
-    "windows":  {
-                    "file":  "https://kiu.orion13.us/downloads/U-Panel-1.0.0-windows-setup.exe",
-                    "label":  "Windows installer",
-                    "minWindows":  "Windows 10 (64-bit)",
-                    "available":  false
-                },
-    "web":  {
-                "url":  "http://169.58.135.136/app/",
-                "label":  "Web app",
-                "available":  true
-            }
+    "version": "1.0.0",
+    "build": 7,
+    "releasedAt": "2026-08-11",
+    "hostBase": "https://kiu.orion13.us",
+    "ios": {
+        "label": "iPhone & iPad",
+        "status": "coming_soon",
+        "webUrl": "https://kiu.orion13.us/app/",
+        "message": "Native iOS app coming soon. Use the web app in Safari for now."
+    },
+    "android": {
+        "file": "https://kiu.orion13.us/downloads/U-Panel-1.0.0-android.apk",
+        "label": "Android APK",
+        "minAndroid": "7.0 (Nougat)",
+        "available": true,
+        "size": "74.8 MB"
+    },
+    "windows": {
+        "file": "https://kiu.orion13.us/downloads/U-Panel-1.0.0-windows-setup.exe",
+        "label": "Windows installer",
+        "minWindows": "Windows 10 (64-bit)",
+        "available": true,
+        "size": "19.7 MB"
+    },
+    "web": {
+        "url": "https://kiu.orion13.us/app/",
+        "label": "Web app",
+        "available": true
+    }
 }
