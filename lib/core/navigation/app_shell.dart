@@ -203,7 +203,8 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
 
   void _onConnectivityChanged() {
     if (!mounted) return;
-    final nowOnline = AppConnectivity.instance.isOnline;
+    final connectivity = AppConnectivity.instance;
+    final nowOnline = connectivity.isOnline || connectivity.apiReachable;
     if (nowOnline && !_wasOnline) {
       unawaited(_onConnectivityRestored());
       unawaited(_refreshUnseenNotices());
