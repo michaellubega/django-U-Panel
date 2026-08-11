@@ -171,11 +171,12 @@ class PendingOfflineCoordinator {
     _tickInFlight = true;
     try {
       if (syncWhenOnline && _canAttemptUploadSync) {
-        await AttendanceOfflineSync.drainSessionValidationFirst();
-        if (AppConnectivity.instance.isOnline) {
-          await AttendanceOfflineSync.drainAllInOrder();
-        }
-      }
+      await AppConnectivity.instance.probeNow(force: true);
+      await AttendanceOfflineSync.drainSessionValidationFirst();
+      // drainAllInOrder probes reachability internally; do not also require the
+      // optimistic isOnline flag (it can lag after API 502 recovery).
+      await AttendanceOfflineSync.drainAllInOrder();
+    }
       await BackgroundNotificationWorker.runAll();
     } catch (e, st) {
       if (kDebugMode) {
