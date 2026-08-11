@@ -16,6 +16,21 @@ echo "==> Recreating web, worker, beat (reload .env.production)"
 "${COMPOSE[@]}" up -d --force-recreate web worker beat
 
 echo ""
+echo "==> Wait for API health"
+for i in $(seq 1 30); do
+  if curl -sf http://127.0.0.1/api/health/ >/dev/null 2>&1; then
+    echo "API healthy after ${i} attempt(s)"
+    break
+  fi
+  if [[ "$i" -eq 30 ]]; then
+    echo "ERROR: API not healthy after recreate. Run: bash scripts/contabo/diagnose-api-502.sh" >&2
+    "${COMPOSE[@]}" logs web --tail 60 >&2 || true
+    exit 1
+  fi
+  sleep 2
+done
+
+echo ""
 echo "==> OneSignal env inside web container (values hidden)"
 "${COMPOSE[@]}" exec -T web python - <<'PY'
 import os
