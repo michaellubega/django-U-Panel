@@ -150,6 +150,13 @@ if [[ "${DOWNLOAD_STATUS}" != "200" ]]; then
   exit 1
 fi
 
+ROOT_LOCATION=$(curl -sI http://127.0.0.1/ | tr -d '\r' | awk -F': ' 'tolower($1)=="location"{print $2}' | tail -1)
+echo " / redirect Location: ${ROOT_LOCATION:-?}"
+if [[ "${ROOT_LOCATION}" != *"/download/"* ]]; then
+  echo "ERROR: / should redirect to /download/ (got: ${ROOT_LOCATION:-none})." >&2
+  exit 1
+fi
+
 APK_STATUS=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1/downloads/U-Panel-1.0.0-android.apk)
 echo " /downloads/U-Panel-1.0.0-android.apk HTTP ${APK_STATUS}"
 if [[ "${APK_STATUS}" != "200" ]]; then
