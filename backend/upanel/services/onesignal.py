@@ -18,6 +18,17 @@ def onesignal_configured() -> bool:
     return bool(settings.ONESIGNAL_APP_ID and settings.ONESIGNAL_REST_API_KEY)
 
 
+def onesignal_authorization_header(api_key: str) -> str:
+    """Build the Authorization header for OneSignal REST API requests."""
+    key = (api_key or "").strip()
+    if not key:
+        return ""
+    lower = key.lower()
+    if lower.startswith("basic ") or lower.startswith("key "):
+        return key
+    return f"Key {key}"
+
+
 def send_push(
     *,
     headings: str,
@@ -28,11 +39,15 @@ def send_push(
 ) -> bool:
     """Send a push via OneSignal. Returns True when accepted by the API."""
     if not onesignal_configured():
-        logger.debug("OneSignal not configured — push skipped")
+        logger.warning(
+            "OneSignal not configured — set ONESIGNAL_APP_ID and ONESIGNAL_REST_API_KEY "
+            "in .env.production, then restart web/worker/beat."
+        )
         return False
 
     payload: dict = {
         "app_id": settings.ONESIGNAL_APP_ID,
+        "target_channel": "push",
         "headings": {"en": headings},
         "contents": {"en": contents},
     }
@@ -60,7 +75,9 @@ def send_push(
             ONESIGNAL_API,
             json=payload,
             headers={
-                "Authorization": f"Basic {settings.ONESIGNAL_REST_API_KEY}",
+                "Authorization": onesignal_authorization_header(
+                    settings.ONESIGNAL_REST_API_KEY
+                ),
                 "Content-Type": "application/json",
             },
             timeout=15,
