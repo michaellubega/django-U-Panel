@@ -1,4 +1,4 @@
-const WEB_APP_URL = 'http://169.58.135.136/app/';
+const WEB_APP_URL = 'https://kiu.orion13.us/app/';
 const SITE_DOMAIN = 'https://kiu.orion13.us';
 
 function applyWebButton(button, noteEl, url) {
@@ -75,7 +75,7 @@ function configureDownload(platform, button, noteEl) {
     button.classList.remove('is-disabled');
     button.removeAttribute('aria-disabled');
     if (noteEl && platform.size) {
-      noteEl.textContent = `File size: ${platform.size} · hosted on GitHub`;
+      noteEl.textContent = `File size: ${platform.size} · official KIU download`;
     }
     return;
   }
