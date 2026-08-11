@@ -8,6 +8,7 @@ Static landing page for **Android APK**, **Windows**, and the **web app**.
 |------|-----|
 | **Landing page** | https://kiu.orion13.us/ |
 | **Web app** | https://kiu.orion13.us/app/ |
+| **Landing + downloads** | https://kiu.orion13.us/download/ |
 | **APK & Windows installer** | https://kiu.orion13.us/downloads/ |
 
 Published on every push to `main` via GitHub Pages. Custom domain: **kiu.orion13.us** (`website/CNAME`).

@@ -143,6 +143,19 @@ if [[ "${ASSETLINKS_STATUS}" != "200" ]]; then
   exit 1
 fi
 
+DOWNLOAD_STATUS=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1/download/)
+echo " /download/ HTTP ${DOWNLOAD_STATUS}"
+if [[ "${DOWNLOAD_STATUS}" != "200" ]]; then
+  echo "ERROR: /download/ did not return 200. Rebuild nginx after website/ changes." >&2
+  exit 1
+fi
+
+APK_STATUS=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1/downloads/U-Panel-1.0.0-android.apk)
+echo " /downloads/U-Panel-1.0.0-android.apk HTTP ${APK_STATUS}"
+if [[ "${APK_STATUS}" != "200" ]]; then
+  echo "WARN: Android APK download returned HTTP ${APK_STATUS}. Run scripts/prepare-download-site.sh and redeploy." >&2
+fi
+
 SERVED_BYTES=$(curl -sI http://127.0.0.1/app/main.dart.js | tr -d '\r' | awk -F': ' 'tolower($1)=="content-length"{print $2}' | tail -1)
 SERVED_LM=$(curl -sI http://127.0.0.1/app/main.dart.js | tr -d '\r' | awk -F': ' 'tolower($1)=="last-modified"{print $2}' | tail -1)
 echo "==> Served main.dart.js: last-modified=${SERVED_LM:-?} content-length=${SERVED_BYTES:-?}"
