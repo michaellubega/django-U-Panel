@@ -1,7 +1,6 @@
 import 'dart:async';
 
 import 'package:flutter/foundation.dart';
-
 import '../api/client_config.dart';
 import '../auth/auth_repository.dart';
 import '../monitoring/app_sentry.dart';
@@ -17,6 +16,9 @@ class PushController {
   static final PushController instance = PushController._();
 
   bool _initialized = false;
+  Timer? _roleRetryTimer;
+  int _roleRetryCount = 0;
+  static const _maxRoleRetries = 12;
 
   bool get _foregroundWatchSupported => DesktopNoticeWatch.instance.supported;
 
@@ -55,11 +57,21 @@ class PushController {
       await _waitForRoleReady();
     }
     if (!auth.roleCheckDone) {
+      if (_roleRetryCount < _maxRoleRetries) {
+        _roleRetryCount++;
+        _roleRetryTimer?.cancel();
+        _roleRetryTimer = Timer(const Duration(seconds: 3), () {
+          unawaited(syncTopicsForCurrentUser());
+        });
+      }
       if (kDebugMode) {
-        debugPrint('Push sync skipped: role checks not finished yet');
+        debugPrint('Push sync waiting for role checks ($_roleRetryCount/$_maxRoleRetries)');
       }
       return;
     }
+    _roleRetryCount = 0;
+    _roleRetryTimer?.cancel();
+    _roleRetryTimer = null;
 
     setSentryUser(
       id: auth.currentUserId,
@@ -95,6 +107,9 @@ class PushController {
   }
 
   Future<void> resetForSignOut() async {
+    _roleRetryTimer?.cancel();
+    _roleRetryTimer = null;
+    _roleRetryCount = 0;
     await OneSignalService.logout();
     await DesktopNoticeWatch.instance.stop();
     clearSentryUser();

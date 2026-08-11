@@ -98,8 +98,8 @@ Future<void> oneSignalImplSetTags(Map<String, String> tags) async {
 Future<void> oneSignalImplLogout() async {
   if (!_sdkInitialized) return;
   await OneSignal.logout();
-  _handlersAttached = false;
-  _onSubscriptionChanged = null;
+  // Keep handlers and subscription observer — PushController.initialize() is
+  // idempotent and must still receive subscription changes after re-login.
 }
 
 Future<bool> oneSignalImplRequestPermission() {
