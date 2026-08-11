@@ -156,6 +156,20 @@ if [[ "${APK_STATUS}" != "200" ]]; then
   echo "WARN: Android APK download returned HTTP ${APK_STATUS}. Run scripts/prepare-download-site.sh and redeploy." >&2
 fi
 
+PRIVACY_STATUS=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1/privacy.html)
+echo " /privacy.html HTTP ${PRIVACY_STATUS}"
+if [[ "${PRIVACY_STATUS}" != "200" ]]; then
+  echo "ERROR: /privacy.html did not return 200 (required for Play Store)." >&2
+  exit 1
+fi
+
+DELETE_ACCOUNT_STATUS=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1/delete-account.html)
+echo " /delete-account.html HTTP ${DELETE_ACCOUNT_STATUS}"
+if [[ "${DELETE_ACCOUNT_STATUS}" != "200" ]]; then
+  echo "ERROR: /delete-account.html did not return 200 (required for Play Store)." >&2
+  exit 1
+fi
+
 SERVED_BYTES=$(curl -sI http://127.0.0.1/app/main.dart.js | tr -d '\r' | awk -F': ' 'tolower($1)=="content-length"{print $2}' | tail -1)
 SERVED_LM=$(curl -sI http://127.0.0.1/app/main.dart.js | tr -d '\r' | awk -F': ' 'tolower($1)=="last-modified"{print $2}' | tail -1)
 echo "==> Served main.dart.js: last-modified=${SERVED_LM:-?} content-length=${SERVED_BYTES:-?}"
