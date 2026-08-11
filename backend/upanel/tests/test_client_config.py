@@ -16,3 +16,13 @@ class ClientConfigTests(TestCase):
     data = response.json()
     self.assertEqual(data["onesignal_app_id"], "11111111-2222-3333-4444-555555555555")
     self.assertTrue(data["push_enabled"])
+    self.assertFalse(data["push_delivery_configured"])
+
+  @override_settings(
+    ONESIGNAL_APP_ID="11111111-2222-3333-4444-555555555555",
+    ONESIGNAL_REST_API_KEY="os_v2_app_test",
+  )
+  def test_push_delivery_configured_when_rest_key_set(self):
+    response = self.client.get("/api/client-config/")
+    data = response.json()
+    self.assertTrue(data["push_delivery_configured"])

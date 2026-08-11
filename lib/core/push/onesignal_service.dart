@@ -48,6 +48,8 @@ abstract final class OneSignalService {
       await impl.oneSignalImplLogin(userId);
     }
 
+    await impl.oneSignalImplRequestPermission();
+
     final playerId = await impl.oneSignalImplGetPlayerId();
     if (playerId == null || playerId.isEmpty) return;
 
