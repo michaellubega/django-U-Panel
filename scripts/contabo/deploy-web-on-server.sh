@@ -136,6 +136,13 @@ if [[ "${APP_STATUS}" != "200" ]]; then
   exit 1
 fi
 
+ASSETLINKS_STATUS=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1/.well-known/assetlinks.json)
+echo " /.well-known/assetlinks.json HTTP ${ASSETLINKS_STATUS}"
+if [[ "${ASSETLINKS_STATUS}" != "200" ]]; then
+  echo "ERROR: /.well-known/assetlinks.json did not return 200 (required for Android App Links)." >&2
+  exit 1
+fi
+
 SERVED_BYTES=$(curl -sI http://127.0.0.1/app/main.dart.js | tr -d '\r' | awk -F': ' 'tolower($1)=="content-length"{print $2}' | tail -1)
 SERVED_LM=$(curl -sI http://127.0.0.1/app/main.dart.js | tr -d '\r' | awk -F': ' 'tolower($1)=="last-modified"{print $2}' | tail -1)
 echo "==> Served main.dart.js: last-modified=${SERVED_LM:-?} content-length=${SERVED_BYTES:-?}"
@@ -152,6 +159,7 @@ echo ""
 echo "Deploy OK. Verify from your machine:"
 echo "  curl -sI http://169.58.135.136/app/main.dart.js | grep -i content-length"
 echo "  curl -sI https://kiu.orion13.us/app/main.dart.js | grep -i content-length"
+echo "  curl -sf https://kiu.orion13.us/.well-known/assetlinks.json | head"
 echo "Expected content-length: ${NEW_BYTES}"
 echo ""
 echo "Web app (HTTP):  http://169.58.135.136/app/"
