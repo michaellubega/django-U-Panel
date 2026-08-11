@@ -150,10 +150,31 @@ if [[ "${DOWNLOAD_STATUS}" != "200" ]]; then
   exit 1
 fi
 
+ROOT_LOCATION=$(curl -sI http://127.0.0.1/ | tr -d '\r' | awk -F': ' 'tolower($1)=="location"{print $2}' | tail -1)
+echo " / redirect Location: ${ROOT_LOCATION:-?}"
+if [[ "${ROOT_LOCATION}" != *"/download/"* ]]; then
+  echo "ERROR: / should redirect to /download/ (got: ${ROOT_LOCATION:-none})." >&2
+  exit 1
+fi
+
 APK_STATUS=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1/downloads/U-Panel-1.0.0-android.apk)
 echo " /downloads/U-Panel-1.0.0-android.apk HTTP ${APK_STATUS}"
 if [[ "${APK_STATUS}" != "200" ]]; then
   echo "WARN: Android APK download returned HTTP ${APK_STATUS}. Run scripts/prepare-download-site.sh and redeploy." >&2
+fi
+
+PRIVACY_STATUS=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1/privacy.html)
+echo " /privacy.html HTTP ${PRIVACY_STATUS}"
+if [[ "${PRIVACY_STATUS}" != "200" ]]; then
+  echo "ERROR: /privacy.html did not return 200 (required for Play Store)." >&2
+  exit 1
+fi
+
+DELETE_ACCOUNT_STATUS=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1/delete-account.html)
+echo " /delete-account.html HTTP ${DELETE_ACCOUNT_STATUS}"
+if [[ "${DELETE_ACCOUNT_STATUS}" != "200" ]]; then
+  echo "ERROR: /delete-account.html did not return 200 (required for Play Store)." >&2
+  exit 1
 fi
 
 SERVED_BYTES=$(curl -sI http://127.0.0.1/app/main.dart.js | tr -d '\r' | awk -F': ' 'tolower($1)=="content-length"{print $2}' | tail -1)
