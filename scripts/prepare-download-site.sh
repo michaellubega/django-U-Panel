@@ -88,10 +88,13 @@ release = {
         "message": "Native iOS app coming soon. Use the web app in Safari for now.",
     },
     "android": {
-        "file": f"{site}/downloads/{apk_name}",
-        "label": "Android APK",
+        "playStoreUrl": "https://play.google.com/store/apps/details?id=com.u_panel",
+        "label": "Google Play",
+        "file": None,
+        "apkLabel": "Direct APK (sideload)",
         "minAndroid": "7.0 (Nougat)",
-        "available": os.environ["ANDROID_AVAILABLE"] == "true",
+        "available": True,
+        "apkAvailable": False,
     },
     "windows": {
         "file": f"{site}/downloads/{win_name}",
@@ -101,8 +104,11 @@ release = {
     },
     "web": {"url": web, "label": "Web app", "available": True},
 }
-if os.environ.get("ANDROID_SIZE"):
-    release["android"]["size"] = os.environ["ANDROID_SIZE"]
+if os.environ["ANDROID_AVAILABLE"] == "true":
+    release["android"]["file"] = f"{site}/downloads/{apk_name}"
+    release["android"]["apkAvailable"] = True
+    if os.environ.get("ANDROID_SIZE"):
+        release["android"]["size"] = os.environ["ANDROID_SIZE"]
 if os.environ.get("WINDOWS_SIZE"):
     release["windows"]["size"] = os.environ["WINDOWS_SIZE"]
 

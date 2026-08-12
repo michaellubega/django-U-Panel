@@ -1,5 +1,7 @@
 const WEB_APP_URL = 'https://kiu.orion13.us/app/';
 const SITE_DOMAIN = 'https://kiu.orion13.us';
+const DEFAULT_PLAY_STORE_URL =
+  'https://play.google.com/store/apps/details?id=com.u_panel';
 
 function applyWebButton(button, noteEl, url) {
   if (!button) return;
@@ -16,7 +18,8 @@ function applyWebButton(button, noteEl, url) {
 
 async function loadReleaseInfo() {
   const versionEl = document.getElementById('version-label');
-  const androidBtn = document.getElementById('android-download');
+  const androidPlayBtn = document.getElementById('android-play');
+  const androidApkBtn = document.getElementById('android-apk');
   const windowsBtn = document.getElementById('windows-download');
   const webBtn = document.getElementById('web-open');
   const iosWebBtn = document.getElementById('ios-web');
@@ -36,7 +39,7 @@ async function loadReleaseInfo() {
     const versionText = `Version ${data.version} (build ${data.build})`;
     if (versionEl) versionEl.textContent = versionText;
 
-    configureDownload(data.android, androidBtn, androidNote);
+    configureAndroid(data.android, androidPlayBtn, androidApkBtn, androidNote);
     configureDownload(data.windows, windowsBtn, windowsNote);
 
     const webUrl = data.web?.url || WEB_APP_URL;
@@ -44,14 +47,17 @@ async function loadReleaseInfo() {
     applyWebButton(iosWebBtn, null, webUrl);
   } catch (_) {
     if (versionEl) versionEl.textContent = 'Release info unavailable';
-    [androidBtn, windowsBtn].forEach((btn) => {
-      if (btn) {
-        btn.classList.add('is-disabled');
-        btn.setAttribute('aria-disabled', 'true');
-        btn.removeAttribute('href');
-        btn.removeAttribute('download');
-      }
+    [androidPlayBtn, androidApkBtn, windowsBtn].forEach((btn) => {
+      if (!btn) return;
+      btn.classList.add('is-disabled');
+      btn.setAttribute('aria-disabled', 'true');
+      btn.removeAttribute('href');
+      btn.removeAttribute('download');
     });
+    if (androidApkBtn) {
+      androidApkBtn.hidden = true;
+      androidApkBtn.classList.add('is-hidden');
+    }
   }
 }
 
@@ -60,6 +66,61 @@ function resolveDownloadUrl(file) {
   if (/^https?:\/\//i.test(file)) return file;
   const base = (window.__releaseHostBase || SITE_DOMAIN).replace(/\/$/, '');
   return base + '/' + file.replace(/^\//, '');
+}
+
+function configureAndroid(platform, playBtn, apkBtn, noteEl) {
+  if (!playBtn) return;
+
+  const playStoreUrl = (platform?.playStoreUrl || DEFAULT_PLAY_STORE_URL).trim();
+  const playAvailable = platform?.available === true && playStoreUrl.length > 0;
+
+  if (playAvailable) {
+    playBtn.href = playStoreUrl;
+    playBtn.setAttribute('target', '_blank');
+    playBtn.setAttribute('rel', 'noopener noreferrer');
+    playBtn.classList.remove('is-disabled');
+    playBtn.removeAttribute('aria-disabled');
+    if (noteEl) {
+      noteEl.textContent =
+        'Recommended install from Google Play — automatic updates included.';
+    }
+  } else {
+    playBtn.classList.add('is-disabled');
+    playBtn.setAttribute('aria-disabled', 'true');
+    playBtn.removeAttribute('href');
+    if (noteEl) {
+      noteEl.textContent =
+        'Google Play link not configured yet. Ask IT to update releases.json.';
+    }
+  }
+
+  if (!apkBtn) return;
+
+  const apkHref = resolveDownloadUrl(platform?.file);
+  const apkAvailable =
+    platform?.apkAvailable === true || (platform?.file && apkHref);
+  if (apkAvailable && apkHref) {
+    apkBtn.href = apkHref;
+    apkBtn.removeAttribute('download');
+    apkBtn.setAttribute('target', '_blank');
+    apkBtn.setAttribute('rel', 'noopener noreferrer');
+    apkBtn.hidden = false;
+    apkBtn.classList.remove('is-hidden', 'is-disabled');
+    apkBtn.removeAttribute('aria-disabled');
+    if (platform?.apkLabel) {
+      apkBtn.textContent = platform.apkLabel;
+    }
+    if (noteEl && platform?.size) {
+      noteEl.textContent = `Google Play recommended · direct APK ${platform.size} for sideloading`;
+    }
+    return;
+  }
+
+  apkBtn.hidden = true;
+  apkBtn.classList.add('is-hidden');
+  apkBtn.classList.add('is-disabled');
+  apkBtn.setAttribute('aria-disabled', 'true');
+  apkBtn.removeAttribute('href');
 }
 
 function configureDownload(platform, button, noteEl) {

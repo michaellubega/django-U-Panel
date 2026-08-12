@@ -1,6 +1,6 @@
 # U-Panel download website
 
-Static landing page for **Android APK**, **Windows**, and the **web app**.
+Static landing page for **Google Play (Android)**, **Windows installer**, and the **web app**.
 
 ## Live URLs
 
@@ -8,8 +8,8 @@ Static landing page for **Android APK**, **Windows**, and the **web app**.
 |------|-----|
 | **Landing page** | https://kiu.orion13.us/ |
 | **Web app** | https://kiu.orion13.us/app/ |
-| **Landing + downloads** | https://kiu.orion13.us/download/ |
-| **APK & Windows installer** | https://kiu.orion13.us/downloads/ |
+| **Google Play (Android)** | https://play.google.com/store/apps/details?id=com.u_panel |
+| **Windows installer** | https://kiu.orion13.us/downloads/U-Panel-1.0.0-windows-setup.exe |
 
 Published on every push to `main` via GitHub Pages. Custom domain: **kiu.orion13.us** (`website/CNAME`).
 
@@ -22,13 +22,19 @@ git commit -m "Publish web app"
 git push origin main
 ```
 
-With APK (after `flutter build apk --release`):
+With Windows installer (after building with Inno Setup / `UPanelSetup.exe`):
 
 ```powershell
-.\scripts\deploy-hosting.ps1 -IncludeApk
+.\scripts\prepare-download-site.ps1 -WindowsInstaller website\downloads\UPanelSetup.exe
 git add website
-git commit -m "Publish web app and APK"
+git commit -m "Update download site: Play Store + Windows installer"
 git push origin main
+```
+
+Optional sideload APK (after `flutter build apk --release`):
+
+```powershell
+.\scripts\prepare-download-site.ps1
 ```
 
 ## DNS (Spaceship)
