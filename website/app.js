@@ -2,6 +2,8 @@ const WEB_APP_URL = 'https://kiu.orion13.us/app/';
 const SITE_DOMAIN = 'https://kiu.orion13.us';
 const DEFAULT_PLAY_STORE_URL =
   'https://play.google.com/store/apps/details?id=com.u_panel';
+const DEFAULT_WINDOWS_INSTALLER =
+  'https://kiu.orion13.us/downloads/U-Panel-1.0.0-build7-windows-setup.exe';
 
 function applyWebButton(button, noteEl, url) {
   if (!button) return;
@@ -40,24 +42,32 @@ async function loadReleaseInfo() {
     if (versionEl) versionEl.textContent = versionText;
 
     configureAndroid(data.android, androidPlayBtn, androidApkBtn, androidNote);
-    configureDownload(data.windows, windowsBtn, windowsNote);
+    configureDownload(
+      data.windows,
+      windowsBtn,
+      windowsNote,
+      DEFAULT_WINDOWS_INSTALLER,
+    );
 
     const webUrl = data.web?.url || WEB_APP_URL;
     applyWebButton(webBtn, null, webUrl);
     applyWebButton(iosWebBtn, null, webUrl);
   } catch (_) {
-    if (versionEl) versionEl.textContent = 'Release info unavailable';
-    [androidPlayBtn, androidApkBtn, windowsBtn].forEach((btn) => {
-      if (!btn) return;
-      btn.classList.add('is-disabled');
-      btn.setAttribute('aria-disabled', 'true');
-      btn.removeAttribute('href');
-      btn.removeAttribute('download');
-    });
-    if (androidApkBtn) {
-      androidApkBtn.hidden = true;
-      androidApkBtn.classList.add('is-hidden');
-    }
+    if (versionEl) versionEl.textContent = 'Version 1.0.0 (build 7)';
+    configureAndroid(
+      { playStoreUrl: DEFAULT_PLAY_STORE_URL, available: true, apkAvailable: false },
+      androidPlayBtn,
+      androidApkBtn,
+      androidNote,
+    );
+    configureDownload(
+      { available: true, file: DEFAULT_WINDOWS_INSTALLER, size: '15.2 MB' },
+      windowsBtn,
+      windowsNote,
+      DEFAULT_WINDOWS_INSTALLER,
+    );
+    applyWebButton(webBtn, null, WEB_APP_URL);
+    applyWebButton(iosWebBtn, null, WEB_APP_URL);
   }
 }
 
@@ -97,8 +107,7 @@ function configureAndroid(platform, playBtn, apkBtn, noteEl) {
   if (!apkBtn) return;
 
   const apkHref = resolveDownloadUrl(platform?.file);
-  const apkAvailable =
-    platform?.apkAvailable === true || (platform?.file && apkHref);
+  const apkAvailable = platform?.apkAvailable === true && apkHref;
   if (apkAvailable && apkHref) {
     apkBtn.href = apkHref;
     apkBtn.removeAttribute('download');
@@ -123,10 +132,10 @@ function configureAndroid(platform, playBtn, apkBtn, noteEl) {
   apkBtn.removeAttribute('href');
 }
 
-function configureDownload(platform, button, noteEl) {
+function configureDownload(platform, button, noteEl, fallbackHref) {
   if (!button) return;
 
-  const href = resolveDownloadUrl(platform?.file);
+  const href = resolveDownloadUrl(platform?.file) || fallbackHref || null;
   const available = platform?.available === true && href;
   if (available) {
     button.href = href;

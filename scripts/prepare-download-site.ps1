@@ -64,7 +64,7 @@ $release = [ordered]@{
         apkAvailable = $false
     }
     windows    = [ordered]@{
-        file         = "$siteDomain/downloads/U-Panel-$Version-windows-setup.exe"
+        file         = "$siteDomain/downloads/U-Panel-$Version-build$Build-windows-setup.exe"
         label        = "Windows installer"
         minWindows   = "Windows 10 (64-bit)"
         available    = $false
@@ -130,7 +130,8 @@ if (Test-Path $apkSrc) {
     Write-Warning "APK not found. Play Store link remains primary. Run: flutter build apk --release"
 }
 
-$winDst = Join-Path $downloads "U-Panel-$Version-windows-setup.exe"
+$winDst = Join-Path $downloads "U-Panel-$Version-build$Build-windows-setup.exe"
+$winLegacyDst = Join-Path $downloads "U-Panel-$Version-windows-setup.exe"
 $winSrc = $null
 
 function Get-WindowsInstallerSearchDirs {
@@ -218,6 +219,7 @@ if ($winSrc) {
     if ($winSrc -ne $winDst) {
         Copy-ReleaseBinary -Source $winSrc -Destination $winDst
     }
+    Copy-ReleaseBinary -Source $winDst -Destination $winLegacyDst
     $release.windows.available = $true
     $release.windows.size = Format-Size (Get-Item $winDst).Length
     Write-Host "Windows installer: $winDst"
