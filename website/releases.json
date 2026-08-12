@@ -12,11 +12,8 @@
     "android": {
         "playStoreUrl": "https://play.google.com/store/apps/details?id=com.u_panel",
         "label": "Google Play",
-        "file": null,
-        "apkLabel": "Direct APK (sideload)",
         "minAndroid": "7.0 (Nougat)",
-        "available": true,
-        "apkAvailable": false
+        "available": true
     },
     "windows": {
         "file": "https://kiu.orion13.us/downloads/U-Panel-1.0.0-build7-windows-setup.exe",
