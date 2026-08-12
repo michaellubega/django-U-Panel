@@ -55,10 +55,13 @@ $release = [ordered]@{
         message = "Native iOS app coming soon. Use the web app in Safari for now."
     }
     android    = [ordered]@{
-        file         = "$siteDomain/downloads/U-Panel-$Version-android.apk"
-        label        = "Android APK"
+        playStoreUrl = "https://play.google.com/store/apps/details?id=com.u_panel"
+        label        = "Google Play"
+        file         = $null
+        apkLabel     = "Direct APK (sideload)"
         minAndroid   = "7.0 (Nougat)"
-        available    = $false
+        available    = $true
+        apkAvailable = $false
     }
     windows    = [ordered]@{
         file         = "$siteDomain/downloads/U-Panel-$Version-windows-setup.exe"
@@ -119,11 +122,12 @@ $apkSrc = Join-Path $root "build\app\outputs\flutter-apk\app-release.apk"
 $apkDst = Join-Path $downloads "U-Panel-$Version-android.apk"
 if (Test-Path $apkSrc) {
     Copy-ReleaseBinary -Source $apkSrc -Destination $apkDst
-    $release.android.available = $true
+    $release.android.file = "$siteDomain/downloads/U-Panel-$Version-android.apk"
+    $release.android.apkAvailable = $true
     $release.android.size = Format-Size (Get-Item $apkDst).Length
-    Write-Host "Android: $apkDst"
+    Write-Host "Android APK: $apkDst"
 } else {
-    Write-Warning "APK not found. Run: flutter build apk --release"
+    Write-Warning "APK not found. Play Store link remains primary. Run: flutter build apk --release"
 }
 
 $winDst = Join-Path $downloads "U-Panel-$Version-windows-setup.exe"

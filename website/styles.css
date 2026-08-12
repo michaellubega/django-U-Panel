@@ -305,6 +305,23 @@ main {
   cursor: not-allowed;
 }
 
+.btn-outline {
+  background: transparent;
+  color: var(--brand);
+  border: 1.5px solid rgba(23, 114, 69, 0.35);
+  box-shadow: none;
+}
+
+.btn-outline:hover {
+  background: rgba(23, 114, 69, 0.06);
+  transform: translateY(-1px);
+}
+
+.btn-outline.is-hidden,
+.is-hidden {
+  display: none !important;
+}
+
 .card-actions {
   display: flex;
   flex-direction: column;
