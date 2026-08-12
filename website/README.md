@@ -31,12 +31,6 @@ git commit -m "Update download site: Play Store + Windows installer"
 git push origin main
 ```
 
-Optional sideload APK (after `flutter build apk --release`):
-
-```powershell
-.\scripts\prepare-download-site.ps1
-```
-
 ## DNS (Spaceship)
 
 | Type | Host | Value |
