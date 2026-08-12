@@ -157,10 +157,22 @@ if [[ "${ROOT_LOCATION}" != *"/download/"* ]]; then
   exit 1
 fi
 
-APK_STATUS=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1/downloads/U-Panel-1.0.0-android.apk)
-echo " /downloads/U-Panel-1.0.0-android.apk HTTP ${APK_STATUS}"
+APK_STATUS=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1/download/releases.json)
+echo " /download/releases.json HTTP ${APK_STATUS}"
 if [[ "${APK_STATUS}" != "200" ]]; then
-  echo "WARN: Android APK download returned HTTP ${APK_STATUS}. Run scripts/prepare-download-site.sh and redeploy." >&2
+  echo "ERROR: /download/releases.json did not return 200." >&2
+  exit 1
+fi
+if ! grep -q playStoreUrl website/releases.json; then
+  echo "ERROR: releases.json missing android.playStoreUrl (Play Store link required)." >&2
+  exit 1
+fi
+
+WIN_INSTALLER="U-Panel-1.0.0-build7-windows-setup.exe"
+WIN_STATUS=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1/downloads/${WIN_INSTALLER}")
+echo " /downloads/${WIN_INSTALLER} HTTP ${WIN_STATUS}"
+if [[ "${WIN_STATUS}" != "200" ]]; then
+  echo "WARN: Windows installer returned HTTP ${WIN_STATUS}. Run scripts/prepare-download-site.sh and redeploy." >&2
 fi
 
 PRIVACY_STATUS=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1/privacy.html)
