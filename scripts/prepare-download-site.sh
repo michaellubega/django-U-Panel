@@ -44,13 +44,13 @@ if [[ -f "$APK_SRC" ]]; then
   cp "$APK_SRC" "$APK_DST"
   ANDROID_AVAILABLE="true"
   ANDROID_SIZE="$(format_size "$(wc -c <"$APK_DST" | tr -d ' ')")"
-  echo "Android: $APK_DST ($ANDROID_SIZE)"
+  echo "Android APK copied for server hosting (not linked on download page): $APK_DST ($ANDROID_SIZE)"
 elif [[ -f "$APK_DST" ]]; then
   ANDROID_AVAILABLE="true"
   ANDROID_SIZE="$(format_size "$(wc -c <"$APK_DST" | tr -d ' ')")"
-  echo "Using existing Android: $APK_DST ($ANDROID_SIZE)"
+  echo "Using existing Android APK (not linked on download page): $APK_DST ($ANDROID_SIZE)"
 else
-  echo "WARN: APK not found. Run: bash scripts/build-apk.sh" >&2
+  echo "No APK build found (Play Store is the only Android install link on the site)." >&2
 fi
 
 WIN_DST="$DOWNLOADS/U-Panel-${VERSION}-windows-setup.exe"
@@ -90,11 +90,8 @@ release = {
     "android": {
         "playStoreUrl": "https://play.google.com/store/apps/details?id=com.u_panel",
         "label": "Google Play",
-        "file": None,
-        "apkLabel": "Direct APK (sideload)",
         "minAndroid": "7.0 (Nougat)",
         "available": True,
-        "apkAvailable": False,
     },
     "windows": {
         "file": f"{site}/downloads/{win_name}",
@@ -104,11 +101,6 @@ release = {
     },
     "web": {"url": web, "label": "Web app", "available": True},
 }
-if os.environ["ANDROID_AVAILABLE"] == "true":
-    release["android"]["file"] = f"{site}/downloads/{apk_name}"
-    release["android"]["apkAvailable"] = True
-    if os.environ.get("ANDROID_SIZE"):
-        release["android"]["size"] = os.environ["ANDROID_SIZE"]
 if os.environ.get("WINDOWS_SIZE"):
     release["windows"]["size"] = os.environ["WINDOWS_SIZE"]
 

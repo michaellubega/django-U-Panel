@@ -57,11 +57,8 @@ $release = [ordered]@{
     android    = [ordered]@{
         playStoreUrl = "https://play.google.com/store/apps/details?id=com.u_panel"
         label        = "Google Play"
-        file         = $null
-        apkLabel     = "Direct APK (sideload)"
         minAndroid   = "7.0 (Nougat)"
         available    = $true
-        apkAvailable = $false
     }
     windows    = [ordered]@{
         file         = "$siteDomain/downloads/U-Panel-$Version-build$Build-windows-setup.exe"
@@ -122,12 +119,9 @@ $apkSrc = Join-Path $root "build\app\outputs\flutter-apk\app-release.apk"
 $apkDst = Join-Path $downloads "U-Panel-$Version-android.apk"
 if (Test-Path $apkSrc) {
     Copy-ReleaseBinary -Source $apkSrc -Destination $apkDst
-    $release.android.file = "$siteDomain/downloads/U-Panel-$Version-android.apk"
-    $release.android.apkAvailable = $true
-    $release.android.size = Format-Size (Get-Item $apkDst).Length
-    Write-Host "Android APK: $apkDst"
+    Write-Host "Android APK copied for server hosting (not linked on download page): $apkDst"
 } else {
-    Write-Warning "APK not found. Play Store link remains primary. Run: flutter build apk --release"
+    Write-Host "No APK build found (Play Store is the only Android install link on the site)."
 }
 
 $winDst = Join-Path $downloads "U-Panel-$Version-build$Build-windows-setup.exe"
