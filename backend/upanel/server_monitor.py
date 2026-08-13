@@ -58,29 +58,91 @@ def get_memory_info() -> dict[str, Any]:
     }
 
 
+_SKIP_DISK_FSTYPES = frozenset(
+    {
+        "tmpfs",
+        "devtmpfs",
+        "squashfs",
+        "aufs",
+        "efivarfs",
+        "cgroup",
+        "cgroup2",
+        "proc",
+        "sysfs",
+        "devpts",
+        "mqueue",
+        "tracefs",
+        "debugfs",
+        "securityfs",
+        "pstore",
+        "bpf",
+        "nsfs",
+        "binfmt_misc",
+    }
+)
+
+
+def _is_relevant_disk_partition(partition) -> bool:
+    """Hide virtual/docker overlay mounts that clutter the admin UI."""
+    fstype = (partition.fstype or "").lower()
+    mountpoint = partition.mountpoint or ""
+
+    if fstype in _SKIP_DISK_FSTYPES:
+        return False
+
+    if mountpoint.startswith(("/proc", "/sys", "/dev", "/run/docker")):
+        return False
+
+    if fstype == "overlay" and mountpoint not in {"/", "/opt", "/data"}:
+        if mountpoint.startswith(("/var/lib/docker", "/merged", "/snap")):
+            return False
+
+    return True
+
+
 def get_disk_info() -> list[dict[str, Any]]:
-    """Get disk usage for all mounted partitions."""
+    """Get disk usage for mounted partitions relevant to operators."""
     disks = []
+    seen_mountpoints: set[str] = set()
+
     for partition in psutil.disk_partitions(all=False):
+        if not _is_relevant_disk_partition(partition):
+            continue
+        if partition.mountpoint in seen_mountpoints:
+            continue
+
         try:
             usage = psutil.disk_usage(partition.mountpoint)
-            disks.append(
-                {
-                    "device": partition.device,
-                    "mountpoint": partition.mountpoint,
-                    "fstype": partition.fstype,
-                    "total": usage.total,
-                    "total_human": _bytes_to_human(usage.total),
-                    "used": usage.used,
-                    "used_human": _bytes_to_human(usage.used),
-                    "free": usage.free,
-                    "free_human": _bytes_to_human(usage.free),
-                    "percent": usage.percent,
-                }
-            )
         except (PermissionError, OSError):
             continue
+
+        if usage.total <= 0:
+            continue
+
+        seen_mountpoints.add(partition.mountpoint)
+        disks.append(
+            {
+                "device": partition.device,
+                "mountpoint": partition.mountpoint,
+                "fstype": partition.fstype,
+                "total": usage.total,
+                "total_human": _bytes_to_human(usage.total),
+                "used": usage.used,
+                "used_human": _bytes_to_human(usage.used),
+                "free": usage.free,
+                "free_human": _bytes_to_human(usage.free),
+                "percent": usage.percent,
+            }
+        )
+
+    disks.sort(key=lambda disk: disk["mountpoint"])
     return disks
+
+
+def _is_relevant_network_interface(name: str) -> bool:
+    """Hide container bridge/veth interfaces from the admin table."""
+    lowered = name.lower()
+    return not lowered.startswith(("veth", "br-", "docker", "cali", "flannel"))
 
 
 def get_network_info() -> dict[str, Any]:
@@ -90,6 +152,9 @@ def get_network_info() -> dict[str, Any]:
 
     interfaces = []
     for name, addrs in net_if_addrs.items():
+        if not _is_relevant_network_interface(name):
+            continue
+
         iface = {"name": name, "addresses": []}
         for addr in addrs:
             if addr.family == socket.AF_INET:

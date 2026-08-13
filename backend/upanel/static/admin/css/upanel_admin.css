@@ -881,22 +881,54 @@ input[type="submit"].default {
    SERVER HEALTH PAGE STYLES
    ══════════════════════════════════════════════════════════════════════════ */
 
+body.server-health #content > h1,
+body.server-health #content > h2 {
+  display: none;
+}
+
 .upanel-server-health {
   max-width: 1200px;
 }
 
-.upanel-health-hero {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 20px;
-  padding: 28px 32px;
-  margin-bottom: 24px;
-  background: linear-gradient(135deg, var(--up-brand-dark) 0%, var(--up-brand-deep) 50%, var(--up-brand) 100%);
-  border-radius: 20px;
-  color: #fff;
-  box-shadow: var(--up-shadow-lg);
+.upanel-section-card {
+  background: var(--up-surface-2);
+  border: 1px solid var(--up-border);
+  border-radius: var(--up-radius);
+  padding: 22px 24px;
+  box-shadow: var(--up-shadow);
+}
+
+.upanel-section-card > .upanel-section-title {
+  margin-bottom: 18px;
+}
+
+.upanel-health-resources {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 18px;
+  margin-bottom: 28px;
+}
+
+.upanel-health-resources .upanel-section-card {
+  margin-bottom: 0;
+}
+
+.upanel-stat-card.is-static:hover {
+  transform: none;
+  border-color: var(--up-border);
+  box-shadow: var(--up-shadow);
+}
+
+.upanel-stat-grid-spaced {
+  margin-bottom: 18px;
+}
+
+.upanel-panel-spaced {
+  margin-top: 18px;
+}
+
+.upanel-panel-body {
+  padding: 0;
 }
 
 .upanel-issues-banner {
@@ -1269,6 +1301,14 @@ input[type="submit"].default {
 
 /* ── Server Health Responsive ── */
 @media (max-width: 768px) {
+  .upanel-section-card {
+    padding: 18px 16px;
+  }
+
+  .upanel-health-resources {
+    grid-template-columns: 1fr;
+  }
+
   .upanel-resource-row {
     flex-direction: column;
   }
@@ -1286,5 +1326,10 @@ input[type="submit"].default {
 
   .upanel-disks-grid {
     grid-template-columns: 1fr;
+  }
+
+  .upanel-proc-table th,
+  .upanel-proc-table td {
+    padding: 8px 10px !important;
   }
 }
