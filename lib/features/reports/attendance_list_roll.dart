@@ -82,10 +82,7 @@ Future<AttendanceListRollData> buildAttendanceListRoll(
       .where((r) => listSessionIds.contains(r.sessionId))
       .toList();
 
-  final studentIds = <String>{
-    ...AttendanceStore.studentIdsSignedIntoList(list.id),
-    ...listRecords.map((r) => r.studentId),
-  };
+  final studentIds = AttendanceStore.rollStudentIdsForList(list.id);
 
   final studentIdsByKey = <String, List<String>>{};
   for (final sid in studentIds) {
