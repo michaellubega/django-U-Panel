@@ -25,6 +25,7 @@ import 'check_in_outcome.dart';
 import 'check_in_rejection.dart';
 import 'data/attendance_repository.dart';
 import 'data/attendance_remote_record_watch.dart';
+import 'data/attendance_remote_sign_in_watch.dart';
 import 'data/attendance_rtd_record_watch.dart';
 import 'data/attendance_offline_sync.dart';
 import 'student_attendance_live_sync.dart';
@@ -2222,6 +2223,10 @@ class _SessionCodeDisplayState extends State<_SessionCodeDisplay>
         AttendanceRemoteRecordWatch.instance
             .watchActiveSessionRecords(widget.session.id),
       );
+      unawaited(
+        AttendanceRemoteSignInWatch.instance
+            .watchActiveListSignIns(widget.list.id),
+      );
     }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _maybeAutoEndExpired();
@@ -2254,6 +2259,7 @@ class _SessionCodeDisplayState extends State<_SessionCodeDisplay>
     _rollSyncTimer?.cancel();
     _expiryTimer?.cancel();
     unawaited(AttendanceRemoteRecordWatch.instance.clearActiveSessionWatch());
+    unawaited(AttendanceRemoteSignInWatch.instance.clearActiveListWatch());
     unawaited(AttendanceRtdRecordWatch.instance.clearActiveSessionWatch());
     super.dispose();
   }
@@ -2684,10 +2690,7 @@ class _ConsolidatedRollModel {
         .where((r) => listSessionIds.contains(r.sessionId))
         .toList()
       ..sort((a, b) => b.timestamp.compareTo(a.timestamp));
-    final studentIds = <String>{
-      ...AttendanceStore.studentIdsSignedIntoList(listId),
-      ...listRecords.map((r) => r.studentId),
-    };
+    final studentIds = AttendanceStore.rollStudentIdsForList(listId);
     final studentIdsByKey = <String, List<String>>{};
     for (final sid in studentIds) {
       final reg =
@@ -2829,9 +2832,13 @@ class _SessionCheckInsScreenState extends State<SessionCheckInsScreen>
               .watchActiveSessionRecords(active.first.id),
         );
       }
+      unawaited(
+        AttendanceRemoteSignInWatch.instance
+            .watchActiveListSignIns(widget.list.id),
+      );
     }
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      unawaited(_reloadListDetail());
+      unawaited(_reloadListDetail(force: true));
     });
     _rollSyncTimer = Timer.periodic(
       AttendanceRepository.liveSessionRollSyncInterval,
@@ -2845,6 +2852,7 @@ class _SessionCheckInsScreenState extends State<SessionCheckInsScreen>
           await AttendanceRepository.instance
               .syncLiveSessionRoll(widget.list.id);
           if (!mounted) return;
+          _rollModel = null;
           await _reloadRollPendingContext();
         }());
       },
@@ -2859,6 +2867,7 @@ class _SessionCheckInsScreenState extends State<SessionCheckInsScreen>
     _repoRebuild.dispose();
     _rollSyncTimer?.cancel();
     unawaited(AttendanceRemoteRecordWatch.instance.clearActiveSessionWatch());
+    unawaited(AttendanceRemoteSignInWatch.instance.clearActiveListWatch());
     unawaited(AttendanceRtdRecordWatch.instance.clearActiveSessionWatch());
     super.dispose();
   }
