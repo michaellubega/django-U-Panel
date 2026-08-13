@@ -738,8 +738,12 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     );
   }
 
-  bool _isShellAdmin() =>
-      AuthRepository.instance.adminCheckDone && AuthRepository.instance.isAdmin;
+  bool _isShellAdmin() {
+    final auth = AuthRepository.instance;
+    if (!auth.adminCheckDone) return false;
+    final role = auth.resolvedRole;
+    return role == UserRole.admin || role == UserRole.qaStaff;
+  }
 
   bool _isShellQaStaff() =>
       AuthRepository.instance.adminCheckDone && AuthRepository.instance.isQaStaff;

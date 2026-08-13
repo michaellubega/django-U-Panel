@@ -101,5 +101,23 @@ void main() {
         isFalse,
       );
     });
+
+    test('scopes KIU admin loads even when legacy isAdmin is true', () {
+      expect(
+        AttendanceRoleRouting.scopesAttendanceToSignedInUser(
+          showsStaffAttendanceUi: true,
+          adminCheckDone: true,
+          isAdmin: true,
+          isKiuAdmin: true,
+          isLecturer: false,
+          roleCheckDone: true,
+          isSyntheticStaffAuthIdentity: false,
+          isStaffAuthIdentity: false,
+          isLikelyStudent: false,
+          resolvedRole: UserRole.kiuAdmin,
+        ),
+        isTrue,
+      );
+    });
   });
 }
