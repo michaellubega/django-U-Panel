@@ -175,6 +175,14 @@ class AuthRepository extends ChangeNotifier {
     return data[studentRegEmailVerifiedLinkField] == true;
   }
 
+  /// Any KIU campus administrator row (including legacy Django sync with both flags).
+  static bool adminDocIsKiuAdministrator(Map<String, dynamic>? data) {
+    if (data == null) return false;
+    if (_kiuAdminFlagFromData(data)) return true;
+    final role = (data[adminRoleField] as String?)?.trim().toLowerCase();
+    return role == staffAccountRoleKiuAdministrator;
+  }
+
   /// KIU campus administrators — not QA operational staff unless explicitly granted.
   static bool adminDocIsKiuAdministratorOnly(Map<String, dynamic>? data) {
     if (data == null) return false;
@@ -193,7 +201,7 @@ class AuthRepository extends ChangeNotifier {
 
   static bool _adminFlagFromData(Map<String, dynamic>? data) {
     if (data == null) return false;
-    if (adminDocIsKiuAdministratorOnly(data)) return false;
+    if (adminDocIsKiuAdministrator(data)) return false;
     bool truthy(dynamic v) => v == true || v == 'true' || v == 1;
     if (truthy(data[adminIsAdminField]) || truthy(data[adminIsAdminLegacyField])) {
       return true;
@@ -399,12 +407,12 @@ class AuthRepository extends ChangeNotifier {
   bool get isKiuAdministratorAccount {
     if (!isLoggedIn) return false;
     if (roleCheckDone) return resolvedRole == UserRole.kiuAdmin;
-    return _isKiuAdmin && !_isAdmin && !_isQaStaff;
+    return _isKiuAdmin;
   }
 
   /// Resolved role for navigation: API grants (admins / lecturers) win.
   UserRole get resolvedRole {
-    if (_adminCheckDone && _isKiuAdmin && !_isAdmin) {
+    if (_adminCheckDone && _isKiuAdmin) {
       return UserRole.kiuAdmin;
     }
     if (_adminCheckDone && _isAdmin) {
@@ -770,7 +778,7 @@ class AuthRepository extends ChangeNotifier {
 
   static bool _adminDocIsQaStaff(Map<String, dynamic>? data) {
     if (data == null) return false;
-    if (adminDocIsKiuAdministratorOnly(data)) return false;
+    if (adminDocIsKiuAdministrator(data)) return false;
     final role = (data[adminRoleField] as String?)?.trim().toLowerCase();
     if (role == adminRoleQaStaff) return true;
     if (role == adminRoleAdministrator) return false;
@@ -1377,8 +1385,9 @@ class AuthRepository extends ChangeNotifier {
     _cachedStaffNumber = snapshot.staffNumber;
     _lecturerCheckDone = true;
     _apiRoleCheckDenied = false;
-    // Older sessions could cache QA flags for KIU-only campus administrators.
-    if (_isKiuAdmin && !_isAdmin) {
+    // Older sessions could cache QA/admin flags for KIU campus administrators.
+    if (_isKiuAdmin) {
+      _isAdmin = false;
       _isQaStaff = false;
     }
     _stripStaffRolesForStudentMailbox();
@@ -2112,7 +2121,7 @@ class AuthRepository extends ChangeNotifier {
       if (_isQaStaff && !_isAdmin) {
         _isAdmin = true;
       }
-      if (_isKiuAdmin && data != null && adminDocIsKiuAdministratorOnly(data)) {
+      if (_isKiuAdmin) {
         _isAdmin = false;
         _isQaStaff = false;
       }
@@ -3683,9 +3692,11 @@ class AuthRepository extends ChangeNotifier {
         batch.set(
           db.collection(ApiCollections.admins).doc(newUid),
           <String, dynamic>{
-            adminIsAdminField: true,
+            adminIsAdminField: !markAsKiuAdministrator,
             if (markAsKiuAdministrator) adminIsKiuAdminField: true,
-            adminRoleField: adminRole,
+            adminRoleField: markAsKiuAdministrator
+                ? staffAccountRoleKiuAdministrator
+                : adminRole,
             'grantedBy': granterUid,
             'createdAt': ApiFieldValue.serverTimestamp(),
             'email': syntheticEmail,

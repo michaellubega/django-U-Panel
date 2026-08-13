@@ -22,5 +22,15 @@ void main() {
       expect(UserRole.admin.hasStaffOperationalAccess, isTrue);
       expect(UserRole.qaStaff.hasStaffOperationalAccess, isTrue);
     });
+
+    test('dual-flag admin doc is classified as KIU administrator', () {
+      final data = <String, dynamic>{
+        AuthRepository.adminIsKiuAdminField: true,
+        AuthRepository.adminIsAdminField: true,
+        'staffNumber': 'KIU4235S',
+      };
+      expect(AuthRepository.adminDocIsKiuAdministrator(data), isTrue);
+      expect(AuthRepository.adminDocIsQaStaff(data), isFalse);
+    });
   });
 }
