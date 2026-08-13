@@ -59,6 +59,21 @@ void main() {
       expect(AuthRepository.adminDocIsKiuAdministratorOnly(data), isFalse);
       expect(AuthRepository.adminDocIsQaStaff(data), isFalse);
       expect(AuthRepository.adminDocIsFullAdministrator(data), isFalse);
+      expect(AuthRepository.adminDocGrantsRole(data), isTrue);
+    });
+
+    test('KIU-only admin doc grants role without QA admin flag', () {
+      final data = <String, dynamic>{
+        AuthRepository.adminIsKiuAdminField: true,
+        AuthRepository.adminIsAdminField: false,
+      };
+
+      expect(AuthRepository.adminDocGrantsRole(data), isTrue);
+      expect(AuthRepository.adminDocIsQaStaff(data), isFalse);
+    });
+
+    test('empty legacy admin row does not grant role', () {
+      expect(AuthRepository.adminDocGrantsRole(<String, dynamic>{}), isFalse);
     });
   });
 }
