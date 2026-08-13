@@ -18,6 +18,12 @@ for path in /api/health/ /api/client-config/ /app/; do
 done
 
 echo ""
+echo "==> web container inspect (state / exit code)"
+"${COMPOSE[@]}" ps web
+docker inspect --format '{{.State.Status}} exit={{.State.ExitCode}} error={{.State.Error}}' \
+  "$("${COMPOSE[@]}" ps -q web 2>/dev/null | head -1)" 2>/dev/null || true
+
+echo ""
 echo "==> web container logs (last 80 lines)"
 "${COMPOSE[@]}" logs web --tail 80 2>&1 || true
 
