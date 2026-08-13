@@ -10,6 +10,15 @@ abstract final class LecturerRegistrationNumber {
         'or staff ID KIU-0001.';
   }
 
+  /// True when [raw] is a KIU staff ID (KIU-####) or registration number (KIU1234S).
+  static bool isValidLookupId(String raw) => validateFormat(raw) == null;
+
+  /// Canonical id for lecturer lookup, or null when [raw] is not recognized.
+  static String? normalizeForLookup(String raw) {
+    if (!isValidLookupId(raw)) return null;
+    return normalize(raw);
+  }
+
   static String normalize(String raw) {
     if (KiuAdminRegistrationNumber.validateFormat(raw) == null) {
       return KiuAdminRegistrationNumber.normalize(raw);

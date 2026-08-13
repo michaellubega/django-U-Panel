@@ -3,6 +3,8 @@ import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import '../../../core/auth/auth_repository.dart';
+import '../../../core/auth/kiu_admin_registration_number.dart';
+import '../../../core/auth/lecturer_registration_number.dart';
 import '../../../core/auth/staff_auth_email.dart';
 import '../../../core/auth/student_registration_number.dart';
 import '../../../core/cache/smart_cache_policy.dart';
@@ -152,14 +154,9 @@ class AttendanceRepository extends ChangeNotifier {
   /// When the signed-in user is a lecturer (not admin), loads are scoped to their lists.
   static String? currentLecturerLoadScopeUid() {
     final a = AuthRepository.instance;
-    if (!a.isLoggedIn || !a.adminCheckDone || !a.lecturerCheckDone) return null;
-    if (a.isLecturer && !a.isAdmin) {
-      return a.currentUserId;
-    }
-    if (a.isKiuAdmin) {
-      return a.currentUserId;
-    }
-    return null;
+    if (!a.isLoggedIn) return null;
+    if (!a.scopesAttendanceToSignedInUser) return null;
+    return a.currentUserId?.trim();
   }
 
   /// True when realtime attendance listeners should use the student path.
@@ -214,10 +211,15 @@ class AttendanceRepository extends ChangeNotifier {
 
   /// Avoids staff-scoped Firestore reads before [AuthRepository.roleCheckDone].
   static Future<void> _awaitRoleChecksDone({
-    Duration timeout = const Duration(seconds: 3),
+    Duration? timeout,
   }) async {
-    final deadline = DateTime.now().add(timeout);
-    while (!AuthRepository.instance.roleCheckDone) {
+    final auth = AuthRepository.instance;
+    final effectiveTimeout = timeout ??
+        (auth.isStaffAuthIdentity || auth.isSyntheticStaffAuthIdentity
+            ? const Duration(milliseconds: 600)
+            : const Duration(seconds: 2));
+    final deadline = DateTime.now().add(effectiveTimeout);
+    while (!auth.roleCheckDone) {
       if (DateTime.now().isAfter(deadline)) return;
       await Future<void>.delayed(const Duration(milliseconds: 50));
     }
@@ -234,7 +236,7 @@ class AttendanceRepository extends ChangeNotifier {
 
   final Map<String, bool> _sessionPublishedOnServerCache = {};
   DateTime? _sessionPublishedCacheAt;
-  static const Duration _sessionPublishedCacheTtl = Duration(seconds: 3);
+  static const Duration _sessionPublishedCacheTtl = Duration(seconds: 8);
   Set<String>? _awaitingUploadSessionIdsCache;
   DateTime? _awaitingUploadCacheAt;
   final Set<String> _listsPublishedOnServer = <String>{};
@@ -357,7 +359,7 @@ class AttendanceRepository extends ChangeNotifier {
       return true;
     }
 
-    await _awaitRoleChecksDone(timeout: const Duration(milliseconds: 800));
+    await _awaitRoleChecksDone(timeout: const Duration(milliseconds: 400));
     if (!AuthRepository.instance.roleCheckDone) return false;
 
     if (isStudentScopedUser()) {
@@ -382,6 +384,16 @@ class AttendanceRepository extends ChangeNotifier {
     if (!force &&
         AttendanceStore.lists.isNotEmpty &&
         _listsCatalogCacheFresh()) {
+      prefetchActiveListDetails();
+      if (_shouldRefreshStaffListsInBackground()) {
+        unawaited(
+          loadAll(
+            force: false,
+            listsOnly: true,
+            scopeToLecturerUid: _listsOnlyScopeUid(),
+          ),
+        );
+      }
       return;
     }
     if (!force && AttendanceStore.lists.isNotEmpty) {
@@ -573,6 +585,15 @@ class AttendanceRepository extends ChangeNotifier {
           AttendanceStore.lists.isNotEmpty &&
           _listsCatalogCacheFresh()) {
         prefetchActiveListDetails();
+        if (_shouldRefreshStaffListsInBackground()) {
+          unawaited(
+            loadAll(
+              force: false,
+              listsOnly: true,
+              scopeToLecturerUid: _listsOnlyScopeUid(),
+            ),
+          );
+        }
       } else if (!force && hasCachedStore && AttendanceStore.lists.isNotEmpty) {
         unawaited(
           loadAll(
@@ -604,7 +625,13 @@ class AttendanceRepository extends ChangeNotifier {
       await _awaitRoleChecksDone();
       if (AuthRepository.instance.isLoggedIn &&
           AuthRepository.instance.roleCheckDone) {
-        await loadAll(force: true, listsOnly: false);
+        // List metadata first — full rolls load lazily via prefetch (much faster for QA).
+        await loadAll(
+          force: true,
+          listsOnly: true,
+          scopeToLecturerUid: _listsOnlyScopeUid(),
+        );
+        prefetchActiveListDetails();
         if (_isLoaded) {
           _staffFullBootstrapDone = true;
         }
@@ -638,9 +665,20 @@ class AttendanceRepository extends ChangeNotifier {
 
   /// Waits until role flags are hydrated (for realtime list watchers).
   Future<void> awaitRoleChecksForWatch({
-    Duration timeout = const Duration(seconds: 5),
+    Duration timeout = const Duration(seconds: 2),
   }) =>
       _awaitRoleChecksDone(timeout: timeout);
+
+  /// Foreground refresh for lecturers, QA, and administrators (lists + rolls).
+  Future<void> syncStaffAttendanceForeground({bool force = false}) async {
+    final auth = AuthRepository.instance;
+    if (!auth.isLoggedIn || auth.needsEmailVerification) return;
+    if (!auth.showsStaffAttendanceUi) return;
+    if (!AppConnectivity.instance.isOnline) return;
+    prefetchActiveListDetails();
+    await refreshAttendanceLists(force: force);
+    unawaited(AttendanceRemoteRecordWatch.instance.refreshIfNeeded());
+  }
 
   /// Session ids for lecturer realtime [attendance_records] listeners.
   ///
@@ -1117,9 +1155,9 @@ class AttendanceRepository extends ChangeNotifier {
   static const int _maxRecentListDetailIds = 8;
   final Map<String, DateTime> _listDetailFetchedAt = {};
   DateTime? _listsCatalogFetchedAt;
-  static const int _maxConcurrentListDetailLoads = 4;
-  static const int _maxPrefetchListDetailLoads = 6;
-  static const int _maxBatchListDetailLoads = 16;
+  static const int _maxConcurrentListDetailLoads = 6;
+  static const int _maxPrefetchListDetailLoads = 12;
+  static const int _maxBatchListDetailLoads = 24;
   static const int _maxSessionsPerListDetailLoad = 30;
   int _activeListDetailLoads = 0;
   Future<void> _listDetailMergeLock = Future<void>.value();
@@ -1154,10 +1192,23 @@ class AttendanceRepository extends ChangeNotifier {
     return _listDetailLoads.containsKey(id);
   }
 
-  bool _listsCatalogCacheFresh() => SmartCachePolicy.isWithinTtl(
+  bool _listsCatalogCacheFresh() {
+    final auth = AuthRepository.instance;
+    final ttl = auth.showsStaffAttendanceUi
+        ? SmartCachePolicy.staffAttendanceListsTtl
+        : SmartCachePolicy.profileAndNoticesTtl;
+    return SmartCachePolicy.isWithinTtl(_listsCatalogFetchedAt, ttl);
+  }
+
+  bool _listsCatalogSoftStale() => !SmartCachePolicy.isWithinTtl(
         _listsCatalogFetchedAt,
-        SmartCachePolicy.profileAndNoticesTtl,
+        SmartCachePolicy.staffAttendanceListsSoftStale,
       );
+
+  bool _shouldRefreshStaffListsInBackground() {
+    if (!AuthRepository.instance.showsStaffAttendanceUi) return false;
+    return _listsCatalogSoftStale();
+  }
 
   void _markListsCatalogFetched() {
     _listsCatalogFetchedAt = DateTime.now().toUtc();
@@ -1590,17 +1641,13 @@ class AttendanceRepository extends ChangeNotifier {
     if (awaitingUpload.contains(id)) return true;
 
     final localSession = AttendanceStore.sessionById(id);
-    if (localSession == null) {
-      if (!AppConnectivity.instance.hasNetworkInterface) return true;
-      return !await isLecturerSessionPublishedOnServer(id);
+    if (localSession != null) {
+      // Session is already in the local store — use the direct check-in path
+      // instead of a slower await_{code} claim while lecturer publish finishes.
+      return awaitingUpload.contains(id);
     }
 
-    // Offline with a cached session that is not waiting on lecturer upload:
-    // queue a direct check-in attempt, not a session-code claim.
-    if (!AppConnectivity.instance.hasNetworkInterface) {
-      return false;
-    }
-
+    if (!AppConnectivity.instance.hasNetworkInterface) return true;
     return !await isLecturerSessionPublishedOnServer(id);
   }
 
@@ -5464,68 +5511,84 @@ class AttendanceRepository extends ChangeNotifier {
     } catch (_) {}
   }
 
-  /// Resolves a registered lecturer account uid from manual `KIU-####` input.
+  /// Resolves a registered lecturer account uid from KIU staff ID or registration number.
   Future<String?> resolveLecturerUidByStaffNumber(
     String rawStaffNumber, {
     Iterable<({String uid, String staffNumber})>? knownRows,
   }) async {
-    final sn = StaffAuthEmail.normalizeStaffNumberFlexible(rawStaffNumber);
-    if (sn == null) return null;
+    final staffNumber = StaffAuthEmail.normalizeStaffNumberFlexible(rawStaffNumber);
+    final registrationNumber = staffNumber == null &&
+            KiuAdminRegistrationNumber.validateFormat(rawStaffNumber) == null
+        ? KiuAdminRegistrationNumber.normalize(rawStaffNumber)
+        : null;
+    if (staffNumber == null && registrationNumber == null) return null;
 
-    if (knownRows != null) {
+    if (staffNumber != null && knownRows != null) {
       for (final row in knownRows) {
-        if (row.staffNumber.trim().toUpperCase() == sn) {
+        if (row.staffNumber.trim().toUpperCase() == staffNumber) {
           return row.uid;
         }
       }
     }
 
-    final cachedUid = await StaffNumberDirectoryCache.lookup(sn);
-    if (cachedUid != null && cachedUid.isNotEmpty) {
-      return cachedUid;
+    if (staffNumber != null) {
+      final cachedUid = await StaffNumberDirectoryCache.lookup(staffNumber);
+      if (cachedUid != null && cachedUid.isNotEmpty) {
+        return cachedUid;
+      }
     }
 
     final offline = !AppConnectivity.instance.isOnline;
     final cacheOptions =
         const ApiGetOptions(source: ApiSource.serverAndCache);
 
-    try {
-      final staffSnap = await _firestore
-          .collection(ApiCollections.staffNumbers)
-          .doc(sn)
-          .get(offline ? cacheOptions : const ApiGetOptions());
-      final fromStaff = (staffSnap.data()?['uid'] as String?)?.trim();
-      if (fromStaff != null && fromStaff.isNotEmpty) {
-        unawaited(StaffNumberDirectoryCache.remember(sn, fromStaff));
-        return fromStaff;
-      }
-    } catch (_) {}
+    if (staffNumber != null) {
+      try {
+        final staffSnap = await _firestore
+            .collection(ApiCollections.staffNumbers)
+            .doc(staffNumber)
+            .get(offline ? cacheOptions : const ApiGetOptions());
+        final fromStaff = (staffSnap.data()?['uid'] as String?)?.trim();
+        if (fromStaff != null && fromStaff.isNotEmpty) {
+          unawaited(StaffNumberDirectoryCache.remember(staffNumber, fromStaff));
+          return fromStaff;
+        }
+      } catch (_) {}
 
-    try {
-      final lectSnap = await _firestore
-          .collection(ApiCollections.lecturers)
-          .where('staffNumber', isEqualTo: sn)
-          .limit(1)
-          .get(offline ? cacheOptions : const ApiGetOptions());
-      if (lectSnap.docs.isNotEmpty) {
-        final uid = lectSnap.docs.first.id;
-        unawaited(StaffNumberDirectoryCache.remember(sn, uid));
-        return uid;
-      }
-    } catch (_) {}
+      try {
+        final lectSnap = await _firestore
+            .collection(ApiCollections.lecturers)
+            .where('staffNumber', isEqualTo: staffNumber)
+            .limit(1)
+            .get(offline ? cacheOptions : const ApiGetOptions());
+        if (lectSnap.docs.isNotEmpty) {
+          final uid = lectSnap.docs.first.id;
+          unawaited(StaffNumberDirectoryCache.remember(staffNumber, uid));
+          return uid;
+        }
+      } catch (_) {}
+    }
 
-    try {
-      final lectByRegSnap = await _firestore
-          .collection(ApiCollections.lecturers)
-          .where('registrationNumber', isEqualTo: sn)
-          .limit(1)
-          .get(offline ? cacheOptions : const ApiGetOptions());
-      if (lectByRegSnap.docs.isNotEmpty) {
-        final uid = lectByRegSnap.docs.first.id;
-        unawaited(StaffNumberDirectoryCache.remember(sn, uid));
-        return uid;
-      }
-    } catch (_) {}
+    final registrationLookups = <String>{
+      if (registrationNumber != null) registrationNumber,
+      if (staffNumber != null) staffNumber,
+    };
+    for (final reg in registrationLookups) {
+      try {
+        final lectByRegSnap = await _firestore
+            .collection(ApiCollections.lecturers)
+            .where('registrationNumber', isEqualTo: reg)
+            .limit(1)
+            .get(offline ? cacheOptions : const ApiGetOptions());
+        if (lectByRegSnap.docs.isNotEmpty) {
+          final uid = lectByRegSnap.docs.first.id;
+          if (staffNumber != null) {
+            unawaited(StaffNumberDirectoryCache.remember(staffNumber, uid));
+          }
+          return uid;
+        }
+      } catch (_) {}
+    }
 
     return null;
   }
@@ -5549,11 +5612,12 @@ class AttendanceRepository extends ChangeNotifier {
         deferredStaffNumber: null,
       );
     }
-    final normalized = StaffAuthEmail.normalizeStaffNumberFlexible(manual);
+    final normalized = LecturerRegistrationNumber.normalizeForLookup(manual);
     if (normalized == null) {
       return (
         uid: null,
-        error: 'Enter a valid KIU staff ID (e.g. KIU-0042 or 0042).',
+        error:
+            'Enter a valid KIU staff ID (${LecturerRegistrationNumber.exampleHint}).',
         deferredStaffNumber: null,
       );
     }
@@ -7221,7 +7285,8 @@ class AttendanceRepository extends ChangeNotifier {
       final doc = await _firestore
           .collection(ApiCollections.attendanceRecords)
           .doc(recordId)
-          .get();
+          .get()
+          .timeout(_sessionPublishFastTimeout);
       if (!doc.exists) return false;
       final data = doc.data();
       if (data == null) return false;
@@ -7813,8 +7878,8 @@ class AttendanceRepository extends ChangeNotifier {
     final rtdConf = await CheckInRtdConfirmationWatch.awaitTerminal(
       sessionId: rtdKey,
       studentId: studentId,
-      timeout: const Duration(milliseconds: 900),
-      pollInterval: const Duration(milliseconds: 120),
+      timeout: const Duration(milliseconds: 1200),
+      pollInterval: const Duration(milliseconds: 80),
     );
     if (rtdConf?.isAccepted == true) {
       return _applyAcceptedCheckInConfirmation(
@@ -8477,33 +8542,34 @@ class AttendanceRepository extends ChangeNotifier {
         return StudentOfflineCheckInOutcome.deviceBlocked;
       }
     }
-    if (await _remoteRecordIsPresent(record.id)) {
-      await _ensureCheckInListedInQueue(
-        record: record,
-        listIdOverride: listIdOverride,
-        course: _resolvePresentCourseForSession(
-          record.sessionId,
-          record.studentId,
-          record.course,
-        ),
-      );
-      return StudentOfflineCheckInOutcome.duplicate;
-    }
     final existing = AttendanceStore.attendanceRecordForSessionStudent(
       record.sessionId,
       record.studentId,
     );
-    if (existing != null) {
-      if (existing.present && existing.verified) {
+    if (existing != null && existing.present && existing.verified) {
+      await _ensureCheckInListedInQueue(
+        record: existing,
+        listIdOverride: listIdOverride,
+        course: _resolvePresentCourseForSession(
+          record.sessionId,
+          record.studentId,
+          existing.course,
+        ),
+        status: PendingCheckInQueueStatus.approved,
+      );
+      return StudentOfflineCheckInOutcome.duplicate;
+    }
+    if ((existing == null || !existing.present) &&
+        AppConnectivity.instance.hasNetworkInterface) {
+      if (await _remoteRecordIsPresent(record.id)) {
         await _ensureCheckInListedInQueue(
-          record: existing,
+          record: record,
           listIdOverride: listIdOverride,
           course: _resolvePresentCourseForSession(
             record.sessionId,
             record.studentId,
-            existing.course,
+            record.course,
           ),
-          status: PendingCheckInQueueStatus.approved,
         );
         return StudentOfflineCheckInOutcome.duplicate;
       }
