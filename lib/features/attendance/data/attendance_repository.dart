@@ -9,6 +9,7 @@ import '../../../core/auth/staff_auth_email.dart';
 import '../../../core/auth/student_registration_number.dart';
 import '../../../core/cache/smart_cache_policy.dart';
 import '../../../core/connectivity/app_connectivity.dart';
+import '../../../core/device/device_session_usage_store.dart';
 import '../../../core/device/device_student_registration_lock.dart';
 import '../../../core/connectivity/online_first_persist.dart';
 import '../../../core/api/api_auth.dart';
@@ -693,6 +694,98 @@ class AttendanceRepository extends ChangeNotifier {
   }) =>
       _awaitRoleChecksDone(timeout: timeout);
 
+  /// Poll attendance roll while a session is live (lecturer session screen).
+  static const Duration liveSessionRollSyncInterval = Duration(seconds: 5);
+
+  /// Refreshes list attendance from the server for an active session roll meter.
+  Future<void> syncLiveSessionRoll(String listId) async {
+    final id = listId.trim();
+    if (id.isEmpty) return;
+    if (!AppConnectivity.instance.hasNetworkInterface) return;
+    final futures = <Future<void>>[
+      refreshServerPendingCheckInsForList(id),
+    ];
+    if (!_listDetailLoads.containsKey(id)) {
+      futures.add(loadListAttendanceData(id, force: true));
+    }
+    await Future.wait(futures);
+  }
+
+  /// Pulls pending check-in attempts from the server for live roll cells.
+  Future<void> refreshServerPendingCheckInsForList(String listId) async {
+    final id = listId.trim();
+    if (id.isEmpty) return;
+    if (!AppConnectivity.instance.isOnline) return;
+    if (_firestoreIfReady == null) return;
+    if (isStudentRecordWatchUser()) return;
+
+    final listSessions =
+        AttendanceStore.sessions.where((s) => s.listId == id).toList();
+    final activeSessions =
+        listSessions.where((s) => s.isActive).toList(growable: false);
+    if (activeSessions.isEmpty) {
+      for (final s in listSessions) {
+        AttendanceStore.setServerPendingCheckInStudentIds(s.id, const {});
+      }
+      _notifyStoreUpdated();
+      return;
+    }
+
+    final pendingBySession = <String, Set<String>>{};
+    final options = _loadQueryOptions(force: true);
+
+    void absorbPendingDoc(ApiDocumentSnapshot doc, String sessionId) {
+      final data = doc.data();
+      if (data == null) return;
+      final status = (data['status'] as String?)?.trim().toLowerCase() ?? '';
+      if (status != 'pending') return;
+      final studentId = (data['studentId'] as String?)?.trim() ?? '';
+      if (studentId.isEmpty) return;
+      final until = apiDateFromField(data['pendingUntil']);
+      if (until != null && DateTime.now().isAfter(until)) return;
+      (pendingBySession[sessionId] ??= <String>{}).add(studentId);
+    }
+
+    try {
+      final snap = await _firestore
+          .collection(ApiCollections.checkInAttempts)
+          .where('listId', isEqualTo: id)
+          .where('status', isEqualTo: 'pending')
+          .get(options);
+      for (final doc in snap.docs) {
+        final sessionId = (doc.data()?['sessionId'] as String?)?.trim() ?? '';
+        if (sessionId.isEmpty) continue;
+        absorbPendingDoc(doc, sessionId);
+      }
+
+      for (final session in activeSessions) {
+        final code = normalizeSessionCodeInput(session.sessionCode);
+        if (!isValidJoinCodeFormat(code)) continue;
+        try {
+          final codeSnap = await _firestore
+              .collection(ApiCollections.checkInAttempts)
+              .where('sessionCodeRaw', isEqualTo: code)
+              .where('status', isEqualTo: 'pending')
+              .get(options);
+          for (final doc in codeSnap.docs) {
+            if (doc.data()?['awaitingSession'] != true) continue;
+            absorbPendingDoc(doc, session.id);
+          }
+        } catch (_) {}
+      }
+    } catch (_) {
+      return;
+    }
+
+    for (final session in listSessions) {
+      AttendanceStore.setServerPendingCheckInStudentIds(
+        session.id,
+        pendingBySession[session.id] ?? const {},
+      );
+    }
+    _notifyStoreUpdated();
+  }
+
   /// Foreground refresh for lecturers, QA, and administrators (lists + rolls).
   Future<void> syncStaffAttendanceForeground({bool force = false}) async {
     final auth = AuthRepository.instance;
@@ -1150,6 +1243,7 @@ class AttendanceRepository extends ChangeNotifier {
     AttendanceStore.signIns.clear();
     AttendanceStore.attendanceRecords.clear();
     AttendanceStore.clearSessionRollStats();
+    AttendanceStore.clearServerPendingCheckIns();
     AttendanceStore.clearStudentRollStats();
     AttendanceStore.clearStudentListRollStats();
     AttendanceStore.invalidateLookupCaches();
@@ -2076,7 +2170,13 @@ class AttendanceRepository extends ChangeNotifier {
             AttendanceStore.sessionById(sessionId)?.sessionCode ?? '',
           );
 
-    if (_localDeviceUsedByOtherStudent(
+    if (await DeviceSessionUsageStore.isBlockedForOtherStudent(
+          deviceId: d,
+          studentId: sid,
+          sessionId: sessionId,
+          sessionCode: code,
+        ) ||
+        _localDeviceUsedByOtherStudent(
           deviceId: d,
           studentId: sid,
           sessionId: sessionId,
@@ -2274,6 +2374,17 @@ class AttendanceRepository extends ChangeNotifier {
     _notifyStoreUpdated(immediate: true);
     _schedulePersistScopedLocalSnapshot();
     final session = AttendanceStore.sessionById(sessionId);
+    final deviceId = localRow.deviceId?.trim() ?? '';
+    if (localRow.present && deviceId.isNotEmpty) {
+      unawaited(
+        DeviceSessionUsageStore.recordPresentCheckIn(
+          deviceId: deviceId,
+          studentId: studentId,
+          sessionId: sessionId,
+          sessionCode: session?.sessionCode,
+        ),
+      );
+    }
     watchCheckInAttemptForStudent(
       recordId: localRow.id,
       sessionId: sessionId,

@@ -121,6 +121,12 @@ class RollPendingContext {
       addPending(e.sessionId, e.studentId);
     }
 
+    for (final s in AttendanceStore.sessions) {
+      for (final studentId in AttendanceStore.serverPendingCheckInStudentIds(s.id)) {
+        addPending(s.id, studentId);
+      }
+    }
+
     for (final e in pendingCodes) {
       if (PendingRetention.isExpired(e.pendingSince, DateTime.now())) continue;
       if (e.status == PendingSessionCodeStatus.invalidOrExpired) continue;
