@@ -407,8 +407,15 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   }
 
   void _prewarmNavSections() {
+    final auth = AuthRepository.instance;
+    if (!auth.roleCheckDone) {
+      _navPrewarmScheduled = false;
+      return;
+    }
     final role = _resolvedRole();
-    final sections = _navSectionsForRole(role);
+    // Avoid mounting desktop-only / heavy tabs (e.g. Reports) on phones.
+    final sections =
+        _isDesktop ? _navSectionsForRole(role) : _mobileBottomSections();
     var changed = false;
     for (final s in sections) {
       if (_builtSections.add(s)) changed = true;
