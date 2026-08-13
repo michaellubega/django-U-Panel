@@ -148,7 +148,13 @@ Future<AttendanceListRollData> buildAttendanceListRoll(
     studentRows.add(
       AttendanceListRollStudentRow(
         studentId: sid,
-        name: student?.name ?? 'Unknown',
+        name: student?.name ??
+            AttendanceStore.resolveStudentForRoll(
+              sid,
+              listId: list.id,
+              cache: studentsById,
+            )?.name ??
+            'Unknown',
         registrationNumber: student?.registrationNumber ?? '—',
         attendancePercent: percent,
         sessionLabels: sessionLabels,
