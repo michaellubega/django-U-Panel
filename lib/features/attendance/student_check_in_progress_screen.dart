@@ -104,7 +104,7 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
   bool _pipelineLikelyOnline = true;
   bool _pipelineRunning = false;
 
-  static const Duration _stageMinGap = Duration(milliseconds: 550);
+  static const Duration _stageMinGap = Duration(milliseconds: 200);
   static const Duration _linkedSessionLocationMaxAge = Duration(minutes: 8);
 
   /// Resolves the session to validate against, refreshing when the store was
@@ -170,7 +170,7 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
     if (!mounted) return;
     setState(() => _stageIndex = _stageLabels.length);
     if (!_pipelineLikelyOnline) {
-      await Future<void>.delayed(const Duration(milliseconds: 450));
+      await Future<void>.delayed(const Duration(milliseconds: 150));
     }
   }
 
