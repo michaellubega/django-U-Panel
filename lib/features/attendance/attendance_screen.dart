@@ -2748,6 +2748,7 @@ class _SessionCheckInsScreenState extends State<SessionCheckInsScreen>
   int _rollModelRecords = -1;
   int _rollModelSessions = -1;
   int _rollModelSignIns = -1;
+  int _rollModelNameRevision = -1;
   late final DebouncedCallback _repoRebuild = DebouncedCallback(
     delay: const Duration(milliseconds: 180),
     callback: () {
@@ -2769,9 +2770,15 @@ class _SessionCheckInsScreenState extends State<SessionCheckInsScreen>
       unawaited(
         AttendanceRepository.instance
             .loadListAttendanceData(widget.list.id, force: false)
-            .then((_) {
+            .then((_) async {
+          await AttendanceRepository.instance
+              .ensureRollNamesResolvedForList(widget.list.id);
           if (mounted) setState(() {});
         }),
+      );
+      unawaited(
+        AttendanceRepository.instance
+            .ensureRollNamesResolvedForList(widget.list.id),
       );
       return;
     }
@@ -2779,6 +2786,8 @@ class _SessionCheckInsScreenState extends State<SessionCheckInsScreen>
       widget.list.id,
       force: force,
     );
+    await AttendanceRepository.instance
+        .ensureRollNamesResolvedForList(widget.list.id);
     if (mounted) setState(() {});
   }
 
@@ -2792,15 +2801,18 @@ class _SessionCheckInsScreenState extends State<SessionCheckInsScreen>
     final sessions =
         AttendanceStore.sessions.where((s) => s.listId == listId).length;
     final signIns = AttendanceStore.studentIdsSignedIntoList(listId).length;
+    final nameRevision = AttendanceStore.rollRosterNameRevision(listId);
     if (_rollModel != null &&
         _rollModelRecords == records &&
         _rollModelSessions == sessions &&
-        _rollModelSignIns == signIns) {
+        _rollModelSignIns == signIns &&
+        _rollModelNameRevision == nameRevision) {
       return _rollModel!;
     }
     _rollModelRecords = records;
     _rollModelSessions = sessions;
     _rollModelSignIns = signIns;
+    _rollModelNameRevision = nameRevision;
     _rollModel = _ConsolidatedRollModel.build(listId);
     return _rollModel!;
   }
@@ -2959,7 +2971,12 @@ class _SessionCheckInsScreenState extends State<SessionCheckInsScreen>
                     rows: rollKeys.map((k) {
                       final ids = studentIdsByKey[k]!;
                       final sid = ids.first;
-                      final student = studentsById[sid];
+                      final student = studentsById[sid] ??
+                          AttendanceStore.resolveStudentForRoll(
+                            sid,
+                            listId: widget.list.id,
+                            cache: studentsById,
+                          );
                       final name = student?.name ?? 'Unknown';
                       final reg = student?.registrationNumber ?? '—';
                       final rows =
