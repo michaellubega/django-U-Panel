@@ -3,9 +3,7 @@ import 'package:flutter/foundation.dart'
 
 import '../api/api_client.dart';
 import '../auth/auth_repository.dart';
-import '../../features/attendance/attendance_list_hierarchy.dart';
-import '../../features/attendance/models/attendance_models.dart';
-import 'push_topic_names.dart';
+import 'push_tag_builder.dart';
 
 import 'onesignal_service_impl_stub.dart'
     if (dart.library.io) 'onesignal_service_impl_mobile.dart' as impl;
@@ -53,7 +51,7 @@ abstract final class OneSignalService {
     final playerId = await impl.oneSignalImplGetPlayerId();
     if (playerId == null || playerId.isEmpty) return;
 
-    final tags = _tagsForUser(auth);
+    final tags = buildPushTagsForUser(auth);
     await impl.oneSignalImplSetTags(tags);
     await _registerWithBackend(playerId, tags);
   }
@@ -76,32 +74,6 @@ abstract final class OneSignalService {
   }
 
   static Future<bool> requestPermission() => impl.oneSignalImplRequestPermission();
-
-  static Map<String, String> _tagsForUser(AuthRepository auth) {
-    final tags = <String, String>{kPushAllNoticesTag: 'true'};
-
-    final uid = auth.currentUserId?.trim();
-    if (uid != null && uid.isNotEmpty) {
-      if (auth.isLecturer) tags[pushLecturerNoticeTag(uid)] = 'true';
-      if (auth.isKiuAdmin) tags[kPushKiuAdminsTag] = 'true';
-    }
-
-    final reg = auth.currentRegistrationNumber?.trim();
-    if (reg != null && reg.isNotEmpty) {
-      final student = AttendanceStore.findStudentByReg(reg);
-      final studentId = student?.id.trim();
-      if (studentId != null && studentId.isNotEmpty) {
-        tags[pushStudentNoticeTag(studentId)] = 'true';
-      }
-    }
-
-    for (final list in attendanceListsForCurrentStaff()) {
-      final id = list.id.trim();
-      if (id.isNotEmpty) tags[pushListNoticeTag(id)] = 'true';
-    }
-
-    return tags;
-  }
 
   static Future<void> _registerWithBackend(
     String playerId,

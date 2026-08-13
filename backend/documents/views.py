@@ -9,6 +9,7 @@ from .filters import apply_document_filters, apply_limit, serialize_document
 from .models import ApiDocument
 from .routing import split_resource_path
 from .services.check_in import maybe_process_check_in
+from .services.missed_session_notice import maybe_enqueue_missed_session_notice
 
 
 class DocumentRouterView(APIView):
@@ -68,6 +69,7 @@ def _create_document(request, collection: str) -> Response:
         defaults={"data": payload},
     )
     maybe_process_check_in(doc)
+    maybe_enqueue_missed_session_notice(doc)
     if collection == "notices":
         from notices.push_from_document import maybe_enqueue_notice_push
 
@@ -79,12 +81,15 @@ def _create_document(request, collection: str) -> Response:
 def _replace_document(request, collection: str, doc_id: str) -> Response:
     payload = _payload_dict(request.data)
     payload.pop("id", None)
+    previous = _get_doc_or_none(collection, doc_id)
+    previous_data = dict(previous.data or {}) if previous is not None else None
     doc, created = ApiDocument.objects.update_or_create(
         collection=collection,
         doc_id=doc_id,
         defaults={"data": payload},
     )
     maybe_process_check_in(doc)
+    maybe_enqueue_missed_session_notice(doc, previous_data=previous_data)
     if collection == "notices":
         from notices.push_from_document import maybe_enqueue_notice_push
 
@@ -95,6 +100,7 @@ def _replace_document(request, collection: str, doc_id: str) -> Response:
 
 def _patch_document(request, collection: str, doc_id: str) -> Response:
     doc = _get_doc_or_none(collection, doc_id)
+    previous_data = dict(doc.data or {}) if doc is not None else None
     if doc is None:
         doc = ApiDocument(collection=collection, doc_id=doc_id, data={})
     merged = dict(doc.data or {})
@@ -108,6 +114,7 @@ def _patch_document(request, collection: str, doc_id: str) -> Response:
     doc.data = merged
     doc.save()
     maybe_process_check_in(doc)
+    maybe_enqueue_missed_session_notice(doc, previous_data=previous_data)
     if collection == "notices":
         from notices.push_from_document import maybe_enqueue_notice_push
 
