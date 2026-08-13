@@ -111,7 +111,7 @@ class _OfflineQueueLocationScreenState extends State<OfflineQueueLocationScreen>
 
   Future<void> _advanceToStage(int index) async {
     if (!mounted) return;
-    await Future<void>.delayed(const Duration(milliseconds: 500));
+    await Future<void>.delayed(const Duration(milliseconds: 200));
     if (!mounted) return;
     setState(() => _stageIndex = index.clamp(0, _stageLabels.length - 1));
   }
@@ -123,7 +123,7 @@ class _OfflineQueueLocationScreenState extends State<OfflineQueueLocationScreen>
   }) async {
     if (!mounted) return;
     setState(() => _stageIndex = _stageLabels.length);
-    await Future<void>.delayed(const Duration(milliseconds: 400));
+    await Future<void>.delayed(const Duration(milliseconds: 150));
     if (!mounted) return;
     _successController.reset();
     setState(() {
