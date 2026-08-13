@@ -3,6 +3,9 @@
   <a class="upanel-sysnav-item{% if request.path == '/admin/' %} is-active{% endif %}" href="{% url 'admin:index' %}">
     <span class="upanel-sysnav-icon">◉</span> Dashboard
   </a>
+  <a class="upanel-sysnav-item{% if request.path == '/admin/server-health/' %} is-active{% endif %}" href="{% url 'server_health' %}">
+    <span class="upanel-sysnav-icon">💻</span> Server Health
+  </a>
   <a class="upanel-sysnav-item" href="{% url 'admin:accounts_user_changelist' %}">
     <span class="upanel-sysnav-icon">👤</span> Users
   </a>
