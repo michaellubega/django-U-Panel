@@ -220,8 +220,8 @@ class _AuthScreenState extends State<AuthScreen> {
                   ListenableBuilder(
                     listenable: AppConnectivity.instance,
                     builder: (context, _) {
-                      final offline = AppConnectivity.instance.initialized &&
-                          !AppConnectivity.instance.isOnline;
+                      final offline =
+                          AppConnectivity.instance.shouldShowOfflineBanner;
                       if (!offline || _offlineBannerDismissed) {
                         return const SizedBox.shrink();
                       }
