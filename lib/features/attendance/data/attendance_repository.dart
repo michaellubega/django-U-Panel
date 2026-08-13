@@ -9,6 +9,7 @@ import '../../../core/auth/staff_auth_email.dart';
 import '../../../core/auth/student_registration_number.dart';
 import '../../../core/cache/smart_cache_policy.dart';
 import '../../../core/connectivity/app_connectivity.dart';
+import '../../../core/device/device_session_usage_store.dart';
 import '../../../core/device/device_student_registration_lock.dart';
 import '../../../core/connectivity/online_first_persist.dart';
 import '../../../core/api/api_auth.dart';
@@ -2076,7 +2077,13 @@ class AttendanceRepository extends ChangeNotifier {
             AttendanceStore.sessionById(sessionId)?.sessionCode ?? '',
           );
 
-    if (_localDeviceUsedByOtherStudent(
+    if (await DeviceSessionUsageStore.isBlockedForOtherStudent(
+          deviceId: d,
+          studentId: sid,
+          sessionId: sessionId,
+          sessionCode: code,
+        ) ||
+        _localDeviceUsedByOtherStudent(
           deviceId: d,
           studentId: sid,
           sessionId: sessionId,
@@ -2274,6 +2281,17 @@ class AttendanceRepository extends ChangeNotifier {
     _notifyStoreUpdated(immediate: true);
     _schedulePersistScopedLocalSnapshot();
     final session = AttendanceStore.sessionById(sessionId);
+    final deviceId = localRow.deviceId?.trim() ?? '';
+    if (localRow.present && deviceId.isNotEmpty) {
+      unawaited(
+        DeviceSessionUsageStore.recordPresentCheckIn(
+          deviceId: deviceId,
+          studentId: studentId,
+          sessionId: sessionId,
+          sessionCode: session?.sessionCode,
+        ),
+      );
+    }
     watchCheckInAttemptForStudent(
       recordId: localRow.id,
       sessionId: sessionId,
