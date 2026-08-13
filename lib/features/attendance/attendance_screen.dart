@@ -925,17 +925,21 @@ class AttendanceDayProgramsScreen extends StatelessWidget {
   final Iterable<AttendanceList>? scopedLists;
   final String? hubTitle;
 
-  List<AttendanceList> get _allLists {
-    if (scopedLists != null) {
-      return filterListsForHierarchy(scopedLists!).toList()
-        ..sort(compareAttendanceListsNewestFirst);
-    }
-    return attendanceListsForCurrentStaff();
-  }
+  List<AttendanceList> _allLists() =>
+      attendanceListsFromOptionalScope(scopedLists);
 
   @override
   Widget build(BuildContext context) {
-    final allLists = _allLists;
+    return ListenableBuilder(
+      listenable: AttendanceRepository.instance,
+      builder: (context, _) {
+        final allLists = _allLists();
+        return _buildBody(context, allLists);
+      },
+    );
+  }
+
+  Widget _buildBody(BuildContext context, List<AttendanceList> allLists) {
     final programs = programsWithListsForWeekday(allLists, weekday);
     final dayLabel = weekdayFullLabel(weekday);
     final total = listCountOnWeekday(allLists, weekday);
@@ -1065,9 +1069,7 @@ class _AttendanceProgramListsScreenState
   }
 
   List<AttendanceList> _listsForScreen() {
-    final source = widget.scopedLists != null
-        ? filterListsForHierarchy(widget.scopedLists!)
-        : attendanceListsForCurrentStaff();
+    final source = attendanceListsFromOptionalScope(widget.scopedLists);
     return listsForWeekdayAndProgram(
       source,
       widget.weekday,
