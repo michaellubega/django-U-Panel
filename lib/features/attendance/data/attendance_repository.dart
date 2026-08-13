@@ -38,6 +38,7 @@ import '../roll_cell_status.dart'
 import 'attendance_list_purge.dart';
 import 'attendance_remote_list_watch.dart';
 import 'attendance_remote_record_watch.dart';
+import 'attendance_remote_sign_in_watch.dart';
 import 'attendance_rtd_record_watch.dart';
 import 'pending_check_in_queue.dart';
 import 'pending_retention.dart';
@@ -702,13 +703,13 @@ class AttendanceRepository extends ChangeNotifier {
     final id = listId.trim();
     if (id.isEmpty) return;
     if (!AppConnectivity.instance.hasNetworkInterface) return;
-    final futures = <Future<void>>[
+    await Future.wait([
       refreshServerPendingCheckInsForList(id),
-    ];
-    if (!_listDetailLoads.containsKey(id)) {
-      futures.add(loadListAttendanceData(id, force: true));
+      loadListAttendanceData(id, force: true),
+    ]);
+    if (!isStudentRecordWatchUser()) {
+      unawaited(AttendanceRemoteSignInWatch.instance.watchActiveListSignIns(id));
     }
-    await Future.wait(futures);
   }
 
   /// Pulls pending check-in attempts from the server for live roll cells.
@@ -727,11 +728,13 @@ class AttendanceRepository extends ChangeNotifier {
       for (final s in listSessions) {
         AttendanceStore.setServerPendingCheckInStudentIds(s.id, const {});
       }
+      AttendanceStore.setServerPendingStudentHints(id, const {});
       _notifyStoreUpdated();
       return;
     }
 
     final pendingBySession = <String, Set<String>>{};
+    final pendingHints = <String, ServerPendingStudentHint>{};
     final options = _loadQueryOptions(force: true);
 
     void absorbPendingDoc(ApiDocumentSnapshot doc, String sessionId) {
@@ -744,6 +747,23 @@ class AttendanceRepository extends ChangeNotifier {
       final until = apiDateFromField(data['pendingUntil']);
       if (until != null && DateTime.now().isAfter(until)) return;
       (pendingBySession[sessionId] ??= <String>{}).add(studentId);
+      final name = (data['studentName'] as String?)?.trim();
+      final reg =
+          (data['registrationNumber'] as String?)?.trim().toUpperCase();
+      final course = (data['course'] as String?)?.trim();
+      final prior = pendingHints[studentId];
+      pendingHints[studentId] = ServerPendingStudentHint(
+        studentId: studentId,
+        studentName: (name != null && name.isNotEmpty)
+            ? name
+            : prior?.studentName,
+        registrationNumber: (reg != null && reg.isNotEmpty)
+            ? reg
+            : prior?.registrationNumber,
+        course: (course != null && course.isNotEmpty)
+            ? course
+            : prior?.course,
+      );
     }
 
     try {
@@ -782,6 +802,10 @@ class AttendanceRepository extends ChangeNotifier {
         session.id,
         pendingBySession[session.id] ?? const {},
       );
+    }
+    AttendanceStore.setServerPendingStudentHints(id, pendingHints);
+    for (final hint in pendingHints.values) {
+      unawaited(_mergeServerPendingStudentHint(listId: id, hint: hint));
     }
     _notifyStoreUpdated();
   }
@@ -4959,6 +4983,10 @@ class AttendanceRepository extends ChangeNotifier {
   static AttendanceSession? trySessionFromApiDoc(ApiDocumentSnapshot d) =>
       _trySessionFromDoc(d);
 
+  /// Public parser for realtime sign-in listeners.
+  static SignInRecord? trySignInFromApiDoc(ApiDocumentSnapshot d) =>
+      _trySignInFromDoc(d);
+
   /// Public parser for realtime attendance record listeners.
   static AttendanceRecord? tryRecordFromFirestoreDoc(
     ApiDocumentSnapshot d,
@@ -8140,6 +8168,165 @@ class AttendanceRepository extends ChangeNotifier {
     }
   }
 
+  /// Merges a roster sign-in from Firestore (live session roll).
+  Future<void> applyRemoteSignInRecord(SignInRecord signIn) async {
+    final listId = signIn.listId.trim();
+    final studentId = signIn.studentId.trim();
+    if (listId.isEmpty || studentId.isEmpty) return;
+
+    final existingIdx = AttendanceStore.signIns.indexWhere(
+      (r) => r.id == signIn.id,
+    );
+    if (existingIdx >= 0) {
+      final existing = AttendanceStore.signIns[existingIdx];
+      final merged = _signInWithStudentMetadata(signIn, null);
+      if (merged.studentName != existing.studentName ||
+          merged.registrationNumber != existing.registrationNumber ||
+          merged.course != existing.course) {
+        AttendanceStore.signIns[existingIdx] = merged;
+      }
+    } else if (!AttendanceStore.hasStudentSignedIntoList(listId, studentId)) {
+      AttendanceStore.addSignInRecord(
+        _signInWithStudentMetadata(signIn, null),
+      );
+    } else {
+      final sameStudent = AttendanceStore.signIns.firstWhere(
+        (r) => r.listId == listId && r.studentId == studentId,
+      );
+      final merged = _signInWithStudentMetadata(signIn, null);
+      if ((merged.studentName?.trim().isNotEmpty ?? false) &&
+          (sameStudent.studentName?.trim().isEmpty ?? true)) {
+        final idx = AttendanceStore.signIns.indexOf(sameStudent);
+        if (idx >= 0) AttendanceStore.signIns[idx] = merged;
+      }
+    }
+
+    await _ensureStudentRecordFromSignIn(signIn);
+    AttendanceStore.invalidateLookupCaches();
+    _schedulePersistScopedLocalSnapshot();
+    _notifyStoreUpdated(immediate: true);
+  }
+
+  Future<void> _mergeServerPendingStudentHint({
+    required String listId,
+    required ServerPendingStudentHint hint,
+  }) async {
+    final studentId = hint.studentId.trim();
+    if (studentId.isEmpty) return;
+
+    var student = _studentRecordForId(studentId);
+    final hintName = hint.studentName?.trim() ?? '';
+    var hintReg = hint.registrationNumber?.trim().toUpperCase() ?? '';
+    if (hintReg.isEmpty &&
+        StudentRegistrationNumber.isCanonicalFormat(studentId)) {
+      hintReg = StudentRegistrationNumber.normalize(studentId);
+    }
+
+    if (student == null && hintName.isNotEmpty) {
+      student = await registerStudent(
+        hintName,
+        hintReg.isNotEmpty ? hintReg : studentId,
+        initialsFromFullName(hintName),
+        fast: true,
+      );
+    } else if (student != null) {
+      final nameBetter = hintName.isNotEmpty &&
+          (student.name.trim().isEmpty || student.name.trim() == 'Unknown');
+      final regBetter = hintReg.isNotEmpty &&
+          (student.registrationNumber.trim().isEmpty ||
+              student.registrationNumber.trim() == '—');
+      if (nameBetter || regBetter) {
+        student = StudentRecord(
+          id: student.id,
+          name: nameBetter ? hintName : student.name,
+          registrationNumber: regBetter ? hintReg : student.registrationNumber,
+          threeDigitCode: student.threeDigitCode,
+          initials: nameBetter
+              ? initialsFromFullName(hintName)
+              : student.initials,
+        );
+        AttendanceStore.upsertStudent(student);
+      }
+    }
+
+    final course = hint.course?.trim();
+    if (course != null &&
+        course.isNotEmpty &&
+        !AttendanceStore.hasStudentSignedIntoList(listId, studentId)) {
+      await addSignIn(
+        listId,
+        studentId,
+        course,
+        deferHeavyWork: true,
+      );
+      return;
+    }
+
+    if (student != null) {
+      await _persistStudentRecord(student, awaitWhenOnline: true);
+    }
+  }
+
+  Future<void> _ensureStudentRecordFromSignIn(SignInRecord signIn) async {
+    final studentId = signIn.studentId.trim();
+    if (studentId.isEmpty) return;
+    var student = _studentRecordForId(studentId);
+    final signInName = signIn.studentName?.trim() ?? '';
+    var signInReg = signIn.registrationNumber?.trim().toUpperCase() ?? '';
+    if (signInReg.isEmpty &&
+        StudentRegistrationNumber.isCanonicalFormat(studentId)) {
+      signInReg = StudentRegistrationNumber.normalize(studentId);
+    }
+
+    if (student == null) {
+      if (signInName.isEmpty && signInReg.isEmpty) return;
+      student = await registerStudent(
+        signInName.isNotEmpty ? signInName : 'Unknown',
+        signInReg.isNotEmpty ? signInReg : '—',
+        signInName.isNotEmpty ? initialsFromFullName(signInName) : '??',
+        fast: true,
+      );
+      await _persistStudentRecord(student, awaitWhenOnline: true);
+      return;
+    }
+
+    final nameBetter = signInName.isNotEmpty &&
+        (student.name.trim().isEmpty || student.name.trim() == 'Unknown');
+    final regBetter = signInReg.isNotEmpty &&
+        (student.registrationNumber.trim().isEmpty ||
+            student.registrationNumber.trim() == '—');
+    if (!nameBetter && !regBetter) return;
+
+    student = StudentRecord(
+      id: student.id,
+      name: nameBetter ? signInName : student.name,
+      registrationNumber: regBetter ? signInReg : student.registrationNumber,
+      threeDigitCode: student.threeDigitCode,
+      initials:
+          nameBetter ? initialsFromFullName(signInName) : student.initials,
+    );
+    AttendanceStore.upsertStudent(student);
+    await _persistStudentRecord(student, awaitWhenOnline: true);
+  }
+
+  Future<void> _ensureListEnrollmentFromRemoteRecord({
+    required String listId,
+    required String studentId,
+    required String course,
+  }) async {
+    if (AttendanceStore.hasStudentSignedIntoList(listId, studentId)) return;
+    final resolvedCourse = course.trim().isNotEmpty
+        ? course.trim()
+        : (AttendanceStore.listById(listId)?.coursesSafe.firstOrNull ?? '—');
+    if (resolvedCourse.trim().isEmpty || resolvedCourse == '—') return;
+    await addSignIn(
+      listId,
+      studentId,
+      resolvedCourse,
+      deferHeavyWork: true,
+    );
+  }
+
   /// Merges one official row from Firestore or Realtime Database.
   Future<void> applyRemoteAttendanceRecord(
     AttendanceRecord official, {
@@ -8191,6 +8378,11 @@ class AttendanceRepository extends ChangeNotifier {
       _schedulePersistScopedLocalSnapshot();
       _notifyStoreUpdated(immediate: true);
       if (session != null) {
+        unawaited(_ensureListEnrollmentFromRemoteRecord(
+          listId: session.listId,
+          studentId: official.studentId,
+          course: official.course,
+        ));
         unawaited(_backfillPriorSessionsAfterPresentResolved(
           listId: session.listId,
           studentId: official.studentId,
