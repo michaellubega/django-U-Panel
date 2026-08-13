@@ -851,6 +851,11 @@ class _SettingsScreenState extends State<SettingsScreen>
               onUpdateProfile: () => _openUpdateProfile(context),
               onChangePassword: () => _openChangePasswordDialog(context),
             ),
+            if (auth.roleCheckDone &&
+                auth.resolvedRole == UserRole.student) ...[
+              const SizedBox(height: 18),
+              settingsStudentPortalCard(context),
+            ],
             settingsAboutCard(context),
             const SizedBox(height: 24),
             ],
