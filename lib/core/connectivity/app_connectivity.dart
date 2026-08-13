@@ -17,7 +17,7 @@ class AppConnectivity extends ChangeNotifier {
   static final AppConnectivity instance = AppConnectivity._();
 
   static const Duration _probeTimeout = Duration(seconds: 4);
-  static const Duration _probeInterval = Duration(seconds: 10);
+  static const Duration _probeInterval = Duration(seconds: 5);
   static const Duration _reachabilityGrace = Duration(seconds: 8);
   static const Duration _minProbeGap = Duration(seconds: 2);
   static const int _failuresBeforeOffline = 2;
