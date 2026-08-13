@@ -780,7 +780,9 @@ class AuthRepository extends ChangeNotifier {
 
   void _applyKiuAdminHintsFromProfile(Map<String, dynamic> data) {
     final role = (data[staffAccountRoleField] as String?)?.trim();
+    final djangoRole = (data['role'] as String?)?.trim().toLowerCase();
     final profileKiuAdmin = role == staffAccountRoleKiuAdministrator ||
+        djangoRole == 'kiu_admin' ||
         _kiuAdminFlagFromData(data);
     if (!profileKiuAdmin) return;
     _isKiuAdmin = true;
@@ -794,6 +796,104 @@ class AuthRepository extends ChangeNotifier {
     if (data[kiuAdminOnboardingCompleteField] == true) {
       _kiuAdminOnboardingComplete = true;
     }
+  }
+
+  /// Django `/api/auth/me/` and login `user` payloads (snake_case).
+  static void applyAuthUserRoleHints(
+    Map<String, dynamic>? json, {
+    required bool preserveKiuAdminFromDocs,
+    required void Function(bool value) setKiuAdmin,
+    required void Function(bool value) setAdmin,
+    required void Function(bool value) setQaStaff,
+    required void Function(bool value) setLecturer,
+    required void Function(bool value) setOnboardingComplete,
+    void Function(String? title)? setJobTitle,
+  }) {
+    if (json == null) return;
+    final role = (json['role'] as String?)?.trim().toLowerCase();
+    final apiKiuAdmin = json['is_kiu_admin'] == true || role == 'kiu_admin';
+    final apiQaStaff = json['is_qa_staff'] == true || role == 'qa_staff';
+    final apiFullAdmin = role == 'administrator';
+    final apiLecturer = json['is_lecturer'] == true || role == 'lecturer';
+
+    if (apiKiuAdmin) {
+      setKiuAdmin(true);
+      setAdmin(false);
+      setQaStaff(false);
+    } else if (!preserveKiuAdminFromDocs) {
+      if (apiQaStaff) {
+        setQaStaff(true);
+        setAdmin(true);
+        setKiuAdmin(false);
+      } else if (apiFullAdmin) {
+        setAdmin(true);
+        setQaStaff(false);
+        setKiuAdmin(false);
+      }
+    }
+
+    if (apiLecturer) {
+      setLecturer(true);
+    }
+
+    if (json['kiu_admin_onboarding_complete'] == true) {
+      setOnboardingComplete(true);
+    }
+  }
+
+  Future<Map<String, dynamic>?> _fetchAuthUserJson(ApiUser user) async {
+    final cached = user.raw;
+    if (cached != null && cached.isNotEmpty) return cached;
+    try {
+      final json = await ApiClient.instance.getJson('/api/auth/me/');
+      return json;
+    } catch (_) {
+      return cached;
+    }
+  }
+
+  Future<void> _applyAuthUserRoleHints(ApiUser user) async {
+    final json = await _fetchAuthUserJson(user);
+    if (json == null) return;
+    final preserveKiu = _isKiuAdmin;
+    applyAuthUserRoleHints(
+      json,
+      preserveKiuAdminFromDocs: preserveKiu,
+      setKiuAdmin: (v) => _isKiuAdmin = v,
+      setAdmin: (v) => _isAdmin = v,
+      setQaStaff: (v) => _isQaStaff = v,
+      setLecturer: (v) => _isLecturer = v,
+      setOnboardingComplete: (v) => _kiuAdminOnboardingComplete = v,
+      setJobTitle: (title) {
+        if (title != null) _cachedKiuAdminJobTitle = title;
+      },
+    );
+    final title = KiuAdminJobTitle.normalize(
+      json['kiu_admin_job_title'] as String?,
+    );
+    if (title != null) {
+      _cachedKiuAdminJobTitle = title;
+    }
+    final staff = (json['staff_number'] as String?)?.trim();
+    if (staff != null && staff.isNotEmpty) {
+      _applyStaffNumberFromData(<String, dynamic>{'staffNumber': staff});
+    }
+    final reg = (json['registration_number'] as String?)?.trim();
+    if (reg != null && reg.isNotEmpty) {
+      _cachedReg = KiuAdminRegistrationNumber.normalize(reg);
+    }
+    final name = (json['full_name'] as String?)?.trim();
+    if (name != null && name.isNotEmpty) {
+      _cachedName = name;
+    }
+  }
+
+  String _kiuStaffRegistrationFallback() {
+    final reg = _cachedReg?.trim();
+    if (reg != null && reg.isNotEmpty) return reg;
+    final staff = _cachedStaffNumber?.trim();
+    if (staff != null && staff.isNotEmpty) return staff;
+    return KiuAdminRegistrationNumber.example;
   }
 
   static bool _adminDocIsQaStaff(Map<String, dynamic>? data) {
@@ -1111,6 +1211,18 @@ class AuthRepository extends ChangeNotifier {
     final email = user.email ?? '';
     if (!KiuStaffAuthEmail.isStaffMailbox(email)) return false;
     if (_isKiuAdmin || _kiuAdminOnboardingComplete) return false;
+    final raw = user.raw;
+    if (raw != null) {
+      final role = (raw['role'] as String?)?.trim().toLowerCase();
+      if (raw['is_kiu_admin'] == true ||
+          raw['kiu_admin_onboarding_complete'] == true ||
+          role == 'kiu_admin' ||
+          role == 'lecturer' ||
+          role == 'qa_staff' ||
+          role == 'administrator') {
+        return false;
+      }
+    }
     // QA / full administrators (@kiu.ac.ug or ICT bypass) are not KIU administrators.
     if (_isAdmin) return false;
     return true;
@@ -1991,6 +2103,7 @@ class AuthRepository extends ChangeNotifier {
       );
     }
     _lastRoleHydrateUid = uid;
+    await _applyAuthUserRoleHints(user);
     if (deferHeavyWork) {
       unawaited(
         _maybeApplyPendingKiuStaffAccountRole(
@@ -2031,33 +2144,37 @@ class AuthRepository extends ChangeNotifier {
       final role = data[staffAccountRoleField] as String?;
       final isKiuAdministrator = role == staffAccountRoleKiuAdministrator;
       if (data[kiuAdminOnboardingCompleteField] == true) {
-        if (isKiuAdministrator && !_isKiuAdmin) {
-          _applyStaffNumberFromData(data);
-          final reg = (_cachedReg?.trim().isNotEmpty == true)
-              ? _cachedReg!.trim()
-              : KiuAdminRegistrationNumber.example;
-          final name = (_cachedName?.trim().isNotEmpty == true)
-              ? _cachedName!.trim()
-              : 'KIU Staff';
-          await _applyKiuStaffAccountRole(
-            uid: user.uid,
-            email: KiuStaffAuthEmail.normalizeStaffEmail(email),
-            fullName: name,
-            registrationNumber: reg,
-            isKiuAdministrator: true,
-            kiuAdminJobTitle: KiuAdminJobTitle.normalize(
-              data[kiuAdminJobTitleField] as String?,
-            ),
-          );
+        if (isKiuAdministrator) {
+          final adminSnap = await apiStore()
+              .collection(ApiCollections.admins)
+              .doc(user.uid)
+              .get();
+          final adminData = adminSnap.data();
+          final needsRepair = !adminSnap.exists ||
+              !adminDocIsKiuAdministrator(adminData);
+          if (needsRepair) {
+            _applyStaffNumberFromData(data);
+            final name = (_cachedName?.trim().isNotEmpty == true)
+                ? _cachedName!.trim()
+                : 'KIU Staff';
+            await _applyKiuStaffAccountRole(
+              uid: user.uid,
+              email: KiuStaffAuthEmail.normalizeStaffEmail(email),
+              fullName: name,
+              registrationNumber: _kiuStaffRegistrationFallback(),
+              isKiuAdministrator: true,
+              kiuAdminJobTitle: KiuAdminJobTitle.normalize(
+                data[kiuAdminJobTitleField] as String?,
+              ),
+            );
+          }
         }
         return;
       }
       _applyStaffNumberFromData(data);
       if (role == null || role.isEmpty) return;
 
-      final reg = (_cachedReg?.trim().isNotEmpty == true)
-          ? _cachedReg!.trim()
-          : KiuAdminRegistrationNumber.example;
+      final reg = _kiuStaffRegistrationFallback();
       final name = (_cachedName?.trim().isNotEmpty == true)
           ? _cachedName!.trim()
           : 'KIU Staff';
@@ -2157,7 +2274,7 @@ class AuthRepository extends ChangeNotifier {
       final snap = await _fetchAdminRoleDoc(uid);
       final data = snap.data();
       _apiRoleCheckDenied = false;
-      _isKiuAdmin = snap.exists && _kiuAdminFlagFromData(data);
+      _isKiuAdmin = snap.exists && adminDocIsKiuAdministrator(data);
       _isAdmin = snap.exists && _adminFlagFromData(data);
       _isQaStaff = snap.exists && _adminDocIsQaStaff(data);
       if (_isQaStaff && !_isAdmin) {
@@ -4181,7 +4298,7 @@ class AuthRepository extends ChangeNotifier {
     if (user == null) return 'You must be signed in.';
     final uid = user.uid;
     final email = KiuStaffAuthEmail.normalizeStaffEmail(user.email ?? '');
-    final reg = _cachedReg ?? KiuAdminRegistrationNumber.example;
+    final reg = _kiuStaffRegistrationFallback();
     final name = _cachedName ?? 'KIU Staff';
     final normalizedTitle = isKiuAdministrator
         ? KiuAdminJobTitle.normalize(kiuAdminJobTitle)
