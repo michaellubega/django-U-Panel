@@ -162,10 +162,26 @@ class _NoticesScreenState extends State<NoticesScreen>
     return auth.lecturerCheckDone && auth.isLecturer && !auth.isAdmin;
   }
 
+  bool _isKiuAdministratorAccount() =>
+      AuthRepository.instance.isKiuAdministratorAccount;
+
+  String _noticesSubtitle({required bool admin}) {
+    if (admin) {
+      return 'Broadcast to all users, or target a class list';
+    }
+    if (_isKiuAdministratorAccount()) {
+      return 'Announcements and alerts for KIU campus administrators';
+    }
+    if (_isLecturerUser()) {
+      return 'Campus notices and alerts for your class lists';
+    }
+    return 'Official notices for you and your classes.';
+  }
+
   bool _canCreateNotice() =>
       _isAdminUser() ||
       _isLecturerUser() ||
-      AuthRepository.instance.isKiuAdmin;
+      _isKiuAdministratorAccount();
 
   Set<String> _lecturerListIds() {
     if (!_isLecturerUser()) return const {};
@@ -334,11 +350,7 @@ class _NoticesScreenState extends State<NoticesScreen>
                   ),
                   const SizedBox(height: 4),
                   Text(
-                    admin
-                        ? 'Broadcast to all users, or target a class list'
-                        : _isLecturerUser()
-                            ? 'Campus notices and alerts for your class lists'
-                            : 'Official notices for you and your classes.',
+                    _noticesSubtitle(admin: admin),
                     style: Theme.of(context).textTheme.bodyMedium,
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
@@ -379,11 +391,7 @@ class _NoticesScreenState extends State<NoticesScreen>
                         ),
                         const SizedBox(height: 4),
                         Text(
-                          admin
-                              ? 'Broadcast to all users, or target a class list'
-                              : _isLecturerUser()
-                                  ? 'Campus notices and alerts for your class lists'
-                                  : 'Official notices for you and your classes.',
+                          _noticesSubtitle(admin: admin),
                           style: Theme.of(context).textTheme.bodyMedium,
                           maxLines: 2,
                           overflow: TextOverflow.ellipsis,
