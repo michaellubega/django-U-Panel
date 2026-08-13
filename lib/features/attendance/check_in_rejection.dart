@@ -40,6 +40,8 @@ CheckInRejectionCategory categorizeCheckInRejectionReason(String? reason) {
 
       r.contains('another student already used') ||
 
+      r.contains('device already signed in') ||
+
       (r.contains('device') && r.contains('another student'))) {
 
     return CheckInRejectionCategory.deviceAlreadyUsed;

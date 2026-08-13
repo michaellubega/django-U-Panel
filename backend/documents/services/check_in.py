@@ -51,6 +51,10 @@ def maybe_process_check_in(doc: ApiDocument) -> None:
         _reject(doc, data, "outside session time")
         return
 
+    if _device_used_by_other_student(session_id, student_id, data):
+        _reject(doc, data, "device already used for another student")
+        return
+
     if not _within_geofence(session_data, data):
         _reject(doc, data, "outside class location")
         return
@@ -103,6 +107,24 @@ def _record_exists(record_id: str) -> bool:
         collection=RECORDS_COLLECTION,
         doc_id=record_id,
     ).exists()
+
+
+def _device_used_by_other_student(
+    session_id: str, student_id: str, attempt_data: dict
+) -> bool:
+    device_id = (attempt_data.get("deviceId") or "").strip()
+    if not device_id:
+        return False
+    sid = session_id.strip()
+    if not sid:
+        return False
+    existing = ApiDocument.objects.filter(
+        collection=RECORDS_COLLECTION,
+        data__sessionId=sid,
+        data__deviceId=device_id,
+        data__present=True,
+    ).exclude(data__studentId=student_id)
+    return existing.exists()
 
 
 def _link_session_by_code(doc: ApiDocument, data: dict) -> str:
