@@ -211,10 +211,15 @@ class AttendanceRepository extends ChangeNotifier {
 
   /// Avoids staff-scoped Firestore reads before [AuthRepository.roleCheckDone].
   static Future<void> _awaitRoleChecksDone({
-    Duration timeout = const Duration(seconds: 3),
+    Duration? timeout,
   }) async {
-    final deadline = DateTime.now().add(timeout);
-    while (!AuthRepository.instance.roleCheckDone) {
+    final auth = AuthRepository.instance;
+    final effectiveTimeout = timeout ??
+        (auth.isStaffAuthIdentity || auth.isSyntheticStaffAuthIdentity
+            ? const Duration(milliseconds: 600)
+            : const Duration(seconds: 2));
+    final deadline = DateTime.now().add(effectiveTimeout);
+    while (!auth.roleCheckDone) {
       if (DateTime.now().isAfter(deadline)) return;
       await Future<void>.delayed(const Duration(milliseconds: 50));
     }
@@ -354,7 +359,7 @@ class AttendanceRepository extends ChangeNotifier {
       return true;
     }
 
-    await _awaitRoleChecksDone(timeout: const Duration(milliseconds: 800));
+    await _awaitRoleChecksDone(timeout: const Duration(milliseconds: 400));
     if (!AuthRepository.instance.roleCheckDone) return false;
 
     if (isStudentScopedUser()) {
@@ -379,6 +384,16 @@ class AttendanceRepository extends ChangeNotifier {
     if (!force &&
         AttendanceStore.lists.isNotEmpty &&
         _listsCatalogCacheFresh()) {
+      prefetchActiveListDetails();
+      if (_shouldRefreshStaffListsInBackground()) {
+        unawaited(
+          loadAll(
+            force: false,
+            listsOnly: true,
+            scopeToLecturerUid: _listsOnlyScopeUid(),
+          ),
+        );
+      }
       return;
     }
     if (!force && AttendanceStore.lists.isNotEmpty) {
@@ -570,6 +585,15 @@ class AttendanceRepository extends ChangeNotifier {
           AttendanceStore.lists.isNotEmpty &&
           _listsCatalogCacheFresh()) {
         prefetchActiveListDetails();
+        if (_shouldRefreshStaffListsInBackground()) {
+          unawaited(
+            loadAll(
+              force: false,
+              listsOnly: true,
+              scopeToLecturerUid: _listsOnlyScopeUid(),
+            ),
+          );
+        }
       } else if (!force && hasCachedStore && AttendanceStore.lists.isNotEmpty) {
         unawaited(
           loadAll(
@@ -601,7 +625,13 @@ class AttendanceRepository extends ChangeNotifier {
       await _awaitRoleChecksDone();
       if (AuthRepository.instance.isLoggedIn &&
           AuthRepository.instance.roleCheckDone) {
-        await loadAll(force: true, listsOnly: false);
+        // List metadata first — full rolls load lazily via prefetch (much faster for QA).
+        await loadAll(
+          force: true,
+          listsOnly: true,
+          scopeToLecturerUid: _listsOnlyScopeUid(),
+        );
+        prefetchActiveListDetails();
         if (_isLoaded) {
           _staffFullBootstrapDone = true;
         }
@@ -635,9 +665,20 @@ class AttendanceRepository extends ChangeNotifier {
 
   /// Waits until role flags are hydrated (for realtime list watchers).
   Future<void> awaitRoleChecksForWatch({
-    Duration timeout = const Duration(seconds: 5),
+    Duration timeout = const Duration(seconds: 2),
   }) =>
       _awaitRoleChecksDone(timeout: timeout);
+
+  /// Foreground refresh for lecturers, QA, and administrators (lists + rolls).
+  Future<void> syncStaffAttendanceForeground({bool force = false}) async {
+    final auth = AuthRepository.instance;
+    if (!auth.isLoggedIn || auth.needsEmailVerification) return;
+    if (!auth.showsStaffAttendanceUi) return;
+    if (!AppConnectivity.instance.isOnline) return;
+    prefetchActiveListDetails();
+    await refreshAttendanceLists(force: force);
+    unawaited(AttendanceRemoteRecordWatch.instance.refreshIfNeeded());
+  }
 
   /// Session ids for lecturer realtime [attendance_records] listeners.
   ///
@@ -1114,9 +1155,9 @@ class AttendanceRepository extends ChangeNotifier {
   static const int _maxRecentListDetailIds = 8;
   final Map<String, DateTime> _listDetailFetchedAt = {};
   DateTime? _listsCatalogFetchedAt;
-  static const int _maxConcurrentListDetailLoads = 4;
-  static const int _maxPrefetchListDetailLoads = 6;
-  static const int _maxBatchListDetailLoads = 16;
+  static const int _maxConcurrentListDetailLoads = 6;
+  static const int _maxPrefetchListDetailLoads = 12;
+  static const int _maxBatchListDetailLoads = 24;
   static const int _maxSessionsPerListDetailLoad = 30;
   int _activeListDetailLoads = 0;
   Future<void> _listDetailMergeLock = Future<void>.value();
@@ -1151,10 +1192,23 @@ class AttendanceRepository extends ChangeNotifier {
     return _listDetailLoads.containsKey(id);
   }
 
-  bool _listsCatalogCacheFresh() => SmartCachePolicy.isWithinTtl(
+  bool _listsCatalogCacheFresh() {
+    final auth = AuthRepository.instance;
+    final ttl = auth.showsStaffAttendanceUi
+        ? SmartCachePolicy.staffAttendanceListsTtl
+        : SmartCachePolicy.profileAndNoticesTtl;
+    return SmartCachePolicy.isWithinTtl(_listsCatalogFetchedAt, ttl);
+  }
+
+  bool _listsCatalogSoftStale() => !SmartCachePolicy.isWithinTtl(
         _listsCatalogFetchedAt,
-        SmartCachePolicy.profileAndNoticesTtl,
+        SmartCachePolicy.staffAttendanceListsSoftStale,
       );
+
+  bool _shouldRefreshStaffListsInBackground() {
+    if (!AuthRepository.instance.showsStaffAttendanceUi) return false;
+    return _listsCatalogSoftStale();
+  }
 
   void _markListsCatalogFetched() {
     _listsCatalogFetchedAt = DateTime.now().toUtc();

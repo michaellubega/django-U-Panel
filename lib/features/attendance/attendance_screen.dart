@@ -218,6 +218,9 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     }
     final student = auth.resolvedRole == UserRole.student;
     if (student) return;
+    if (auth.showsStaffAttendanceUi) {
+      unawaited(repo.syncStaffAttendanceForeground(force: false));
+    }
     if (AttendanceStore.lists.isNotEmpty) return;
     if (attendanceListsForCurrentStaff().isEmpty) {
       unawaited(_load(force: true, listsOnly: true));
@@ -296,6 +299,12 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     final auth = AuthRepository.instance;
     final student =
         auth.roleCheckDone && auth.resolvedRole == UserRole.student;
+    if (!student && auth.showsStaffAttendanceUi) {
+      await AttendanceRepository.instance.syncStaffAttendanceForeground(
+        force: true,
+      );
+      return;
+    }
     await _load(force: true, listsOnly: !student);
   }
 

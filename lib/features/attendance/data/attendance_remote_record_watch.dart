@@ -106,7 +106,7 @@ class AttendanceRemoteRecordWatch {
   Future<void> refreshIfNeeded() async {
     if (!_useFirestoreRecordWatch()) return;
     _refreshDebounce?.cancel();
-    _refreshDebounce = Timer(const Duration(milliseconds: 350), () {
+    _refreshDebounce = Timer(const Duration(milliseconds: 100), () {
       _refreshDebounce = null;
       unawaited(start());
     });
