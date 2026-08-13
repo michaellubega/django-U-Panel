@@ -876,3 +876,415 @@ input[type="submit"].default {
   .upanel-stat-value { font-size: 1.5rem; }
   .upanel-sysnav { overflow-x: auto; flex-wrap: nowrap; }
 }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   SERVER HEALTH PAGE STYLES
+   ══════════════════════════════════════════════════════════════════════════ */
+
+.upanel-server-health {
+  max-width: 1200px;
+}
+
+.upanel-health-hero {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 20px;
+  padding: 28px 32px;
+  margin-bottom: 24px;
+  background: linear-gradient(135deg, var(--up-brand-dark) 0%, var(--up-brand-deep) 50%, var(--up-brand) 100%);
+  border-radius: 20px;
+  color: #fff;
+  box-shadow: var(--up-shadow-lg);
+}
+
+.upanel-issues-banner {
+  padding: 16px 20px;
+  margin-bottom: 24px;
+  background: rgba(220, 38, 38, 0.08);
+  border: 1px solid rgba(220, 38, 38, 0.25);
+  border-radius: var(--up-radius);
+  color: var(--up-brand-dark);
+}
+
+.upanel-issues-banner ul {
+  margin: 8px 0 0 20px;
+  padding: 0;
+}
+
+.upanel-issues-banner li {
+  margin: 4px 0;
+}
+
+.upanel-issues-banner li.issue-critical {
+  color: var(--up-error);
+  font-weight: var(--up-font-weight-strong);
+}
+
+.upanel-issues-banner li.issue-warning {
+  color: var(--up-warning);
+}
+
+.upanel-stat-value-sm {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--up-brand-dark);
+  line-height: 1.2;
+}
+
+/* ── Resource Row Layout ── */
+.upanel-resource-row {
+  display: flex;
+  gap: 24px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.upanel-resource-main {
+  flex: 0 0 180px;
+}
+
+.upanel-resource-details {
+  flex: 1;
+  min-width: 280px;
+}
+
+/* ── Gauge Cards ── */
+.upanel-gauge-card {
+  background: var(--up-surface-2);
+  border: 1px solid var(--up-border);
+  border-radius: var(--up-radius);
+  padding: 20px;
+  text-align: center;
+  box-shadow: var(--up-shadow);
+}
+
+.upanel-gauge-card.is-warning {
+  border-color: var(--up-warning);
+  background: rgba(217, 119, 6, 0.05);
+}
+
+.upanel-gauge-card.is-critical {
+  border-color: var(--up-error);
+  background: rgba(220, 38, 38, 0.05);
+}
+
+.upanel-gauge {
+  position: relative;
+  width: 120px;
+  height: 120px;
+  margin: 0 auto 12px;
+}
+
+.upanel-gauge-svg {
+  width: 100%;
+  height: 100%;
+  transform: rotate(-90deg);
+}
+
+.upanel-gauge-bg {
+  fill: none;
+  stroke: var(--up-border);
+  stroke-width: 3;
+}
+
+.upanel-gauge-fill {
+  fill: none;
+  stroke: var(--up-brand);
+  stroke-width: 3;
+  stroke-linecap: round;
+  transition: stroke-dasharray 0.5s ease;
+}
+
+.upanel-gauge-card.is-warning .upanel-gauge-fill {
+  stroke: var(--up-warning);
+}
+
+.upanel-gauge-card.is-critical .upanel-gauge-fill {
+  stroke: var(--up-error);
+}
+
+.upanel-gauge-text {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 1.75rem;
+  font-weight: 800;
+  color: var(--up-brand-dark);
+}
+
+.upanel-gauge-card.is-warning .upanel-gauge-text {
+  color: var(--up-warning);
+}
+
+.upanel-gauge-card.is-critical .upanel-gauge-text {
+  color: var(--up-error);
+}
+
+.upanel-gauge-label {
+  font-size: var(--up-font-size);
+  font-weight: var(--up-font-weight-strong);
+  color: var(--up-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* ── Detail Grid ── */
+.upanel-detail-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.upanel-detail-item {
+  display: flex;
+  flex-direction: column;
+  padding: 12px 14px;
+  background: var(--up-surface-2);
+  border: 1px solid var(--up-border);
+  border-radius: var(--up-radius-sm);
+}
+
+.upanel-detail-item .label {
+  font-size: var(--up-font-size-sm);
+  color: var(--up-muted);
+  margin-bottom: 4px;
+}
+
+.upanel-detail-item .value {
+  font-size: var(--up-font-size);
+  font-weight: var(--up-font-weight-strong);
+  color: var(--up-brand-dark);
+}
+
+/* ── Per-CPU Mini Bars ── */
+.upanel-per-cpu {
+  background: var(--up-surface-2);
+  border: 1px solid var(--up-border);
+  border-radius: var(--up-radius-sm);
+  padding: 14px;
+}
+
+.upanel-per-cpu .label {
+  display: block;
+  font-size: var(--up-font-size-sm);
+  color: var(--up-muted);
+  margin-bottom: 10px;
+}
+
+.upanel-mini-bars {
+  display: flex;
+  gap: 6px;
+  align-items: flex-end;
+  height: 50px;
+}
+
+.upanel-mini-bar {
+  flex: 1;
+  max-width: 24px;
+  height: 100%;
+  background: var(--up-surface);
+  border-radius: 4px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+}
+
+.upanel-mini-bar-fill {
+  background: var(--up-brand);
+  border-radius: 4px 4px 0 0;
+  transition: height 0.3s ease;
+  min-height: 2px;
+}
+
+.upanel-mini-bar-fill.is-warning {
+  background: var(--up-warning);
+}
+
+.upanel-mini-bar-fill.is-critical {
+  background: var(--up-error);
+}
+
+/* ── Usage Bar ── */
+.upanel-usage-bar-container {
+  background: var(--up-surface-2);
+  border: 1px solid var(--up-border);
+  border-radius: var(--up-radius-sm);
+  padding: 14px;
+}
+
+.upanel-usage-bar {
+  height: 12px;
+  background: var(--up-surface);
+  border-radius: 6px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.upanel-usage-bar-fill {
+  height: 100%;
+  background: var(--up-brand);
+  border-radius: 6px;
+  transition: width 0.3s ease;
+}
+
+.upanel-usage-bar-fill.is-warning {
+  background: var(--up-warning);
+}
+
+.upanel-usage-bar-fill.is-critical {
+  background: var(--up-error);
+}
+
+.upanel-usage-bar-label {
+  font-size: var(--up-font-size-sm);
+  color: var(--up-muted);
+}
+
+/* ── Disk Cards ── */
+.upanel-disks-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.upanel-disk-card {
+  background: var(--up-surface-2);
+  border: 1px solid var(--up-border);
+  border-radius: var(--up-radius);
+  padding: 18px;
+  box-shadow: var(--up-shadow);
+}
+
+.upanel-disk-card.is-warning {
+  border-color: var(--up-warning);
+}
+
+.upanel-disk-card.is-critical {
+  border-color: var(--up-error);
+}
+
+.upanel-disk-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 4px;
+}
+
+.upanel-disk-mount {
+  font-weight: var(--up-font-weight-strong);
+  color: var(--up-brand-dark);
+  font-size: 1rem;
+}
+
+.upanel-disk-fstype {
+  font-size: var(--up-font-size-sm);
+  color: var(--up-muted);
+  background: var(--up-surface);
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.upanel-disk-device {
+  font-size: var(--up-font-size-sm);
+  color: var(--up-muted);
+  font-family: ui-monospace, monospace;
+  margin-bottom: 12px;
+}
+
+.upanel-disk-bar {
+  height: 8px;
+  background: var(--up-surface);
+  border-radius: 4px;
+  overflow: hidden;
+  margin-bottom: 10px;
+}
+
+.upanel-disk-bar-fill {
+  height: 100%;
+  background: var(--up-brand);
+  border-radius: 4px;
+  transition: width 0.3s ease;
+}
+
+.upanel-disk-card.is-warning .upanel-disk-bar-fill {
+  background: var(--up-warning);
+}
+
+.upanel-disk-card.is-critical .upanel-disk-bar-fill {
+  background: var(--up-error);
+}
+
+.upanel-disk-stats {
+  display: flex;
+  justify-content: space-between;
+  font-size: var(--up-font-size);
+  color: var(--up-text);
+}
+
+.upanel-disk-pct {
+  font-weight: var(--up-font-weight-strong);
+}
+
+.upanel-disk-card.is-warning .upanel-disk-pct {
+  color: var(--up-warning);
+}
+
+.upanel-disk-card.is-critical .upanel-disk-pct {
+  color: var(--up-error);
+}
+
+.upanel-disk-free {
+  font-size: var(--up-font-size-sm);
+  color: var(--up-muted);
+  margin-top: 6px;
+}
+
+/* ── Process Table ── */
+.upanel-proc-table {
+  font-size: var(--up-font-size-sm);
+}
+
+.upanel-proc-table th,
+.upanel-proc-table td {
+  padding: 8px 12px !important;
+}
+
+.text-warning {
+  color: var(--up-warning) !important;
+  font-weight: var(--up-font-weight-strong);
+}
+
+/* ── Timestamp ── */
+.upanel-timestamp {
+  margin-top: 24px;
+  font-size: var(--up-font-size-sm);
+  color: var(--up-muted);
+  text-align: center;
+}
+
+/* ── Server Health Responsive ── */
+@media (max-width: 768px) {
+  .upanel-resource-row {
+    flex-direction: column;
+  }
+
+  .upanel-resource-main {
+    flex: 1;
+    width: 100%;
+    display: flex;
+    justify-content: center;
+  }
+
+  .upanel-gauge-card {
+    max-width: 200px;
+  }
+
+  .upanel-disks-grid {
+    grid-template-columns: 1fr;
+  }
+}
