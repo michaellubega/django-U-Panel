@@ -3330,6 +3330,34 @@ class AttendanceRepository extends ChangeNotifier {
     _notifyStoreUpdated(refreshRecordWatch: false);
   }
 
+  /// Fetches missing student names for consolidated/live rolls (registration docs + profiles).
+  Future<void> ensureRollNamesResolvedForList(String listId) async {
+    final lid = listId.trim();
+    if (lid.isEmpty) return;
+    if (!AppConnectivity.instance.hasNetworkInterface) return;
+
+    final rollIds = AttendanceStore.rollStudentIdsForList(lid);
+    if (rollIds.isEmpty) return;
+
+    final needsLookup = rollIds.any((id) {
+      final student =
+          AttendanceStore.resolveStudentForRoll(id, listId: lid);
+      final name = student?.name.trim() ?? '';
+      return name.isEmpty || name == 'Unknown';
+    });
+    if (!needsLookup) return;
+
+    final listSessions =
+        AttendanceStore.sessions.where((s) => s.listId == lid).toList();
+    final listSignIns =
+        AttendanceStore.signIns.where((si) => si.listId == lid).toList();
+    await _refreshRosterNamesForList(
+      listId: lid,
+      listSessions: listSessions,
+      listSignIns: listSignIns,
+    );
+  }
+
   /// Chunked [whereIn] queries with per-value fallback when rules reject a chunk.
   static Future<List<ApiDocumentSnapshot>>
       _queryDocsWhereFieldIn({
