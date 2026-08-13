@@ -2841,7 +2841,12 @@ class _SessionCheckInsScreenState extends State<SessionCheckInsScreen>
           (s) => s.listId == widget.list.id && s.isActive,
         );
         if (!hasLive) return;
-        unawaited(_reloadListDetail(force: true));
+        unawaited(() async {
+          await AttendanceRepository.instance
+              .syncLiveSessionRoll(widget.list.id);
+          if (!mounted) return;
+          await _reloadRollPendingContext();
+        }());
       },
     );
   }

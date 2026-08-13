@@ -542,6 +542,30 @@ class AttendanceStore {
 
   static void clearSessionRollStats() => _sessionRollStatsById.clear();
 
+  static final Map<String, Set<String>> _serverPendingCheckInStudentIdsBySession =
+      {};
+
+  /// Students with a pending server check-in attempt for [sessionId].
+  static Set<String> serverPendingCheckInStudentIds(String sessionId) =>
+      _serverPendingCheckInStudentIdsBySession[sessionId.trim()] ??
+      const {};
+
+  static void setServerPendingCheckInStudentIds(
+    String sessionId,
+    Set<String> studentIds,
+  ) {
+    final id = sessionId.trim();
+    if (id.isEmpty) return;
+    if (studentIds.isEmpty) {
+      _serverPendingCheckInStudentIdsBySession.remove(id);
+    } else {
+      _serverPendingCheckInStudentIdsBySession[id] = studentIds;
+    }
+  }
+
+  static void clearServerPendingCheckIns() =>
+      _serverPendingCheckInStudentIdsBySession.clear();
+
   static final Map<String, StudentRollStatsSnapshot> _studentRollStatsById = {};
 
   static StudentRollStatsSnapshot? studentRollStats(String studentId) =>
