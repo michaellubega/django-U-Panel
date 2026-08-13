@@ -236,7 +236,7 @@ class AttendanceRepository extends ChangeNotifier {
 
   final Map<String, bool> _sessionPublishedOnServerCache = {};
   DateTime? _sessionPublishedCacheAt;
-  static const Duration _sessionPublishedCacheTtl = Duration(seconds: 3);
+  static const Duration _sessionPublishedCacheTtl = Duration(seconds: 8);
   Set<String>? _awaitingUploadSessionIdsCache;
   DateTime? _awaitingUploadCacheAt;
   final Set<String> _listsPublishedOnServer = <String>{};
@@ -1641,17 +1641,13 @@ class AttendanceRepository extends ChangeNotifier {
     if (awaitingUpload.contains(id)) return true;
 
     final localSession = AttendanceStore.sessionById(id);
-    if (localSession == null) {
-      if (!AppConnectivity.instance.hasNetworkInterface) return true;
-      return !await isLecturerSessionPublishedOnServer(id);
+    if (localSession != null) {
+      // Session is already in the local store — use the direct check-in path
+      // instead of a slower await_{code} claim while lecturer publish finishes.
+      return awaitingUpload.contains(id);
     }
 
-    // Offline with a cached session that is not waiting on lecturer upload:
-    // queue a direct check-in attempt, not a session-code claim.
-    if (!AppConnectivity.instance.hasNetworkInterface) {
-      return false;
-    }
-
+    if (!AppConnectivity.instance.hasNetworkInterface) return true;
     return !await isLecturerSessionPublishedOnServer(id);
   }
 
@@ -7289,7 +7285,8 @@ class AttendanceRepository extends ChangeNotifier {
       final doc = await _firestore
           .collection(ApiCollections.attendanceRecords)
           .doc(recordId)
-          .get();
+          .get()
+          .timeout(_sessionPublishFastTimeout);
       if (!doc.exists) return false;
       final data = doc.data();
       if (data == null) return false;
@@ -7881,8 +7878,8 @@ class AttendanceRepository extends ChangeNotifier {
     final rtdConf = await CheckInRtdConfirmationWatch.awaitTerminal(
       sessionId: rtdKey,
       studentId: studentId,
-      timeout: const Duration(milliseconds: 900),
-      pollInterval: const Duration(milliseconds: 120),
+      timeout: const Duration(milliseconds: 1200),
+      pollInterval: const Duration(milliseconds: 80),
     );
     if (rtdConf?.isAccepted == true) {
       return _applyAcceptedCheckInConfirmation(
@@ -8545,33 +8542,34 @@ class AttendanceRepository extends ChangeNotifier {
         return StudentOfflineCheckInOutcome.deviceBlocked;
       }
     }
-    if (await _remoteRecordIsPresent(record.id)) {
-      await _ensureCheckInListedInQueue(
-        record: record,
-        listIdOverride: listIdOverride,
-        course: _resolvePresentCourseForSession(
-          record.sessionId,
-          record.studentId,
-          record.course,
-        ),
-      );
-      return StudentOfflineCheckInOutcome.duplicate;
-    }
     final existing = AttendanceStore.attendanceRecordForSessionStudent(
       record.sessionId,
       record.studentId,
     );
-    if (existing != null) {
-      if (existing.present && existing.verified) {
+    if (existing != null && existing.present && existing.verified) {
+      await _ensureCheckInListedInQueue(
+        record: existing,
+        listIdOverride: listIdOverride,
+        course: _resolvePresentCourseForSession(
+          record.sessionId,
+          record.studentId,
+          existing.course,
+        ),
+        status: PendingCheckInQueueStatus.approved,
+      );
+      return StudentOfflineCheckInOutcome.duplicate;
+    }
+    if ((existing == null || !existing.present) &&
+        AppConnectivity.instance.hasNetworkInterface) {
+      if (await _remoteRecordIsPresent(record.id)) {
         await _ensureCheckInListedInQueue(
-          record: existing,
+          record: record,
           listIdOverride: listIdOverride,
           course: _resolvePresentCourseForSession(
             record.sessionId,
             record.studentId,
-            existing.course,
+            record.course,
           ),
-          status: PendingCheckInQueueStatus.approved,
         );
         return StudentOfflineCheckInOutcome.duplicate;
       }
