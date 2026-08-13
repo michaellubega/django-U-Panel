@@ -76,6 +76,25 @@ List<AttendanceList> attendanceListsForCurrentStaff() {
   );
 }
 
+/// Resolves optional scoped list snapshots against the live in-memory store.
+///
+/// Filtered hubs (e.g. present/absent today) pass a snapshot when navigating
+/// deeper; after delete the snapshot must not keep showing removed lists.
+List<AttendanceList> attendanceListsFromOptionalScope(
+  Iterable<AttendanceList>? scopedLists,
+) {
+  if (scopedLists == null) {
+    return attendanceListsForCurrentStaff();
+  }
+  final scopedIds = scopedLists.map((l) => l.id.trim()).where((id) => id.isNotEmpty).toSet();
+  if (scopedIds.isEmpty) return const [];
+
+  return filterListsForHierarchy(
+    AttendanceStore.lists.where((l) => scopedIds.contains(l.id)),
+  ).toList()
+    ..sort(compareAttendanceListsNewestFirst);
+}
+
 /// Weekday (1 = Mon … 7 = Sun) → lists on that class day.
 Map<int, List<AttendanceList>> groupListsByWeekday(Iterable<AttendanceList> lists) {
   final map = <int, List<AttendanceList>>{};

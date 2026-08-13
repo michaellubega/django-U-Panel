@@ -240,6 +240,30 @@ class AttendanceRepository extends ChangeNotifier {
   Set<String>? _awaitingUploadSessionIdsCache;
   DateTime? _awaitingUploadCacheAt;
   final Set<String> _listsPublishedOnServer = <String>{};
+  final Set<String> _locallyDeletedListIds = <String>{};
+
+  bool _isLocallyDeletedList(String listId) =>
+      _locallyDeletedListIds.contains(listId.trim());
+
+  List<AttendanceList> _withoutLocallyDeletedLists(
+    Iterable<AttendanceList> lists,
+  ) =>
+      lists.where((l) => !_isLocallyDeletedList(l.id)).toList();
+
+  void _markListLocallyDeleted(String listId) {
+    final trimmed = listId.trim();
+    if (trimmed.isEmpty) return;
+    _locallyDeletedListIds.add(trimmed);
+    _listsPublishedOnServer.remove(trimmed);
+  }
+
+  Future<void> _clearLocallyDeletedListIfGoneOnServer(String listId) async {
+    final trimmed = listId.trim();
+    if (trimmed.isEmpty || !_locallyDeletedListIds.contains(trimmed)) return;
+    if (await _listDocConfirmedMissingOnServer(trimmed)) {
+      _locallyDeletedListIds.remove(trimmed);
+    }
+  }
 
   /// Live listeners on in-flight check-in attempts (accepted → verify locally).
   final Map<String, StreamSubscription<ApiDocumentSnapshot>>
@@ -1101,6 +1125,7 @@ class AttendanceRepository extends ChangeNotifier {
       final id = e.listId.trim();
       if (id.isNotEmpty) ids.add(id);
     }
+    ids.removeWhere(_isLocallyDeletedList);
     return ids;
   }
 
@@ -1145,6 +1170,7 @@ class AttendanceRepository extends ChangeNotifier {
     _batchListDetailInFlight = null;
     _remoteSyncInFlight = null;
     _staffFullBootstrapDone = false;
+    _locallyDeletedListIds.clear();
     _notifyStoreUpdated(immediate: true);
   }
 
@@ -2267,6 +2293,7 @@ class AttendanceRepository extends ChangeNotifier {
     bool rosterAlreadyAugmented = false,
   }) async {
     if (!AuthRepository.instance.isLoggedIn) return;
+    final activeRemoteLists = _withoutLocallyDeletedLists(remoteLists);
 
     final pendingCreates = await PendingSessionCreateQueue.loadAll();
     final pendingListCreates = await PendingListCreateQueue.loadAll();
@@ -2281,7 +2308,7 @@ class AttendanceRepository extends ChangeNotifier {
     var priorSignIns = List<SignInRecord>.from(AttendanceStore.signIns);
 
     final authoritativeListIds = <String>{
-      for (final l in remoteLists) l.id,
+      for (final l in activeRemoteLists) l.id,
       for (final e in pendingListCreates) e.list.id,
       for (final s in remoteSessions) s.listId,
       for (final s in remoteSignIns) s.listId,
@@ -2293,7 +2320,7 @@ class AttendanceRepository extends ChangeNotifier {
         if (e.listId.trim().isNotEmpty) e.listId.trim(),
     };
     final protectedListIds = <String>{
-      for (final l in remoteLists) l.id,
+      for (final l in activeRemoteLists) l.id,
       for (final e in pendingListCreates) e.list.id,
       for (final e in pendingCheckIns)
         if (e.listId.trim().isNotEmpty) e.listId.trim(),
@@ -2362,7 +2389,7 @@ class AttendanceRepository extends ChangeNotifier {
     priorSessions = List<AttendanceSession>.from(AttendanceStore.sessions);
     priorLists = List<AttendanceList>.from(AttendanceStore.lists);
 
-    final listsById = {for (final l in remoteLists) l.id: l};
+    final listsById = {for (final l in activeRemoteLists) l.id: l};
     for (final e in pendingListCreates) {
       listsById[e.list.id] = e.list;
     }
@@ -3409,6 +3436,7 @@ class AttendanceRepository extends ChangeNotifier {
 
   void _mergeLocallyPublishedListsInto(Map<String, AttendanceList> listsById) {
     for (final id in _listsPublishedOnServer) {
+      if (_isLocallyDeletedList(id)) continue;
       final local = AttendanceStore.listById(id);
       if (local != null) {
         listsById[id] = local;
@@ -3421,10 +3449,11 @@ class AttendanceRepository extends ChangeNotifier {
     // Wrong-scope or in-flight list refresh can return empty before role hydration;
     // keep visible lists until a non-empty server response arrives.
     if (remoteLists.isEmpty && AttendanceStore.lists.isNotEmpty) return;
-    for (final remote in remoteLists) {
+    final filteredRemote = _withoutLocallyDeletedLists(remoteLists);
+    for (final remote in filteredRemote) {
       _listsPublishedOnServer.remove(remote.id);
     }
-    final listsById = {for (final l in remoteLists) l.id: l};
+    final listsById = {for (final l in filteredRemote) l.id: l};
     for (final e in await PendingListCreateQueue.loadAll()) {
       listsById[e.list.id] = e.list;
     }
@@ -9109,19 +9138,31 @@ class AttendanceRepository extends ChangeNotifier {
   Future<void> removeList(String id) async {
     final trimmed = id.trim();
     if (trimmed.isEmpty) return;
+    _markListLocallyDeleted(trimmed);
     await _purgeListLocally(trimmed);
+    Object? deleteError;
     try {
       await _cascadeDeleteListDocsClient(trimmed);
-    } catch (_) {}
+    } catch (e) {
+      deleteError = e;
+    }
     try {
       await _firestore
           .collection(ApiCollections.attendanceLists)
           .doc(trimmed)
           .delete();
-    } catch (_) {}
+      deleteError = null;
+    } catch (e) {
+      deleteError ??= e;
+    }
+    unawaited(_clearLocallyDeletedListIfGoneOnServer(trimmed));
     unawaited(PushController.instance.syncListTopicsFromStore());
     unawaited(_persistScopedLocalSnapshot());
     _notifyStoreUpdated();
+    if (deleteError != null && !await _listDocConfirmedMissingOnServer(trimmed)) {
+      throw deleteError;
+    }
+    _locallyDeletedListIds.remove(trimmed);
   }
 
   Future<String?> _fullNameFromStudentRegistration(String reg) async {
