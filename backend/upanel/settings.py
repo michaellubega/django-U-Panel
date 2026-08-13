@@ -223,6 +223,12 @@ CELERY_TASK_SERIALIZER = "json"
 CELERY_RESULT_SERIALIZER = "json"
 CELERY_TIMEZONE = TIME_ZONE
 CELERY_BEAT_SCHEDULER = "django_celery_beat.schedulers:DatabaseScheduler"
+CELERY_BEAT_SCHEDULE = {
+    "publish-due-scheduled-notices": {
+        "task": "notices.publish_due_scheduled",
+        "schedule": 60.0,
+    },
+}
 
 # --- OneSignal ---
 ONESIGNAL_APP_ID = os.environ.get("ONESIGNAL_APP_ID", "").strip()
