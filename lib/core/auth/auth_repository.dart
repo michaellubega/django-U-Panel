@@ -23,6 +23,7 @@ import 'student_registration_number.dart';
 import 'kiu_admin_job_title.dart';
 import 'login_email.dart';
 import 'user_role.dart';
+import 'attendance_role_routing.dart';
 import '../connectivity/app_connectivity.dart';
 import '../errors/user_facing_errors.dart';
 import '../storage/attendance_local_queues.dart';
@@ -696,6 +697,33 @@ class AuthRepository extends ChangeNotifier {
       !isStudentAuthIdentity &&
       ((_lecturerCheckDone && _isLecturer && !_isAdmin) ||
           (_adminCheckDone && _isKiuAdmin));
+
+  /// Staff attendance UI (lists / sessions) — aligned with [resolvedRole], not only
+  /// [isLecturer] after API reads (avoids student sign-in UI for lecturer accounts).
+  bool get showsStaffAttendanceUi => AttendanceRoleRouting.showsStaffAttendanceUi(
+        isLoggedIn: isLoggedIn,
+        roleCheckDone: roleCheckDone,
+        isSyntheticStaffAuthIdentity: isSyntheticStaffAuthIdentity,
+        isStaffAuthIdentity: isStaffAuthIdentity,
+        isLikelyStudent: isLikelyStudent,
+        isStudentAuthIdentity: isStudentAuthIdentity,
+        resolvedRole: resolvedRole,
+      );
+
+  /// Lecturer-scoped attendance loads (not QA/admin full collection).
+  bool get scopesAttendanceToSignedInUser =>
+      AttendanceRoleRouting.scopesAttendanceToSignedInUser(
+        showsStaffAttendanceUi: showsStaffAttendanceUi,
+        adminCheckDone: _adminCheckDone,
+        isAdmin: _isAdmin,
+        isKiuAdmin: _isKiuAdmin,
+        isLecturer: _isLecturer,
+        roleCheckDone: roleCheckDone,
+        isSyntheticStaffAuthIdentity: isSyntheticStaffAuthIdentity,
+        isStaffAuthIdentity: isStaffAuthIdentity,
+        isLikelyStudent: isLikelyStudent,
+        resolvedRole: resolvedRole,
+      );
 
   /// Student mailboxes must never retain staff role flags (device cache or API).
   void _stripStaffRolesForStudentMailbox() {
@@ -2105,6 +2133,9 @@ class AuthRepository extends ChangeNotifier {
       _lecturerCheckDone = true;
       return;
     }
+    final hadLecturerFlag = _isLecturer;
+    final staffMailbox =
+        isStaffAuthIdentity || isSyntheticStaffAuthIdentity;
     try {
       final snap = await apiStore()
           .collection(ApiCollections.lecturers)
@@ -2135,8 +2166,15 @@ class AuthRepository extends ChangeNotifier {
           debugPrint('AuthRepository._refreshIsLecturer: $e');
           debugPrint('$st');
         }
-        _isLecturer = false;
-        _cachedStaffNumber = null;
+        if (hadLecturerFlag || staffMailbox) {
+          if (staffMailbox) _isLecturer = true;
+          _ensureCachedStaffNumberFromAuthEmail(
+            ApiAuth.instance.currentUser?.email ?? _cachedEmail,
+          );
+        } else {
+          _isLecturer = false;
+          _cachedStaffNumber = null;
+        }
       }
     }
     _stripStaffRolesForStudentMailbox();

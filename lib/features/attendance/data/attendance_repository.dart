@@ -154,14 +154,9 @@ class AttendanceRepository extends ChangeNotifier {
   /// When the signed-in user is a lecturer (not admin), loads are scoped to their lists.
   static String? currentLecturerLoadScopeUid() {
     final a = AuthRepository.instance;
-    if (!a.isLoggedIn || !a.adminCheckDone || !a.lecturerCheckDone) return null;
-    if (a.isLecturer && !a.isAdmin) {
-      return a.currentUserId;
-    }
-    if (a.isKiuAdmin) {
-      return a.currentUserId;
-    }
-    return null;
+    if (!a.isLoggedIn) return null;
+    if (!a.scopesAttendanceToSignedInUser) return null;
+    return a.currentUserId?.trim();
   }
 
   /// True when realtime attendance listeners should use the student path.

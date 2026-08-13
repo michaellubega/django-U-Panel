@@ -65,24 +65,15 @@ List<AttendanceList> attendanceListsForCurrentStaff() {
   final auth = AuthRepository.instance;
   final sorted = List<AttendanceList>.from(AttendanceStore.lists)
     ..sort(compareAttendanceListsNewestFirst);
-  if (auth.isKiuAdmin) {
-    final uid = auth.currentUserId?.trim();
-    if (uid == null || uid.isEmpty) return [];
-    return filterListsForHierarchy(
-      sorted.where((l) => attendanceListAccessibleToLecturer(l, uid)),
-    );
-  }
+  if (!auth.showsStaffAttendanceUi) return [];
   if (auth.adminCheckDone && auth.isAdmin) {
     return filterListsForHierarchy(sorted);
   }
-  if (auth.lecturerCheckDone && auth.isLecturer && !auth.isAdmin) {
-    final uid = auth.currentUserId?.trim();
-    if (uid == null || uid.isEmpty) return [];
-    return filterListsForHierarchy(
-      sorted.where((l) => attendanceListAccessibleToLecturer(l, uid)),
-    );
-  }
-  return [];
+  final uid = auth.currentUserId?.trim();
+  if (uid == null || uid.isEmpty) return [];
+  return filterListsForHierarchy(
+    sorted.where((l) => attendanceListAccessibleToLecturer(l, uid)),
+  );
 }
 
 /// Weekday (1 = Mon … 7 = Sun) → lists on that class day.
