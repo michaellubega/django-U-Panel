@@ -5,8 +5,7 @@ import 'check_in_outcome.dart';
 /// Shown when this phone already checked in (or queued) for another student.
 
 const String deviceAlreadyUsedUserMessage =
-
-    'Device already signed in for another student.';
+    'Your device already signed in for another student.';
 
 
 
@@ -35,11 +34,9 @@ CheckInRejectionCategory categorizeCheckInRejectionReason(String? reason) {
   if (r.isEmpty) return CheckInRejectionCategory.none;
 
   if (r.contains('device already used') ||
-
       r.contains('device already submitted') ||
-
+      r.contains('device already signed in') ||
       r.contains('another student already used') ||
-
       (r.contains('device') && r.contains('another student'))) {
 
     return CheckInRejectionCategory.deviceAlreadyUsed;
