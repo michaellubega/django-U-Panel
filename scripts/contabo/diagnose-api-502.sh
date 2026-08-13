@@ -18,6 +18,33 @@ for path in /api/health/ /api/client-config/ /app/; do
 done
 
 echo ""
+echo "==> Direct web container health (bypass nginx)"
+WEB_CID="$("${COMPOSE[@]}" ps -q web 2>/dev/null | head -1)"
+if [[ -n "$WEB_CID" ]]; then
+  docker exec "$WEB_CID" python - <<'PY' 2>/dev/null || echo "  (python probe failed)"
+import urllib.request
+try:
+    with urllib.request.urlopen("http://127.0.0.1:8000/api/health/", timeout=5) as r:
+        print(f"  web:8000/api/health/ -> HTTP {r.status}")
+except Exception as e:
+    print(f"  web:8000/api/health/ -> ERROR {e}")
+PY
+else
+  echo "  (no web container id)"
+fi
+
+echo ""
+echo "==> nginx -> web connectivity"
+NGINX_CID="$("${COMPOSE[@]}" ps -q nginx 2>/dev/null | head -1)"
+if [[ -n "$NGINX_CID" ]]; then
+  docker exec "$NGINX_CID" wget -q -S -O /dev/null http://web:8000/api/health/ 2>&1 \
+    | awk '/HTTP\// {print "  " $0}' | head -1 \
+    || echo "  nginx cannot reach web:8000 (stale upstream IP — recreate nginx)"
+else
+  echo "  (no nginx container id)"
+fi
+
+echo ""
 echo "==> web container inspect (state / exit code)"
 "${COMPOSE[@]}" ps web
 docker inspect --format '{{.State.Status}} exit={{.State.ExitCode}} error={{.State.Error}}' \
