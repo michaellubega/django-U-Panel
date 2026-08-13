@@ -1,0 +1,357 @@
+{% extends "admin/base_site.html" %}
+{% load i18n static humanize %}
+
+{% block bodyclass %}{{ block.super }} server-health{% endblock %}
+{% block nav-sidebar %}{% endblock %}
+
+{% block content %}
+<div id="content-main" class="upanel-server-health">
+  <header class="upanel-health-hero">
+    <div class="upanel-hero-copy">
+      <p class="upanel-hero-eyebrow">System monitoring</p>
+      <h1 class="upanel-hero-title">Server Health</h1>
+      <p class="upanel-hero-sub">Real-time resource monitoring and system diagnostics.</p>
+    </div>
+    <div class="upanel-hero-status">
+      <div class="upanel-status-pill {% if status == 'healthy' %}is-ok{% elif status == 'warning' %}is-warn{% else %}is-alert{% endif %}">
+        <span class="dot"></span>
+        {% if status == 'healthy' %}All systems healthy
+        {% elif status == 'warning' %}Warning
+        {% else %}Critical{% endif %}
+      </div>
+      <div class="upanel-status-pill">
+        <span class="dot"></span> {{ health.system.hostname }}
+      </div>
+      <div class="upanel-status-pill">
+        <span class="dot"></span> Uptime: {{ health.system.uptime_human }}
+      </div>
+    </div>
+  </header>
+
+  {% if issues %}
+  <div class="upanel-issues-banner">
+    <strong>Issues detected:</strong>
+    <ul>
+      {% for issue in issues %}
+      <li class="issue-{{ issue.severity }}">{{ issue.message }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  <div class="upanel-section">
+    <h2 class="upanel-section-title">System Overview</h2>
+    <div class="upanel-stat-grid">
+      <div class="upanel-stat-card">
+        <div class="upanel-stat-icon">🖥️</div>
+        <div class="upanel-stat-label">Platform</div>
+        <div class="upanel-stat-value-sm">{{ health.system.platform }}</div>
+        <div class="upanel-stat-meta">{{ health.system.platform_release }}</div>
+      </div>
+      <div class="upanel-stat-card">
+        <div class="upanel-stat-icon">⚙️</div>
+        <div class="upanel-stat-label">Architecture</div>
+        <div class="upanel-stat-value-sm">{{ health.system.architecture }}</div>
+        <div class="upanel-stat-meta">{{ health.system.processor|truncatechars:20 }}</div>
+      </div>
+      <div class="upanel-stat-card">
+        <div class="upanel-stat-icon">🐍</div>
+        <div class="upanel-stat-label">Python</div>
+        <div class="upanel-stat-value-sm">{{ health.system.python_version }}</div>
+      </div>
+      <div class="upanel-stat-card">
+        <div class="upanel-stat-icon">⏱️</div>
+        <div class="upanel-stat-label">Boot Time</div>
+        <div class="upanel-stat-value-sm">{{ health.system.uptime_human }}</div>
+        <div class="upanel-stat-meta">Since {{ health.system.boot_time_human }}</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="upanel-section">
+    <h2 class="upanel-section-title">CPU</h2>
+    <div class="upanel-resource-row">
+      <div class="upanel-resource-main">
+        <div class="upanel-gauge-card {% if health.cpu.percent > 90 %}is-critical{% elif health.cpu.percent > 75 %}is-warning{% endif %}">
+          <div class="upanel-gauge">
+            <svg viewBox="0 0 36 36" class="upanel-gauge-svg">
+              <path class="upanel-gauge-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
+              <path class="upanel-gauge-fill" stroke-dasharray="{{ health.cpu.percent }}, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
+            </svg>
+            <div class="upanel-gauge-text">{{ health.cpu.percent|floatformat:0 }}%</div>
+          </div>
+          <div class="upanel-gauge-label">CPU Usage</div>
+        </div>
+      </div>
+      <div class="upanel-resource-details">
+        <div class="upanel-detail-grid">
+          <div class="upanel-detail-item">
+            <span class="label">Logical cores</span>
+            <span class="value">{{ health.cpu.count_logical }}</span>
+          </div>
+          <div class="upanel-detail-item">
+            <span class="label">Physical cores</span>
+            <span class="value">{{ health.cpu.count_physical|default:"N/A" }}</span>
+          </div>
+          {% if health.cpu.frequency_current %}
+          <div class="upanel-detail-item">
+            <span class="label">Frequency</span>
+            <span class="value">{{ health.cpu.frequency_current }} MHz</span>
+          </div>
+          {% endif %}
+          {% if health.cpu.load_avg_1m is not None %}
+          <div class="upanel-detail-item">
+            <span class="label">Load avg (1m)</span>
+            <span class="value">{{ health.cpu.load_avg_1m }}</span>
+          </div>
+          <div class="upanel-detail-item">
+            <span class="label">Load avg (5m)</span>
+            <span class="value">{{ health.cpu.load_avg_5m }}</span>
+          </div>
+          <div class="upanel-detail-item">
+            <span class="label">Load avg (15m)</span>
+            <span class="value">{{ health.cpu.load_avg_15m }}</span>
+          </div>
+          {% endif %}
+        </div>
+        {% if health.cpu.per_cpu_percent %}
+        <div class="upanel-per-cpu">
+          <span class="label">Per-core usage:</span>
+          <div class="upanel-mini-bars">
+            {% for pct in health.cpu.per_cpu_percent %}
+            <div class="upanel-mini-bar" title="Core {{ forloop.counter0 }}: {{ pct }}%">
+              <div class="upanel-mini-bar-fill {% if pct > 90 %}is-critical{% elif pct > 75 %}is-warning{% endif %}" style="height: {{ pct }}%"></div>
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <div class="upanel-section">
+    <h2 class="upanel-section-title">Memory</h2>
+    <div class="upanel-resource-row">
+      <div class="upanel-resource-main">
+        <div class="upanel-gauge-card {% if health.memory.percent > 90 %}is-critical{% elif health.memory.percent > 80 %}is-warning{% endif %}">
+          <div class="upanel-gauge">
+            <svg viewBox="0 0 36 36" class="upanel-gauge-svg">
+              <path class="upanel-gauge-bg" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
+              <path class="upanel-gauge-fill" stroke-dasharray="{{ health.memory.percent }}, 100" d="M18 2.0845 a 15.9155 15.9155 0 0 1 0 31.831 a 15.9155 15.9155 0 0 1 0 -31.831"/>
+            </svg>
+            <div class="upanel-gauge-text">{{ health.memory.percent|floatformat:0 }}%</div>
+          </div>
+          <div class="upanel-gauge-label">RAM Usage</div>
+        </div>
+      </div>
+      <div class="upanel-resource-details">
+        <div class="upanel-detail-grid">
+          <div class="upanel-detail-item">
+            <span class="label">Total</span>
+            <span class="value">{{ health.memory.total_human }}</span>
+          </div>
+          <div class="upanel-detail-item">
+            <span class="label">Used</span>
+            <span class="value">{{ health.memory.used_human }}</span>
+          </div>
+          <div class="upanel-detail-item">
+            <span class="label">Available</span>
+            <span class="value">{{ health.memory.available_human }}</span>
+          </div>
+          <div class="upanel-detail-item">
+            <span class="label">Swap total</span>
+            <span class="value">{{ health.memory.swap_total_human }}</span>
+          </div>
+          <div class="upanel-detail-item">
+            <span class="label">Swap used</span>
+            <span class="value">{{ health.memory.swap_used_human }}</span>
+          </div>
+          <div class="upanel-detail-item">
+            <span class="label">Swap %</span>
+            <span class="value">{{ health.memory.swap_percent|floatformat:1 }}%</span>
+          </div>
+        </div>
+        <div class="upanel-usage-bar-container">
+          <div class="upanel-usage-bar">
+            <div class="upanel-usage-bar-fill {% if health.memory.percent > 90 %}is-critical{% elif health.memory.percent > 80 %}is-warning{% endif %}" style="width: {{ health.memory.percent }}%"></div>
+          </div>
+          <span class="upanel-usage-bar-label">{{ health.memory.used_human }} / {{ health.memory.total_human }}</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="upanel-section">
+    <h2 class="upanel-section-title">Disk Storage</h2>
+    <div class="upanel-disks-grid">
+      {% for disk in health.disks %}
+      <div class="upanel-disk-card {% if disk.percent > 90 %}is-critical{% elif disk.percent > 80 %}is-warning{% endif %}">
+        <div class="upanel-disk-header">
+          <span class="upanel-disk-mount">{{ disk.mountpoint }}</span>
+          <span class="upanel-disk-fstype">{{ disk.fstype }}</span>
+        </div>
+        <div class="upanel-disk-device">{{ disk.device }}</div>
+        <div class="upanel-disk-bar">
+          <div class="upanel-disk-bar-fill" style="width: {{ disk.percent }}%"></div>
+        </div>
+        <div class="upanel-disk-stats">
+          <span>{{ disk.used_human }} / {{ disk.total_human }}</span>
+          <span class="upanel-disk-pct">{{ disk.percent|floatformat:1 }}%</span>
+        </div>
+        <div class="upanel-disk-free">{{ disk.free_human }} free</div>
+      </div>
+      {% empty %}
+      <p class="upanel-empty">No disk partitions found.</p>
+      {% endfor %}
+    </div>
+  </div>
+
+  {% if health.disk_io %}
+  <div class="upanel-section">
+    <h2 class="upanel-section-title">Disk I/O (since boot)</h2>
+    <div class="upanel-stat-grid upanel-stat-grid-compact">
+      <div class="upanel-stat-card">
+        <div class="upanel-stat-label">Read</div>
+        <div class="upanel-stat-value-sm">{{ health.disk_io.read_bytes_human }}</div>
+        <div class="upanel-stat-meta">{{ health.disk_io.read_count|intcomma }} ops</div>
+      </div>
+      <div class="upanel-stat-card">
+        <div class="upanel-stat-label">Written</div>
+        <div class="upanel-stat-value-sm">{{ health.disk_io.write_bytes_human }}</div>
+        <div class="upanel-stat-meta">{{ health.disk_io.write_count|intcomma }} ops</div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="upanel-section">
+    <h2 class="upanel-section-title">Network</h2>
+    <div class="upanel-stat-grid">
+      <div class="upanel-stat-card">
+        <div class="upanel-stat-icon">⬆️</div>
+        <div class="upanel-stat-label">Sent</div>
+        <div class="upanel-stat-value-sm">{{ health.network.bytes_sent_human }}</div>
+        <div class="upanel-stat-meta">{{ health.network.packets_sent|intcomma }} packets</div>
+      </div>
+      <div class="upanel-stat-card">
+        <div class="upanel-stat-icon">⬇️</div>
+        <div class="upanel-stat-label">Received</div>
+        <div class="upanel-stat-value-sm">{{ health.network.bytes_recv_human }}</div>
+        <div class="upanel-stat-meta">{{ health.network.packets_recv|intcomma }} packets</div>
+      </div>
+      <div class="upanel-stat-card {% if health.network.errors_in > 0 or health.network.errors_out > 0 %}is-warning{% endif %}">
+        <div class="upanel-stat-icon">⚠️</div>
+        <div class="upanel-stat-label">Errors</div>
+        <div class="upanel-stat-value-sm">{{ health.network.errors_in|add:health.network.errors_out }}</div>
+        <div class="upanel-stat-meta">In: {{ health.network.errors_in }} / Out: {{ health.network.errors_out }}</div>
+      </div>
+    </div>
+
+    {% if health.network.interfaces %}
+    <div class="upanel-panel" style="margin-top: 16px;">
+      <div class="upanel-panel-header">Network interfaces</div>
+      <div class="upanel-panel-body">
+        <table class="upanel-recent-table">
+          <thead>
+            <tr>
+              <th>Interface</th>
+              <th>Type</th>
+              <th>Address</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for iface in health.network.interfaces %}
+            {% for addr in iface.addresses %}
+            <tr>
+              <td>{{ iface.name }}</td>
+              <td><span class="upanel-badge">{{ addr.type }}</span></td>
+              <td class="mono">{{ addr.address }}</td>
+            </tr>
+            {% endfor %}
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="upanel-section">
+    <h2 class="upanel-section-title">Processes</h2>
+    <div class="upanel-stat-grid upanel-stat-grid-compact" style="margin-bottom: 16px;">
+      <div class="upanel-stat-card">
+        <div class="upanel-stat-label">Total processes</div>
+        <div class="upanel-stat-value">{{ health.processes.total }}</div>
+      </div>
+      {% for status, count in health.processes.status_counts.items %}
+      <div class="upanel-stat-card">
+        <div class="upanel-stat-label">{{ status|title }}</div>
+        <div class="upanel-stat-value-sm">{{ count }}</div>
+      </div>
+      {% endfor %}
+    </div>
+
+    <div class="upanel-panels">
+      <div class="upanel-panel">
+        <div class="upanel-panel-header">Top by CPU</div>
+        <div class="upanel-panel-body">
+          <table class="upanel-recent-table upanel-proc-table">
+            <thead>
+              <tr>
+                <th>PID</th>
+                <th>Name</th>
+                <th>CPU %</th>
+                <th>Mem %</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for proc in health.processes.top_by_cpu %}
+              <tr>
+                <td class="mono">{{ proc.pid }}</td>
+                <td>{{ proc.name|truncatechars:25 }}</td>
+                <td class="{% if proc.cpu_percent > 50 %}text-warning{% endif %}">{{ proc.cpu_percent|floatformat:1 }}%</td>
+                <td>{{ proc.memory_percent|floatformat:1 }}%</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="upanel-panel">
+        <div class="upanel-panel-header">Top by Memory</div>
+        <div class="upanel-panel-body">
+          <table class="upanel-recent-table upanel-proc-table">
+            <thead>
+              <tr>
+                <th>PID</th>
+                <th>Name</th>
+                <th>Mem %</th>
+                <th>CPU %</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for proc in health.processes.top_by_memory %}
+              <tr>
+                <td class="mono">{{ proc.pid }}</td>
+                <td>{{ proc.name|truncatechars:25 }}</td>
+                <td class="{% if proc.memory_percent > 10 %}text-warning{% endif %}">{{ proc.memory_percent|floatformat:1 }}%</td>
+                <td>{{ proc.cpu_percent|floatformat:1 }}%</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="upanel-quick-actions">
+    <a class="upanel-action-btn" href="{% url 'admin:index' %}">← Back to dashboard</a>
+    <a class="upanel-action-btn" href="{% url 'server_health' %}">🔄 Refresh</a>
+    <a class="upanel-action-btn upanel-sysnav-external" href="/api/health/" target="_blank" rel="noopener">API health ↗</a>
+  </div>
+
+  <p class="upanel-timestamp">Last updated: {{ health.timestamp }}</p>
+</div>
+{% endblock %}
