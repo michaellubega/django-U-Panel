@@ -183,6 +183,12 @@ class AuthRepository extends ChangeNotifier {
     return role == staffAccountRoleKiuAdministrator;
   }
 
+  /// True when an [admins] row grants QA/full admin or KIU campus admin.
+  static bool adminDocGrantsRole(Map<String, dynamic>? data) {
+    if (data == null) return false;
+    return adminDocIsKiuAdministrator(data) || _adminFlagFromData(data);
+  }
+
   /// KIU campus administrators — not QA operational staff unless explicitly granted.
   static bool adminDocIsKiuAdministratorOnly(Map<String, dynamic>? data) {
     if (data == null) return false;
@@ -229,7 +235,7 @@ class AuthRepository extends ChangeNotifier {
     }
   }
 
-  /// Reads [admins/{uid}] and legacy [admin/{uid}], preferring whichever grants admin.
+  /// Reads [admins/{uid}] and legacy [admin/{uid}], preferring whichever grants a role.
   Future<ApiDocumentSnapshot> _fetchAdminRoleDoc(String uid) async {
     final db = apiStore();
     final snaps = await Future.wait<ApiDocumentSnapshot?>([
@@ -239,15 +245,11 @@ class AuthRepository extends ChangeNotifier {
     final primary = snaps[0];
     final legacy = snaps[1];
 
-    if (primary != null) {
-      final primaryAdmin = primary.exists && _adminFlagFromData(primary.data());
-      if (primaryAdmin) return primary;
-    }
-    if (legacy != null) {
-      final legacyAdmin = legacy.exists && _adminFlagFromData(legacy.data());
-      if (legacyAdmin) return legacy;
-      if (legacy.exists) return legacy;
-    }
+    bool grantsRole(ApiDocumentSnapshot? snap) =>
+        snap != null && snap.exists && adminDocGrantsRole(snap.data());
+
+    if (grantsRole(primary)) return primary!;
+    if (grantsRole(legacy)) return legacy!;
     if (primary != null && primary.exists) return primary;
     if (primary != null) return primary;
     if (legacy != null) return legacy;
@@ -774,6 +776,24 @@ class AuthRepository extends ChangeNotifier {
     _isLecturer = false;
     _cachedStaffNumber = null;
     _cachedIsStudentProfile = true;
+  }
+
+  void _applyKiuAdminHintsFromProfile(Map<String, dynamic> data) {
+    final role = (data[staffAccountRoleField] as String?)?.trim();
+    final profileKiuAdmin = role == staffAccountRoleKiuAdministrator ||
+        _kiuAdminFlagFromData(data);
+    if (!profileKiuAdmin) return;
+    _isKiuAdmin = true;
+    _isAdmin = false;
+    _isQaStaff = false;
+    final title =
+        KiuAdminJobTitle.normalize(data[kiuAdminJobTitleField] as String?);
+    if (title != null) {
+      _cachedKiuAdminJobTitle = title;
+    }
+    if (data[kiuAdminOnboardingCompleteField] == true) {
+      _kiuAdminOnboardingComplete = true;
+    }
   }
 
   static bool _adminDocIsQaStaff(Map<String, dynamic>? data) {
@@ -1903,6 +1923,7 @@ class AuthRepository extends ChangeNotifier {
           _applyStaffNumberFromData(d);
           clearStudentRegistrationConflictMessage();
         }
+        _applyKiuAdminHintsFromProfile(d);
         _ensureCachedStaffNumberFromAuthEmail(user.email ?? _cachedEmail);
         if (gen == _hydrateGeneration) {
           unawaited(_backfillAppUserIsStudentFlag(uid));
@@ -2007,12 +2028,33 @@ class AuthRepository extends ChangeNotifier {
                   .get())
               .data();
       if (data == null) return;
-      if (data[kiuAdminOnboardingCompleteField] == true) return;
-      _applyStaffNumberFromData(data);
       final role = data[staffAccountRoleField] as String?;
+      final isKiuAdministrator = role == staffAccountRoleKiuAdministrator;
+      if (data[kiuAdminOnboardingCompleteField] == true) {
+        if (isKiuAdministrator && !_isKiuAdmin) {
+          _applyStaffNumberFromData(data);
+          final reg = (_cachedReg?.trim().isNotEmpty == true)
+              ? _cachedReg!.trim()
+              : KiuAdminRegistrationNumber.example;
+          final name = (_cachedName?.trim().isNotEmpty == true)
+              ? _cachedName!.trim()
+              : 'KIU Staff';
+          await _applyKiuStaffAccountRole(
+            uid: user.uid,
+            email: KiuStaffAuthEmail.normalizeStaffEmail(email),
+            fullName: name,
+            registrationNumber: reg,
+            isKiuAdministrator: true,
+            kiuAdminJobTitle: KiuAdminJobTitle.normalize(
+              data[kiuAdminJobTitleField] as String?,
+            ),
+          );
+        }
+        return;
+      }
+      _applyStaffNumberFromData(data);
       if (role == null || role.isEmpty) return;
 
-      final isKiuAdministrator = role == staffAccountRoleKiuAdministrator;
       final reg = (_cachedReg?.trim().isNotEmpty == true)
           ? _cachedReg!.trim()
           : KiuAdminRegistrationNumber.example;
