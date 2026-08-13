@@ -314,11 +314,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           AttendanceRepository.instance,
         ]),
         builder: (context, _) {
-          final canQa = auth.adminCheckDone && auth.isAdmin;
-          final canActAsStaff = canQa ||
-              (auth.lecturerCheckDone && auth.isLecturer) ||
-              (auth.adminCheckDone && auth.isKiuAdmin);
-          final studentFlow = !canActAsStaff;
+          final awaitingRole = !auth.roleCheckDone;
+          final studentFlow = !auth.showsStaffAttendanceUi;
           final attendanceRepo = AttendanceRepository.instance;
           final showStaffLists =
               attendanceRepo.isLoaded ||
@@ -336,7 +333,12 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
               ),
               Expanded(
                 child: studentFlow
-                    ? _SignInContent(onRefresh: _refreshAttendanceHub)
+                    ? awaitingRole && !auth.isLikelyStudent
+                        ? PullToRefreshBody(
+                            onRefresh: _refreshAttendanceHub,
+                            child: const ContentSkeleton(rows: 5),
+                          )
+                        : _SignInContent(onRefresh: _refreshAttendanceHub)
                     : !showStaffLists
                         ? PullToRefreshBody(
                             onRefresh: _refreshAttendanceHub,
@@ -1600,7 +1602,9 @@ class _StartSessionScreenState extends State<StartSessionScreen> {
 
   bool get _lecturerOnly {
     final auth = AuthRepository.instance;
-    return auth.lecturerCheckDone && auth.isLecturer && !auth.isAdmin;
+    return auth.showsStaffAttendanceUi &&
+        !auth.isAdmin &&
+        auth.resolvedRole != UserRole.kiuAdmin;
   }
 
   void _prefillCreatedByFromName(String? name) {
