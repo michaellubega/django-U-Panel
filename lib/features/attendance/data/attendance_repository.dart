@@ -3,6 +3,8 @@ import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import '../../../core/auth/auth_repository.dart';
+import '../../../core/auth/kiu_admin_registration_number.dart';
+import '../../../core/auth/lecturer_registration_number.dart';
 import '../../../core/auth/staff_auth_email.dart';
 import '../../../core/auth/student_registration_number.dart';
 import '../../../core/cache/smart_cache_policy.dart';
@@ -5464,68 +5466,84 @@ class AttendanceRepository extends ChangeNotifier {
     } catch (_) {}
   }
 
-  /// Resolves a registered lecturer account uid from manual `KIU-####` input.
+  /// Resolves a registered lecturer account uid from KIU staff ID or registration number.
   Future<String?> resolveLecturerUidByStaffNumber(
     String rawStaffNumber, {
     Iterable<({String uid, String staffNumber})>? knownRows,
   }) async {
-    final sn = StaffAuthEmail.normalizeStaffNumberFlexible(rawStaffNumber);
-    if (sn == null) return null;
+    final staffNumber = StaffAuthEmail.normalizeStaffNumberFlexible(rawStaffNumber);
+    final registrationNumber = staffNumber == null &&
+            KiuAdminRegistrationNumber.validateFormat(rawStaffNumber) == null
+        ? KiuAdminRegistrationNumber.normalize(rawStaffNumber)
+        : null;
+    if (staffNumber == null && registrationNumber == null) return null;
 
-    if (knownRows != null) {
+    if (staffNumber != null && knownRows != null) {
       for (final row in knownRows) {
-        if (row.staffNumber.trim().toUpperCase() == sn) {
+        if (row.staffNumber.trim().toUpperCase() == staffNumber) {
           return row.uid;
         }
       }
     }
 
-    final cachedUid = await StaffNumberDirectoryCache.lookup(sn);
-    if (cachedUid != null && cachedUid.isNotEmpty) {
-      return cachedUid;
+    if (staffNumber != null) {
+      final cachedUid = await StaffNumberDirectoryCache.lookup(staffNumber);
+      if (cachedUid != null && cachedUid.isNotEmpty) {
+        return cachedUid;
+      }
     }
 
     final offline = !AppConnectivity.instance.isOnline;
     final cacheOptions =
         const ApiGetOptions(source: ApiSource.serverAndCache);
 
-    try {
-      final staffSnap = await _firestore
-          .collection(ApiCollections.staffNumbers)
-          .doc(sn)
-          .get(offline ? cacheOptions : const ApiGetOptions());
-      final fromStaff = (staffSnap.data()?['uid'] as String?)?.trim();
-      if (fromStaff != null && fromStaff.isNotEmpty) {
-        unawaited(StaffNumberDirectoryCache.remember(sn, fromStaff));
-        return fromStaff;
-      }
-    } catch (_) {}
+    if (staffNumber != null) {
+      try {
+        final staffSnap = await _firestore
+            .collection(ApiCollections.staffNumbers)
+            .doc(staffNumber)
+            .get(offline ? cacheOptions : const ApiGetOptions());
+        final fromStaff = (staffSnap.data()?['uid'] as String?)?.trim();
+        if (fromStaff != null && fromStaff.isNotEmpty) {
+          unawaited(StaffNumberDirectoryCache.remember(staffNumber, fromStaff));
+          return fromStaff;
+        }
+      } catch (_) {}
 
-    try {
-      final lectSnap = await _firestore
-          .collection(ApiCollections.lecturers)
-          .where('staffNumber', isEqualTo: sn)
-          .limit(1)
-          .get(offline ? cacheOptions : const ApiGetOptions());
-      if (lectSnap.docs.isNotEmpty) {
-        final uid = lectSnap.docs.first.id;
-        unawaited(StaffNumberDirectoryCache.remember(sn, uid));
-        return uid;
-      }
-    } catch (_) {}
+      try {
+        final lectSnap = await _firestore
+            .collection(ApiCollections.lecturers)
+            .where('staffNumber', isEqualTo: staffNumber)
+            .limit(1)
+            .get(offline ? cacheOptions : const ApiGetOptions());
+        if (lectSnap.docs.isNotEmpty) {
+          final uid = lectSnap.docs.first.id;
+          unawaited(StaffNumberDirectoryCache.remember(staffNumber, uid));
+          return uid;
+        }
+      } catch (_) {}
+    }
 
-    try {
-      final lectByRegSnap = await _firestore
-          .collection(ApiCollections.lecturers)
-          .where('registrationNumber', isEqualTo: sn)
-          .limit(1)
-          .get(offline ? cacheOptions : const ApiGetOptions());
-      if (lectByRegSnap.docs.isNotEmpty) {
-        final uid = lectByRegSnap.docs.first.id;
-        unawaited(StaffNumberDirectoryCache.remember(sn, uid));
-        return uid;
-      }
-    } catch (_) {}
+    final registrationLookups = <String>{
+      if (registrationNumber != null) registrationNumber,
+      if (staffNumber != null) staffNumber,
+    };
+    for (final reg in registrationLookups) {
+      try {
+        final lectByRegSnap = await _firestore
+            .collection(ApiCollections.lecturers)
+            .where('registrationNumber', isEqualTo: reg)
+            .limit(1)
+            .get(offline ? cacheOptions : const ApiGetOptions());
+        if (lectByRegSnap.docs.isNotEmpty) {
+          final uid = lectByRegSnap.docs.first.id;
+          if (staffNumber != null) {
+            unawaited(StaffNumberDirectoryCache.remember(staffNumber, uid));
+          }
+          return uid;
+        }
+      } catch (_) {}
+    }
 
     return null;
   }
@@ -5549,11 +5567,12 @@ class AttendanceRepository extends ChangeNotifier {
         deferredStaffNumber: null,
       );
     }
-    final normalized = StaffAuthEmail.normalizeStaffNumberFlexible(manual);
+    final normalized = LecturerRegistrationNumber.normalizeForLookup(manual);
     if (normalized == null) {
       return (
         uid: null,
-        error: 'Enter a valid KIU staff ID (e.g. KIU-0042 or 0042).',
+        error:
+            'Enter a valid KIU staff ID (${LecturerRegistrationNumber.exampleHint}).',
         deferredStaffNumber: null,
       );
     }
