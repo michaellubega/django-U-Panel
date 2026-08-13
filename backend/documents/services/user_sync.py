@@ -26,6 +26,10 @@ def sync_user_profile(user: User) -> None:
         "kiuAdminOnboardingComplete": user.kiu_admin_onboarding_complete,
         "emailVerified": user.email_verified,
     }
+    if user.role == User.Role.KIU_ADMIN:
+        user_data["staffAccountRole"] = "kiu_administrator"
+    elif user.is_lecturer:
+        user_data["staffAccountRole"] = "staff"
     reg = (user.registration_number or "").strip().upper()
     if user.is_student and not user.email_verified and reg:
         user_data["pendingRegistrationNumber"] = reg
@@ -39,6 +43,7 @@ def sync_user_profile(user: User) -> None:
                 "fullName": user.full_name,
                 "email": user.email,
                 "staffNumber": user.staff_number,
+                "registrationNumber": user.registration_number,
                 "kiuAdminJobTitle": user.kiu_admin_job_title,
                 "adminRole": "kiu_administrator",
             }
@@ -57,7 +62,7 @@ def sync_user_profile(user: User) -> None:
     else:
         _delete_if_exists(ADMINS, uid)
 
-    if user.is_lecturer:
+    if user.is_lecturer or user.role == User.Role.KIU_ADMIN:
         _upsert(
             LECTURERS,
             uid,
@@ -66,6 +71,7 @@ def sync_user_profile(user: User) -> None:
                 "fullName": user.full_name,
                 "email": user.email,
                 "staffNumber": user.staff_number,
+                "registrationNumber": user.registration_number,
             },
         )
     else:

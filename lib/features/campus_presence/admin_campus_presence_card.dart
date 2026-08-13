@@ -39,7 +39,8 @@ class AdminCampusPresenceCardState extends State<AdminCampusPresenceCard> {
   }
 
   Future<void> _refresh() async {
-    if (!AuthRepository.instance.isKiuAdmin) {
+    final auth = AuthRepository.instance;
+    if (!auth.isKiuAdministratorAccount && !auth.isKiuAdmin) {
       if (mounted) setState(() => _loading = false);
       return;
     }
@@ -61,7 +62,8 @@ class AdminCampusPresenceCardState extends State<AdminCampusPresenceCard> {
 
   @override
   Widget build(BuildContext context) {
-    if (!AuthRepository.instance.isKiuAdmin) {
+    final auth = AuthRepository.instance;
+    if (!auth.isKiuAdministratorAccount && !auth.isKiuAdmin) {
       return const SizedBox.shrink();
     }
 
