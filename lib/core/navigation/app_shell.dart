@@ -770,6 +770,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
       case UserRole.kiuAdmin:
         return const [
           AppSection.dashboard,
+          AppSection.attendance,
           AppSection.notices,
           AppSection.settings,
         ];
@@ -804,6 +805,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
       case UserRole.kiuAdmin:
         return const [
           AppSection.dashboard,
+          AppSection.attendance,
           AppSection.notices,
           AppSection.settings,
         ];
