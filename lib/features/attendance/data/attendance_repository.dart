@@ -702,8 +702,88 @@ class AttendanceRepository extends ChangeNotifier {
     final id = listId.trim();
     if (id.isEmpty) return;
     if (!AppConnectivity.instance.hasNetworkInterface) return;
-    if (_listDetailLoads.containsKey(id)) return;
-    await loadListAttendanceData(id, force: true);
+    final futures = <Future<void>>[
+      refreshServerPendingCheckInsForList(id),
+    ];
+    if (!_listDetailLoads.containsKey(id)) {
+      futures.add(loadListAttendanceData(id, force: true));
+    }
+    await Future.wait(futures);
+  }
+
+  /// Pulls pending check-in attempts from the server for live roll cells.
+  Future<void> refreshServerPendingCheckInsForList(String listId) async {
+    final id = listId.trim();
+    if (id.isEmpty) return;
+    if (!AppConnectivity.instance.isOnline) return;
+    if (_firestoreIfReady == null) return;
+    if (isStudentRecordWatchUser()) return;
+
+    final listSessions =
+        AttendanceStore.sessions.where((s) => s.listId == id).toList();
+    final activeSessions =
+        listSessions.where((s) => s.isActive).toList(growable: false);
+    if (activeSessions.isEmpty) {
+      for (final s in listSessions) {
+        AttendanceStore.setServerPendingCheckInStudentIds(s.id, const {});
+      }
+      _notifyStoreUpdated();
+      return;
+    }
+
+    final pendingBySession = <String, Set<String>>{};
+    final options = _loadQueryOptions(force: true);
+
+    void absorbPendingDoc(ApiDocumentSnapshot doc, String sessionId) {
+      final data = doc.data();
+      if (data == null) return;
+      final status = (data['status'] as String?)?.trim().toLowerCase() ?? '';
+      if (status != 'pending') return;
+      final studentId = (data['studentId'] as String?)?.trim() ?? '';
+      if (studentId.isEmpty) return;
+      final until = apiDateFromField(data['pendingUntil']);
+      if (until != null && DateTime.now().isAfter(until)) return;
+      (pendingBySession[sessionId] ??= <String>{}).add(studentId);
+    }
+
+    try {
+      final snap = await _firestore
+          .collection(ApiCollections.checkInAttempts)
+          .where('listId', isEqualTo: id)
+          .where('status', isEqualTo: 'pending')
+          .get(options);
+      for (final doc in snap.docs) {
+        final sessionId = (doc.data()?['sessionId'] as String?)?.trim() ?? '';
+        if (sessionId.isEmpty) continue;
+        absorbPendingDoc(doc, sessionId);
+      }
+
+      for (final session in activeSessions) {
+        final code = normalizeSessionCodeInput(session.sessionCode);
+        if (!isValidJoinCodeFormat(code)) continue;
+        try {
+          final codeSnap = await _firestore
+              .collection(ApiCollections.checkInAttempts)
+              .where('sessionCodeRaw', isEqualTo: code)
+              .where('status', isEqualTo: 'pending')
+              .get(options);
+          for (final doc in codeSnap.docs) {
+            if (doc.data()?['awaitingSession'] != true) continue;
+            absorbPendingDoc(doc, session.id);
+          }
+        } catch (_) {}
+      }
+    } catch (_) {
+      return;
+    }
+
+    for (final session in listSessions) {
+      AttendanceStore.setServerPendingCheckInStudentIds(
+        session.id,
+        pendingBySession[session.id] ?? const {},
+      );
+    }
+    _notifyStoreUpdated();
   }
 
   /// Foreground refresh for lecturers, QA, and administrators (lists + rolls).
@@ -1163,6 +1243,7 @@ class AttendanceRepository extends ChangeNotifier {
     AttendanceStore.signIns.clear();
     AttendanceStore.attendanceRecords.clear();
     AttendanceStore.clearSessionRollStats();
+    AttendanceStore.clearServerPendingCheckIns();
     AttendanceStore.clearStudentRollStats();
     AttendanceStore.clearStudentListRollStats();
     AttendanceStore.invalidateLookupCaches();
