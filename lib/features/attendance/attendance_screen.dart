@@ -2133,6 +2133,7 @@ class _SessionCodeDisplay extends StatefulWidget {
 class _SessionCodeDisplayState extends State<_SessionCodeDisplay>
     with WidgetsBindingObserver {
   Timer? _ticker;
+  Timer? _rollSyncTimer;
   Timer? _expiryTimer;
   bool _closing = false;
   bool _autoEndPending = false;
@@ -2175,6 +2176,14 @@ class _SessionCodeDisplayState extends State<_SessionCodeDisplay>
     if (label != _countdownLabel && mounted) {
       setState(() => _countdownLabel = label);
     }
+  }
+
+  Future<void> _syncLiveRoll() async {
+    if (!_session.isOpenForCheckIn) return;
+    await AttendanceRepository.instance.syncLiveSessionRoll(widget.list.id);
+    if (!mounted) return;
+    await _reloadRollPending();
+    if (mounted) setState(() {});
   }
 
   Future<void> _refreshPublishState() async {
@@ -2229,6 +2238,11 @@ class _SessionCodeDisplayState extends State<_SessionCodeDisplay>
         unawaited(_refreshPublishState());
       }
     });
+    _rollSyncTimer = Timer.periodic(
+      AttendanceRepository.liveSessionRollSyncInterval,
+      (_) => unawaited(_syncLiveRoll()),
+    );
+    unawaited(_syncLiveRoll());
   }
 
   @override
@@ -2237,6 +2251,7 @@ class _SessionCodeDisplayState extends State<_SessionCodeDisplay>
     AttendanceRepository.instance.removeListener(_onRepo);
     _pendingReload.dispose();
     _ticker?.cancel();
+    _rollSyncTimer?.cancel();
     _expiryTimer?.cancel();
     unawaited(AttendanceRemoteRecordWatch.instance.clearActiveSessionWatch());
     unawaited(AttendanceRtdRecordWatch.instance.clearActiveSessionWatch());
@@ -2725,6 +2740,7 @@ class SessionCheckInsScreen extends StatefulWidget {
 class _SessionCheckInsScreenState extends State<SessionCheckInsScreen>
     with WidgetsBindingObserver {
   RollPendingContext _rollPending = const RollPendingContext.empty();
+  Timer? _rollSyncTimer;
   _ConsolidatedRollModel? _rollModel;
   int _rollModelRecords = -1;
   int _rollModelSessions = -1;
@@ -2817,6 +2833,17 @@ class _SessionCheckInsScreenState extends State<SessionCheckInsScreen>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(_reloadListDetail());
     });
+    _rollSyncTimer = Timer.periodic(
+      AttendanceRepository.liveSessionRollSyncInterval,
+      (_) {
+        if (!mounted) return;
+        final hasLive = AttendanceStore.sessions.any(
+          (s) => s.listId == widget.list.id && s.isActive,
+        );
+        if (!hasLive) return;
+        unawaited(_reloadListDetail(force: true));
+      },
+    );
   }
 
   @override
@@ -2825,6 +2852,7 @@ class _SessionCheckInsScreenState extends State<SessionCheckInsScreen>
     AppConnectivity.instance.removeListener(_onConnectivity);
     AttendanceRepository.instance.removeListener(_onRepo);
     _repoRebuild.dispose();
+    _rollSyncTimer?.cancel();
     unawaited(AttendanceRemoteRecordWatch.instance.clearActiveSessionWatch());
     unawaited(AttendanceRtdRecordWatch.instance.clearActiveSessionWatch());
     super.dispose();
