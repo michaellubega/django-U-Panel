@@ -26,6 +26,7 @@ import '../../features/notices/data/notices_repository.dart';
 import '../../features/reports/reports_screen.dart';
 import '../../features/settings/settings_screen.dart';
 import '../../features/settings/lecturer_settings_screen.dart';
+import '../../features/settings/kiu_admin_settings_screen.dart';
 import '../../features/settings/staff_admin_hub_screen.dart';
 import '../../features/campus_presence/update_campus_location_screen.dart';
 import '../../features/campus_presence/campus_presence_log_screen.dart';
@@ -760,10 +761,15 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
           AppSection.settings,
         ];
       case UserRole.lecturer:
-      case UserRole.kiuAdmin:
         return const [
           AppSection.dashboard,
           AppSection.attendance,
+          AppSection.notices,
+          AppSection.settings,
+        ];
+      case UserRole.kiuAdmin:
+        return const [
+          AppSection.dashboard,
           AppSection.notices,
           AppSection.settings,
         ];
@@ -789,10 +795,15 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
           AppSection.settings,
         ];
       case UserRole.lecturer:
-      case UserRole.kiuAdmin:
         return const [
           AppSection.dashboard,
           AppSection.attendance,
+          AppSection.notices,
+          AppSection.settings,
+        ];
+      case UserRole.kiuAdmin:
+        return const [
+          AppSection.dashboard,
           AppSection.notices,
           AppSection.settings,
         ];
@@ -855,6 +866,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
           case UserRole.lecturer:
             return LecturerSettingsScreen(shellSection: section);
           case UserRole.kiuAdmin:
+            return KiuAdminSettingsScreen(shellSection: section);
           case UserRole.admin:
           case UserRole.qaStaff:
           case UserRole.student:

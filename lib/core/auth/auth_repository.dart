@@ -395,6 +395,13 @@ class AuthRepository extends ChangeNotifier {
     return _cachedIsStudentProfile ?? true;
   }
 
+  /// KIU campus administrator (not QA / full operational admin).
+  bool get isKiuAdministratorAccount {
+    if (!isLoggedIn) return false;
+    if (roleCheckDone) return resolvedRole == UserRole.kiuAdmin;
+    return _isKiuAdmin && !_isAdmin && !_isQaStaff;
+  }
+
   /// Resolved role for navigation: API grants (admins / lecturers) win.
   UserRole get resolvedRole {
     if (_adminCheckDone && _isKiuAdmin && !_isAdmin) {
@@ -1370,6 +1377,10 @@ class AuthRepository extends ChangeNotifier {
     _cachedStaffNumber = snapshot.staffNumber;
     _lecturerCheckDone = true;
     _apiRoleCheckDenied = false;
+    // Older sessions could cache QA flags for KIU-only campus administrators.
+    if (_isKiuAdmin && !_isAdmin) {
+      _isQaStaff = false;
+    }
     _stripStaffRolesForStudentMailbox();
     if (isStudentAuthIdentity) {
       _cachedReg = snapshot.registrationNumber;
@@ -2100,6 +2111,10 @@ class AuthRepository extends ChangeNotifier {
       _isQaStaff = snap.exists && _adminDocIsQaStaff(data);
       if (_isQaStaff && !_isAdmin) {
         _isAdmin = true;
+      }
+      if (_isKiuAdmin && data != null && adminDocIsKiuAdministratorOnly(data)) {
+        _isAdmin = false;
+        _isQaStaff = false;
       }
       if (_isKiuAdmin && data != null) {
         final title =
