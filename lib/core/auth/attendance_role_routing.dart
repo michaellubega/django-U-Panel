@@ -33,8 +33,8 @@ abstract final class AttendanceRoleRouting {
     required UserRole resolvedRole,
   }) {
     if (!showsStaffAttendanceUi) return false;
-    if (adminCheckDone && isAdmin) return false;
     if (adminCheckDone && isKiuAdmin) return true;
+    if (adminCheckDone && isAdmin) return false;
     if (isLecturer && !isAdmin) return true;
     if (isStaffAuthIdentity || isSyntheticStaffAuthIdentity) return true;
     if (!roleCheckDone && !isLikelyStudent) return true;

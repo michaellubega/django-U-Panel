@@ -792,11 +792,11 @@ class _SettingsScreenState extends State<SettingsScreen>
       listenable: AuthRepository.instance,
       builder: (context, _) {
         final auth = AuthRepository.instance;
-        if (auth.roleCheckDone && auth.isQaStaff) {
-          return QaStaffSettingsScreen(shellSection: widget.shellSection);
-        }
         if (auth.roleCheckDone && auth.isKiuAdministratorAccount) {
           return KiuAdminSettingsScreen(shellSection: widget.shellSection);
+        }
+        if (auth.roleCheckDone && auth.isQaStaff) {
+          return QaStaffSettingsScreen(shellSection: widget.shellSection);
         }
         if (auth.roleCheckDone &&
             auth.resolvedRole == UserRole.lecturer &&

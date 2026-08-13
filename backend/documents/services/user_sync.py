@@ -32,19 +32,28 @@ def sync_user_profile(user: User) -> None:
     _upsert(USERS, uid, user_data)
 
     if user.is_administrator:
-        admin_data = {
-            "isAdmin": True,
-            "fullName": user.full_name,
-            "email": user.email,
-            "staffNumber": user.staff_number,
-        }
-        if user.role == User.Role.QA_STAFF:
-            admin_data["role"] = "qa_staff"
-            admin_data["isQaStaff"] = True
         if user.role == User.Role.KIU_ADMIN:
-            admin_data["isKiuAdmin"] = True
-            admin_data["kiuAdminJobTitle"] = user.kiu_admin_job_title
-        _upsert(ADMINS, uid, admin_data)
+            admin_data = {
+                "isKiuAdmin": True,
+                "isAdmin": False,
+                "fullName": user.full_name,
+                "email": user.email,
+                "staffNumber": user.staff_number,
+                "kiuAdminJobTitle": user.kiu_admin_job_title,
+                "adminRole": "kiu_administrator",
+            }
+            _upsert(ADMINS, uid, admin_data)
+        else:
+            admin_data = {
+                "isAdmin": True,
+                "fullName": user.full_name,
+                "email": user.email,
+                "staffNumber": user.staff_number,
+            }
+            if user.role == User.Role.QA_STAFF:
+                admin_data["role"] = "qa_staff"
+                admin_data["isQaStaff"] = True
+            _upsert(ADMINS, uid, admin_data)
     else:
         _delete_if_exists(ADMINS, uid)
 
