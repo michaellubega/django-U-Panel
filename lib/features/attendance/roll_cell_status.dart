@@ -514,8 +514,7 @@ LiveSessionCheckInSnapshot liveSessionCheckInSnapshot({
 }) {
   final sessionId = session.id.trim();
   final studentIds = <String>{
-    ...AttendanceStore.studentIdsSignedIntoList(list.id),
-    ...AttendanceStore.recordsForSession(sessionId).map((r) => r.studentId),
+    ...AttendanceStore.rollStudentIdsForList(list.id),
   };
 
   if (studentIds.isEmpty) {

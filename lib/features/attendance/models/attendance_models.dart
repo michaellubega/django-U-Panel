@@ -516,6 +516,21 @@ class SignInRecord {
   }
 }
 
+/// Metadata from a server pending check-in attempt (first-time join).
+class ServerPendingStudentHint {
+  const ServerPendingStudentHint({
+    required this.studentId,
+    this.studentName,
+    this.registrationNumber,
+    this.course,
+  });
+
+  final String studentId;
+  final String? studentName;
+  final String? registrationNumber;
+  final String? course;
+}
+
 /// In-memory store for attendance (lists, sessions, students, sign-ins, records).
 class AttendanceStore {
   AttendanceStore._();
@@ -563,8 +578,51 @@ class AttendanceStore {
     }
   }
 
-  static void clearServerPendingCheckIns() =>
-      _serverPendingCheckInStudentIdsBySession.clear();
+  static void clearServerPendingCheckIns() {
+    _serverPendingCheckInStudentIdsBySession.clear();
+    _serverPendingStudentHintsByList.clear();
+  }
+
+  static final Map<String, Map<String, ServerPendingStudentHint>>
+      _serverPendingStudentHintsByList = {};
+
+  static Map<String, ServerPendingStudentHint> serverPendingStudentHints(
+    String listId,
+  ) =>
+      _serverPendingStudentHintsByList[listId.trim()] ?? const {};
+
+  static void setServerPendingStudentHints(
+    String listId,
+    Map<String, ServerPendingStudentHint> hints,
+  ) {
+    final id = listId.trim();
+    if (id.isEmpty) return;
+    if (hints.isEmpty) {
+      _serverPendingStudentHintsByList.remove(id);
+    } else {
+      _serverPendingStudentHintsByList[id] = hints;
+    }
+  }
+
+  /// Roll rows: enrolled sign-ins, attendance records, and live server pending.
+  static Set<String> rollStudentIdsForList(String listId) {
+    final lid = listId.trim();
+    if (lid.isEmpty) return const {};
+    final sessionIds =
+        sessions.where((s) => s.listId == lid).map((s) => s.id).toSet();
+    final ids = <String>{
+      ...studentIdsSignedIntoList(lid),
+      ...attendanceRecords
+          .where((r) => sessionIds.contains(r.sessionId))
+          .map((r) => r.studentId),
+    };
+    for (final sessionId in sessionIds) {
+      ids.addAll(serverPendingCheckInStudentIds(sessionId));
+    }
+    ids.addAll(serverPendingStudentHints(lid).keys);
+    ids.removeWhere((id) => id.trim().isEmpty);
+    return ids;
+  }
 
   static final Map<String, StudentRollStatsSnapshot> _studentRollStatsById = {};
 
@@ -1424,6 +1482,47 @@ class AttendanceStore {
         threeDigitCode: '000',
         initials: signInName.isNotEmpty
             ? deriveStudentInitialsFromName(signInName)
+            : '??',
+      );
+    }
+    for (final hint in serverPendingStudentHints(listId).values) {
+      final sid = hint.studentId.trim();
+      if (sid.isEmpty) continue;
+      final hintName = hint.studentName?.trim() ?? '';
+      var hintReg = hint.registrationNumber?.trim().toUpperCase() ?? '';
+      if (hintReg.isEmpty &&
+          StudentRegistrationNumber.isCanonicalFormat(sid)) {
+        hintReg = StudentRegistrationNumber.normalize(sid);
+      }
+      final existing = byId[sid];
+      if (existing != null) {
+        final nameBetter = hintName.isNotEmpty &&
+            (existing.name.trim().isEmpty ||
+                existing.name.trim() == 'Unknown');
+        final regBetter = hintReg.isNotEmpty &&
+            (existing.registrationNumber.trim().isEmpty ||
+                existing.registrationNumber.trim() == '—');
+        if (!nameBetter && !regBetter) continue;
+        byId[sid] = StudentRecord(
+          id: existing.id,
+          name: nameBetter ? hintName : existing.name,
+          registrationNumber:
+              regBetter ? hintReg : existing.registrationNumber,
+          threeDigitCode: existing.threeDigitCode,
+          initials: nameBetter
+              ? deriveStudentInitialsFromName(hintName)
+              : existing.initials,
+        );
+        continue;
+      }
+      if (hintName.isEmpty && hintReg.isEmpty) continue;
+      byId[sid] = StudentRecord(
+        id: sid,
+        name: hintName.isNotEmpty ? hintName : 'Unknown',
+        registrationNumber: hintReg.isNotEmpty ? hintReg : '—',
+        threeDigitCode: '000',
+        initials: hintName.isNotEmpty
+            ? deriveStudentInitialsFromName(hintName)
             : '??',
       );
     }
