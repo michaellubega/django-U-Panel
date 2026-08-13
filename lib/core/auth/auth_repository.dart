@@ -175,8 +175,25 @@ class AuthRepository extends ChangeNotifier {
     return data[studentRegEmailVerifiedLinkField] == true;
   }
 
+  /// KIU campus administrators — not QA operational staff unless explicitly granted.
+  static bool adminDocIsKiuAdministratorOnly(Map<String, dynamic>? data) {
+    if (data == null) return false;
+    if (!_kiuAdminFlagFromData(data)) return false;
+    bool truthy(dynamic v) => v == true || v == 'true' || v == 1;
+    if (truthy(data[adminIsAdminField]) ||
+        truthy(data[adminIsAdminLegacyField])) {
+      return false;
+    }
+    final role = (data[adminRoleField] as String?)?.trim().toLowerCase();
+    if (role == adminRoleQaStaff || role == adminRoleAdministrator) {
+      return false;
+    }
+    return true;
+  }
+
   static bool _adminFlagFromData(Map<String, dynamic>? data) {
     if (data == null) return false;
+    if (adminDocIsKiuAdministratorOnly(data)) return false;
     bool truthy(dynamic v) => v == true || v == 'true' || v == 1;
     if (truthy(data[adminIsAdminField]) || truthy(data[adminIsAdminLegacyField])) {
       return true;
@@ -380,6 +397,9 @@ class AuthRepository extends ChangeNotifier {
 
   /// Resolved role for navigation: API grants (admins / lecturers) win.
   UserRole get resolvedRole {
+    if (_adminCheckDone && _isKiuAdmin && !_isAdmin) {
+      return UserRole.kiuAdmin;
+    }
     if (_adminCheckDone && _isAdmin) {
       return _isQaStaff ? UserRole.qaStaff : UserRole.admin;
     }
@@ -743,6 +763,7 @@ class AuthRepository extends ChangeNotifier {
 
   static bool _adminDocIsQaStaff(Map<String, dynamic>? data) {
     if (data == null) return false;
+    if (adminDocIsKiuAdministratorOnly(data)) return false;
     final role = (data[adminRoleField] as String?)?.trim().toLowerCase();
     if (role == adminRoleQaStaff) return true;
     if (role == adminRoleAdministrator) return false;
