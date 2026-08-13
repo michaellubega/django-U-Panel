@@ -5,6 +5,12 @@ abstract final class SmartCachePolicy {
   /// Profile and notices — refresh from server at most once per week.
   static const Duration profileAndNoticesTtl = Duration(days: 7);
 
+  /// Staff attendance list metadata — refresh often so QA/lecturer hubs stay current.
+  static const Duration staffAttendanceListsTtl = Duration(seconds: 90);
+
+  /// Staff list metadata background refresh even when inside [staffAttendanceListsTtl].
+  static const Duration staffAttendanceListsSoftStale = Duration(seconds: 30);
+
   /// Course names, attendance rows, and university meta stay until explicitly
   /// removed or the user signs out (see [AttendanceLocalSnapshot]).
   static const Duration forever = Duration(days: 36500);
