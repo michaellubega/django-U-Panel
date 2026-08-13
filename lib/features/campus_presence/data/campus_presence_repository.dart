@@ -308,8 +308,7 @@ class CampusPresenceRepository {
   }
 
   static bool _isKiuAdminDoc(Map<String, dynamic> data) {
-    final v = data[AuthRepository.adminIsKiuAdminField];
-    return v == true || v == 'true' || v == 1;
+    return AuthRepository.adminDocIsKiuAdministrator(data);
   }
 
   Future<List<CampusPresenceEvent>> fetchEventsForLocalDate(

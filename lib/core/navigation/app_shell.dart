@@ -750,7 +750,10 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
 
   bool _isShellLecturer() {
     final auth = AuthRepository.instance;
-    return auth.lecturerCheckDone && auth.isLecturer && !auth.isAdmin;
+    return auth.lecturerCheckDone &&
+        auth.isLecturer &&
+        !auth.isAdmin &&
+        !auth.isKiuAdmin;
   }
 
   List<AppSection> _navSectionsForRole(UserRole role) {

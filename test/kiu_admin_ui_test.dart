@@ -32,5 +32,14 @@ void main() {
       expect(AuthRepository.adminDocIsKiuAdministrator(data), isTrue);
       expect(AuthRepository.adminDocIsQaStaff(data), isFalse);
     });
+
+    test('django-synced app_users role kiu_admin is recognized in profile hints', () {
+      final data = <String, dynamic>{
+        'role': 'kiu_admin',
+        AuthRepository.kiuAdminOnboardingCompleteField: true,
+      };
+      expect(AuthRepository.adminDocIsKiuAdministrator(data), isFalse);
+      expect(data['role'], 'kiu_admin');
+    });
   });
 }
