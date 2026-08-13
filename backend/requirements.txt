@@ -12,3 +12,4 @@ sentry-sdk[django]>=2.19,<3.0
 requests>=2.32,<3.0
 gunicorn>=23.0,<24.0
 whitenoise>=6.8,<7.0
+psutil>=6.0,<7.0
