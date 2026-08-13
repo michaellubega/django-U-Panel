@@ -46,5 +46,19 @@ void main() {
       expect(AuthRepository.adminDocIsKiuAdministratorOnly(data), isFalse);
       expect(AuthRepository.adminDocIsQaStaff(data), isTrue);
     });
+
+    test('Django-synced KIU admin with both flags is still KIU admin', () {
+      final data = <String, dynamic>{
+        AuthRepository.adminIsKiuAdminField: true,
+        AuthRepository.adminIsAdminField: true,
+        'staffNumber': 'KIU4235S',
+        'fullName': 'Campus Admin',
+      };
+
+      expect(AuthRepository.adminDocIsKiuAdministrator(data), isTrue);
+      expect(AuthRepository.adminDocIsKiuAdministratorOnly(data), isFalse);
+      expect(AuthRepository.adminDocIsQaStaff(data), isFalse);
+      expect(AuthRepository.adminDocIsFullAdministrator(data), isFalse);
+    });
   });
 }
