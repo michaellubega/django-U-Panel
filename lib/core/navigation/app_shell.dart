@@ -1200,28 +1200,27 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   }
 
   Widget _connectivityBanner({required bool mobile}) {
-    if (!AppConnectivity.instance.initialized) {
+    if (!AppConnectivity.instance.shouldShowOfflineBanner) {
       return const SizedBox.shrink();
     }
-    final online = AppConnectivity.instance.isOnline;
     return Container(
       width: double.infinity,
       padding: EdgeInsets.symmetric(
         horizontal: mobile ? 12 : 16,
         vertical: mobile ? 8 : 10,
       ),
-      color: online ? AppTheme.success : AppTheme.warning,
+      color: AppTheme.warning,
       child: Row(
         children: [
-          Icon(
-            online ? Icons.wifi_rounded : Icons.wifi_off_rounded,
+          const Icon(
+            Icons.wifi_off_rounded,
             color: Colors.white,
             size: 18,
           ),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              online ? 'You are online' : 'You are offline',
+              'You are offline',
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
                     color: Colors.white,
                     fontWeight: FontWeight.w600,
