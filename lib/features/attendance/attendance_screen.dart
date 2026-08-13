@@ -218,6 +218,9 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     }
     final student = auth.resolvedRole == UserRole.student;
     if (student) return;
+    if (auth.showsStaffAttendanceUi) {
+      unawaited(repo.syncStaffAttendanceForeground(force: false));
+    }
     if (AttendanceStore.lists.isNotEmpty) return;
     if (attendanceListsForCurrentStaff().isEmpty) {
       unawaited(_load(force: true, listsOnly: true));
@@ -296,6 +299,12 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     final auth = AuthRepository.instance;
     final student =
         auth.roleCheckDone && auth.resolvedRole == UserRole.student;
+    if (!student && auth.showsStaffAttendanceUi) {
+      await AttendanceRepository.instance.syncStaffAttendanceForeground(
+        force: true,
+      );
+      return;
+    }
     await _load(force: true, listsOnly: !student);
   }
 
@@ -314,11 +323,8 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
           AttendanceRepository.instance,
         ]),
         builder: (context, _) {
-          final canQa = auth.adminCheckDone && auth.isAdmin;
-          final canActAsStaff = canQa ||
-              (auth.lecturerCheckDone && auth.isLecturer) ||
-              (auth.adminCheckDone && auth.isKiuAdmin);
-          final studentFlow = !canActAsStaff;
+          final awaitingRole = !auth.roleCheckDone;
+          final studentFlow = !auth.showsStaffAttendanceUi;
           final attendanceRepo = AttendanceRepository.instance;
           final showStaffLists =
               attendanceRepo.isLoaded ||
@@ -336,7 +342,12 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
               ),
               Expanded(
                 child: studentFlow
-                    ? _SignInContent(onRefresh: _refreshAttendanceHub)
+                    ? awaitingRole && !auth.isLikelyStudent
+                        ? PullToRefreshBody(
+                            onRefresh: _refreshAttendanceHub,
+                            child: const ContentSkeleton(rows: 5),
+                          )
+                        : _SignInContent(onRefresh: _refreshAttendanceHub)
                     : !showStaffLists
                         ? PullToRefreshBody(
                             onRefresh: _refreshAttendanceHub,
@@ -1600,7 +1611,9 @@ class _StartSessionScreenState extends State<StartSessionScreen> {
 
   bool get _lecturerOnly {
     final auth = AuthRepository.instance;
-    return auth.lecturerCheckDone && auth.isLecturer && !auth.isAdmin;
+    return auth.showsStaffAttendanceUi &&
+        !auth.isAdmin &&
+        auth.resolvedRole != UserRole.kiuAdmin;
   }
 
   void _prefillCreatedByFromName(String? name) {

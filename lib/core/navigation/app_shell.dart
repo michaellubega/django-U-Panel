@@ -17,6 +17,7 @@ import '../../features/attendance/attendance_screen.dart';
 import '../../features/attendance/data/attendance_offline_sync.dart';
 import '../../features/attendance/data/attendance_repository.dart';
 import '../../features/attendance/data/attendance_remote_list_watch.dart';
+import '../../features/attendance/data/attendance_remote_record_watch.dart';
 import '../../features/attendance/data/attendance_rtd_record_watch.dart';
 import '../../features/attendance/student_attendance_live_sync.dart';
 import '../../features/attendance/models/attendance_models.dart';
@@ -65,6 +66,8 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   DateTime? _lastStudentAttendanceReloadAt;
   bool _staffAttendanceBootstrapAttempted = false;
   Timer? _authRepoSideEffectsDebounce;
+  Timer? _staffAttendanceRefreshTimer;
+  static const Duration _staffAttendanceRefreshInterval = Duration(seconds: 45);
   UserRole? _sectionCacheRole;
   final Map<AppSection, Widget> _sectionWidgets = {};
   final Set<AppSection> _builtSections = {};
@@ -97,8 +100,10 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
         unawaited(PushController.instance.initialize());
         unawaited(PushController.instance.syncTopicsForCurrentUser());
         unawaited(AttendanceRemoteListWatch.instance.start());
+        unawaited(AttendanceRemoteRecordWatch.instance.start());
         unawaited(StudentLocationPriming.instance.primeOnAppOpen());
-        Future<void>.delayed(const Duration(milliseconds: 400), () {
+        _startStaffAttendanceRefreshTimer();
+        Future<void>.delayed(const Duration(milliseconds: 100), () {
           if (!mounted) return;
           PendingOfflineCoordinator.instance.start();
         });
@@ -115,6 +120,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     PendingOfflineCoordinator.instance.stop();
     _authRepoSideEffectsDebounce?.cancel();
+    _staffAttendanceRefreshTimer?.cancel();
     _currentSection.dispose();
     _refreshHost.dispose();
     AuthRepository.instance.removeListener(_onAuthRepo);
@@ -130,6 +136,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
       unawaited(AppConnectivity.instance.probeNow());
       unawaited(PushController.instance.syncTopicsForCurrentUser());
       unawaited(_bootstrapAttendanceStore());
+      unawaited(_refreshStaffAttendanceIfNeeded(force: true));
       unawaited(StudentLocationPriming.instance.primeOnAppOpen());
     }
   }
@@ -286,16 +293,18 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
       setState(() {});
     }
     _authRepoSideEffectsDebounce?.cancel();
-    _authRepoSideEffectsDebounce = Timer(const Duration(milliseconds: 350), () {
+    _authRepoSideEffectsDebounce = Timer(const Duration(milliseconds: 200), () {
       if (!mounted || !AuthRepository.instance.isLoggedIn) return;
       _refreshUnseenNotices();
       unawaited(PushController.instance.syncTopicsForCurrentUser());
       unawaited(AttendanceRemoteListWatch.instance.start());
+      unawaited(AttendanceRemoteRecordWatch.instance.start());
       if (roleChanged) {
         unawaited(StudentLocationPriming.instance.primeOnAppOpen());
       }
       _reloadStudentAttendanceWhenRegistrationReady();
       _reloadStaffAttendanceWhenRoleReady();
+      _startStaffAttendanceRefreshTimer();
     });
   }
 
@@ -351,6 +360,28 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     if (repo.hasCachedStore || _staffAttendanceBootstrapAttempted) return;
     _staffAttendanceBootstrapAttempted = true;
     unawaited(repo.bootstrapLoadIfNeeded(force: true));
+    unawaited(repo.syncStaffAttendanceForeground(force: !repo.hasCachedStore));
+  }
+
+  void _startStaffAttendanceRefreshTimer() {
+    final auth = AuthRepository.instance;
+    if (!auth.isLoggedIn || !auth.showsStaffAttendanceUi) {
+      _staffAttendanceRefreshTimer?.cancel();
+      _staffAttendanceRefreshTimer = null;
+      return;
+    }
+    _staffAttendanceRefreshTimer ??= Timer.periodic(
+      _staffAttendanceRefreshInterval,
+      (_) => unawaited(_refreshStaffAttendanceIfNeeded()),
+    );
+  }
+
+  Future<void> _refreshStaffAttendanceIfNeeded({bool force = false}) async {
+    final auth = AuthRepository.instance;
+    if (!auth.isLoggedIn || auth.needsEmailVerification) return;
+    if (!auth.showsStaffAttendanceUi) return;
+    if (!AppConnectivity.instance.isOnline) return;
+    await AttendanceRepository.instance.syncStaffAttendanceForeground(force: force);
   }
 
   void _ensureSectionCacheForRole(UserRole role) {
