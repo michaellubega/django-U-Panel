@@ -5,6 +5,18 @@ import 'models/attendance_models.dart';
 /// Matches server-side buffer in `documents/services/check_in.py`.
 const double kCheckInGeofenceBufferMeters = 15;
 
+/// On-campus geofence checks need a recent GPS fix (not an old cached position).
+const Duration checkInGeofenceLocationMaxAge = Duration(seconds: 90);
+
+/// Reuse a slightly older fix for remote sessions where GPS is optional metadata.
+const Duration checkInRemoteLocationMaxAge = Duration(minutes: 8);
+
+Duration locationMaxAgeForSession(AttendanceSession session) {
+  return sessionSkipsLocationCheck(session)
+      ? checkInRemoteLocationMaxAge
+      : checkInGeofenceLocationMaxAge;
+}
+
 // Client-trusted time/GPS (same model as before). Queued check-ins re-validate
 // using capture-time coordinates against the session center when syncing.
 
