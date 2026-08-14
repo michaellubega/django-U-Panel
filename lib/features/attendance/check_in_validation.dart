@@ -17,6 +17,12 @@ Duration locationMaxAgeForSession(AttendanceSession session) {
       : checkInGeofenceLocationMaxAge;
 }
 
+/// Tight class radii need a more accurate GPS fix (≤ 100 m).
+bool sessionRequiresHighAccuracyGps(AttendanceSession session) {
+  if (sessionSkipsLocationCheck(session)) return false;
+  return session.radiusMeters <= 100;
+}
+
 // Client-trusted time/GPS (same model as before). Queued check-ins re-validate
 // using capture-time coordinates against the session center when syncing.
 

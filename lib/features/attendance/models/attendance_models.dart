@@ -915,6 +915,7 @@ class AttendanceStore {
       status: SessionStatus.closed,
       createdBy: s.createdBy,
       remoteLearning: s.remoteLearning,
+      locationMetadataPending: s.locationMetadataPending,
     ));
   }
 

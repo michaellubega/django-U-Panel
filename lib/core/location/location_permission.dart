@@ -4,6 +4,8 @@ import 'package:flutter/foundation.dart'
     show TargetPlatform, defaultTargetPlatform, kIsWeb;
 import 'package:geolocator/geolocator.dart';
 
+import 'gps_location_settings.dart';
+
 String _webLocationDeniedForeverMessage() {
   if (defaultTargetPlatform == TargetPlatform.iOS) {
     return 'Safari has location blocked for this site. Use the https address '
@@ -126,11 +128,12 @@ Future<Position?> readRecentKnownPosition({
 }
 
 /// Reads GPS for check-in: reuses last-known fix when ≤ [reuseMaxAge] old unless
-/// [forceFresh] is true.
+/// [forceFresh] is true. Use [highAccuracy] for tight class geofences (≤ 100 m).
 Future<GpsAcquireResult> acquireCurrentGpsPosition({
   Duration timeLimit = const Duration(seconds: 30),
   Duration reuseMaxAge = recentLocationMaxAge,
   bool forceFresh = false,
+  bool highAccuracy = false,
 }) async {
   if (!kIsWeb) {
     final serviceEnabled = await Geolocator.isLocationServiceEnabled();
@@ -161,31 +164,48 @@ Future<GpsAcquireResult> acquireCurrentGpsPosition({
     }
   }
 
-  try {
-    final p = await Geolocator.getCurrentPosition(
-      locationSettings: LocationSettings(
-        accuracy: LocationAccuracy.medium,
-        timeLimit: timeLimit,
-      ),
-    );
-    rememberGpsPosition(p);
-    return GpsAcquireResult(position: p);
-  } on TimeoutException catch (_) {
-    return const GpsAcquireResult(
-      errorMessage:
-          'GPS timed out. Move to an open area, keep location on, then try again.',
-    );
-  } catch (_) {
-    return GpsAcquireResult(
-      errorMessage: kIsWeb
-          ? (defaultTargetPlatform == TargetPlatform.iOS
-              ? 'Could not read your location. In Safari use the aA menu → '
-                  'Website Settings → Location → Allow, then try again on https.'
-              : 'Could not read your location. Allow location for this site in '
-                  'the address bar and use an https:// or localhost URL.')
-          : 'Could not read GPS. Check that location permission is allowed and GPS is on.',
-    );
+  final effectiveLimit = gpsTimeLimitForPlatform(
+    base: timeLimit,
+    highAccuracy: highAccuracy,
+  );
+  final webMaxAge = forceFresh ? Duration.zero : reuseMaxAge;
+
+  Future<GpsAcquireResult> readOnce({bool retry = false}) async {
+    try {
+      final p = await Geolocator.getCurrentPosition(
+        locationSettings: buildGpsLocationSettings(
+          timeLimit: effectiveLimit + (retry ? const Duration(seconds: 4) : Duration.zero),
+          highAccuracy: highAccuracy || retry,
+          webMaximumAge: webMaxAge,
+        ),
+      );
+      rememberGpsPosition(p);
+      return GpsAcquireResult(position: p);
+    } on TimeoutException catch (_) {
+      if (!retry && (kIsWeb || defaultTargetPlatform == TargetPlatform.iOS)) {
+        return readOnce(retry: true);
+      }
+      return const GpsAcquireResult(
+        errorMessage:
+            'GPS timed out. Move to an open area, keep location on, then try again.',
+      );
+    } catch (_) {
+      if (!retry && (kIsWeb || defaultTargetPlatform == TargetPlatform.iOS)) {
+        return readOnce(retry: true);
+      }
+      return GpsAcquireResult(
+        errorMessage: kIsWeb
+            ? (defaultTargetPlatform == TargetPlatform.iOS
+                ? 'Could not read your location. In Safari use the aA menu → '
+                    'Website Settings → Location → Allow, then try again on https.'
+                : 'Could not read your location. Allow location for this site in '
+                    'the address bar and use an https:// or localhost URL.')
+            : 'Could not read GPS. Check that location permission is allowed and GPS is on.',
+      );
+    }
   }
+
+  return readOnce();
 }
 
 /// Legacy wrapper — prefer [acquireCurrentGpsPosition].
