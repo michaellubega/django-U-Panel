@@ -51,6 +51,10 @@ def maybe_process_check_in(doc: ApiDocument) -> None:
         _reject(doc, data, "outside session time")
         return
 
+    if _device_used_by_other_student(session_id, student_id, data):
+        _reject(doc, data, "device already used for another student")
+        return
+
     if not _within_geofence(session_data, data):
         _reject(doc, data, "outside class location")
         return
