@@ -3,6 +3,7 @@ import 'dart:math';
 import '../student_session_grace.dart';
 import '../../../core/api/api_store.dart';
 import '../../../core/api/api_collections.dart';
+import '../../../core/api/api_datetime.dart';
 import '../../../core/auth/student_registration_number.dart';
 
 /// Short labels for [DateTime.weekday] (1 = Monday … 7 = Sunday).
@@ -31,6 +32,21 @@ const kAttendanceWeekdayFullNames = [
 DateTime attendanceListDateForWeekday(int weekday) {
   final w = weekday.clamp(1, 7);
   return DateTime(2024, 1, w);
+}
+
+/// Class day (1 = Mon … 7 = Sun) from a stored or in-memory list date.
+int attendanceListWeekdayFromDate(DateTime date) =>
+    date.toLocal().weekday.clamp(1, 7);
+
+/// Parse API/local storage and return the canonical weekday anchor date.
+DateTime attendanceListDateFromStored(dynamic raw) {
+  final parsed = apiDateFromField(raw);
+  if (parsed == null) {
+    return attendanceListDateForWeekday(
+      DateTime.now().toLocal().weekday.clamp(1, 7),
+    );
+  }
+  return attendanceListDateForWeekday(attendanceListWeekdayFromDate(parsed));
 }
 
 /// Newest-first: [AttendanceList.date] is weekday-only for new data, so [id] breaks ties.

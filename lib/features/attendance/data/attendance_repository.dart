@@ -4906,7 +4906,7 @@ class AttendanceRepository extends ChangeNotifier {
 
   static AttendanceList _listFromDoc(ApiDocumentSnapshot d) {
     final data = d.data()!;
-    final date = apiDateFromField(data['date']) ?? DateTime.now();
+    final date = attendanceListDateFromStored(data['date']);
     final courses = data['courses'] as List<dynamic>?;
     final rawLc = (data['lecturerSignCode'] as String?)?.trim() ?? '';
     final lecturerCode =
@@ -5640,7 +5640,7 @@ class AttendanceRepository extends ChangeNotifier {
       'time': list.time,
       'room': list.room,
       'whoTaught': list.whoTaught,
-      'date': apiDateToField(list.date),
+      'date': apiDateOnlyToField(list.date),
       'program': list.program.name,
       'courses': list.courses ?? list.coursesSafe.toList(),
       'year': list.year,
