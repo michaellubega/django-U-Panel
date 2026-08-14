@@ -263,6 +263,7 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
     required bool likelyOnline,
   }) async {
     await _advanceToStage(1);
+    final highAccuracy = sessionRequiresHighAccuracyGps(session);
 
     if (session.remoteLearning) {
       setState(() {
@@ -338,6 +339,7 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
               : const Duration(seconds: 14)),
       reuseMaxAge: maxAge,
       forceFresh: requiresGeofence,
+      highAccuracy: highAccuracy,
     );
     if (!mounted) return null;
     setState(() => _resolvingLocation = false);

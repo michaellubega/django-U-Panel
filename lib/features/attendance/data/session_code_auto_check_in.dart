@@ -222,12 +222,14 @@ class SessionCodeAutoCheckIn {
       final deviceIdFuture = DeviceIdentity.resolve();
       final requiresGeofence = !sessionSkipsLocationCheck(session);
       final maxAge = locationMaxAgeForSession(session);
+      final highAccuracy = sessionRequiresHighAccuracyGps(session);
       final gpsFuture = acquireCurrentGpsPosition(
         timeLimit: requiresGeofence
             ? const Duration(seconds: 12)
             : const Duration(seconds: 8),
         reuseMaxAge: maxAge,
         forceFresh: requiresGeofence,
+        highAccuracy: highAccuracy,
       );
 
       if (!isTimestampWithinSessionBounds(session, captureIntentAt)) {

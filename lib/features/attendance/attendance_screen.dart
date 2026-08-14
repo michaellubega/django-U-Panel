@@ -1740,6 +1740,7 @@ class _StartSessionScreenState extends State<StartSessionScreen> {
           ? const Duration(seconds: 5)
           : const Duration(seconds: 8),
       forceFresh: false,
+      highAccuracy: !_remoteLearning && _radiusMeters <= 100,
     );
     if (!mounted) return;
 
@@ -1780,6 +1781,7 @@ class _StartSessionScreenState extends State<StartSessionScreen> {
       timeLimit: const Duration(seconds: 10),
       reuseMaxAge: const Duration(seconds: 60),
       forceFresh: true,
+      highAccuracy: !_remoteLearning && _radiusMeters <= 100,
     );
     if (!mounted) return r.position;
     setState(() {
