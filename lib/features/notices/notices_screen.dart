@@ -9,6 +9,7 @@ import '../attendance/data/attendance_repository.dart';
 import '../attendance/models/attendance_models.dart';
 import 'create_notice_screen.dart';
 import 'data/notices_repository.dart';
+import 'notice_create_flow.dart';
 import '../../core/navigation/app_section.dart';
 import '../../core/navigation/screen_refresh.dart';
 
@@ -225,61 +226,9 @@ class _NoticesScreenState extends State<NoticesScreen>
   }
 
   Future<void> _openCreateNoticeScreen() async {
-    final draft = await Navigator.of(context).push<NoticeCreationResult>(
-      MaterialPageRoute(
-        builder: (ctx) => const CreateNoticeScreen(),
-      ),
-    );
-    if (!mounted || draft == null) return;
-
-    var author = AuthRepository.instance.currentFullName?.trim() ?? '';
-    if (author.isEmpty) {
-      author = AuthRepository.instance.currentEmail?.trim() ?? '';
-    }
-    if (author.isEmpty) {
-      if (_isLecturerUser()) {
-        author = 'Lecturer';
-      } else if (AuthRepository.instance.isKiuAdmin) {
-        author = 'KIU Admin';
-      } else {
-        author = 'Admin';
-      }
-    }
-
-    final err = await NoticesRepository.instance.publish(
-      draft: draft,
-      author: author,
-    );
-    if (!mounted) return;
-    if (err != null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Could not save notice: $err'),
-          duration: const Duration(seconds: 6),
-        ),
-      );
-      return;
-    }
-
+    final ok = await openCreateNoticeAndPublish(context);
+    if (!mounted || !ok) return;
     await _loadNotices(force: true);
-
-    final audienceBit = switch (draft.audience) {
-      NoticeAudienceKind.allAppUsers => 'All app users',
-      NoticeAudienceKind.kiuAdmins => 'KIU administrators',
-      NoticeAudienceKind.classList =>
-        'Class list: ${draft.targetListTitle ?? 'list'}',
-      NoticeAudienceKind.student => 'Individual student',
-    };
-    final msg = draft.scheduledFor == null
-        ? (draft.sendPush
-            ? 'Notice sent ($audienceBit). People subscribed to notices will get an alert.'
-            : 'Notice published ($audienceBit).')
-        : (draft.sendPush
-            ? 'Notice scheduled ($audienceBit). An alert will go out at the scheduled time.'
-            : 'Notice scheduled ($audienceBit).');
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-    }
   }
 
   String _formatNoticeTime(BuildContext context, NoticeRecord item) {

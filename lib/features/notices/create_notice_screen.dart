@@ -1,8 +1,11 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../../core/auth/auth_repository.dart';
 import '../attendance/attendance_list_hierarchy.dart';
 import '../attendance/attendance_list_title.dart';
+import '../attendance/data/attendance_repository.dart';
 import '../attendance/models/attendance_models.dart';
 import '../../core/theme/app_theme.dart';
 
@@ -85,6 +88,28 @@ class _CreateNoticeScreenState extends State<CreateNoticeScreen> {
     if (_lecturerOnly) {
       _audience = NoticeAudienceKind.classList;
     }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_ensureAttendanceListsLoaded());
+    });
+  }
+
+  Future<void> _ensureAttendanceListsLoaded() async {
+    final repo = AttendanceRepository.instance;
+    if (repo.hasCachedStore || repo.isLoaded) return;
+    try {
+      if (AttendanceRepository.isStudentScopedUser()) return;
+      await repo.loadAttendanceListsFirst(force: false);
+      if (mounted) setState(() {});
+    } catch (_) {}
+  }
+
+  AttendanceList? _dropdownValue(List<AttendanceList> filtered) {
+    final id = _selectedList?.id;
+    if (id == null) return null;
+    for (final list in filtered) {
+      if (list.id == id) return list;
+    }
+    return null;
   }
 
   @override
@@ -222,7 +247,7 @@ class _CreateNoticeScreenState extends State<CreateNoticeScreen> {
             padding: const EdgeInsets.only(right: 8),
             child: FilledButton(
               onPressed: _submit,
-              child: const Text('Publish'),
+              child: Text(_scheduleForLater ? 'Schedule' : 'Publish'),
             ),
           ),
         ],
@@ -341,15 +366,23 @@ class _CreateNoticeScreenState extends State<CreateNoticeScreen> {
                         child: DropdownButtonHideUnderline(
                           child: DropdownButton<AttendanceList>(
                             isExpanded: true,
-                            value: _selectedList != null &&
-                                    filteredLists.any((l) => l.id == _selectedList!.id)
-                                ? _selectedList
-                                : null,
+                            value: _dropdownValue(filteredLists),
                             hint: Text(
                               filteredLists.isEmpty
                                   ? 'No lists match your search'
                                   : 'Choose a list',
                             ),
+                            selectedItemBuilder: (context) => [
+                              for (final list in filteredLists)
+                                Align(
+                                  alignment: Alignment.centerLeft,
+                                  child: Text(
+                                    list.displayTitle,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                            ],
                             items: [
                               for (final list in filteredLists)
                                 DropdownMenuItem(
@@ -429,7 +462,12 @@ class _CreateNoticeScreenState extends State<CreateNoticeScreen> {
                     ),
                     SwitchListTile.adaptive(
                       value: _scheduleForLater,
-                      onChanged: (v) => setState(() => _scheduleForLater = v),
+                      onChanged: (v) async {
+                        setState(() => _scheduleForLater = v);
+                        if (v && _scheduledFor == null) {
+                          await _pickDateTime();
+                        }
+                      },
                       contentPadding: EdgeInsets.zero,
                       title: const Text('Schedule for later'),
                     ),
