@@ -208,6 +208,7 @@ class AttendanceLocalSnapshot {
         'status': s.status.name,
         'createdBy': s.createdBy,
         if (s.remoteLearning) 'remoteLearning': true,
+        if (s.locationMetadataPending) 'locationMetadataPending': true,
       };
 
   static AttendanceSession _sessionFromJson(Map<String, dynamic> m) {
@@ -233,6 +234,7 @@ class AttendanceLocalSnapshot {
           : SessionStatus.active,
       createdBy: m['createdBy'] as String? ?? '',
       remoteLearning: m['remoteLearning'] == true,
+      locationMetadataPending: m['locationMetadataPending'] == true,
     );
   }
 

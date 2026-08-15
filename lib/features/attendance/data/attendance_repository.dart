@@ -6091,8 +6091,9 @@ class AttendanceRepository extends ChangeNotifier {
     if (session.remoteLearning) {
       sessionMap['remoteLearning'] = true;
     }
-    if (locationMetadataPending && !session.remoteLearning) {
-      sessionMap['locationMetadataPending'] = true;
+    if (!session.remoteLearning) {
+      sessionMap['locationMetadataPending'] =
+          !isSessionGeofenceConfigured(session);
     }
     return sessionMap;
   }
@@ -6230,8 +6231,8 @@ class AttendanceRepository extends ChangeNotifier {
     }
     final sessionMetadataReady =
         remoteLearning || isSessionGeofenceConfigured(uploadSession);
-    if (!sessionMetadataReady && !remoteLearning) {
-      sessionMap['locationMetadataPending'] = true;
+    if (!remoteLearning) {
+      sessionMap['locationMetadataPending'] = !sessionMetadataReady;
     }
 
     Future<bool> attemptWrite() async {
@@ -6379,6 +6380,8 @@ class AttendanceRepository extends ChangeNotifier {
       status: SessionStatus.active,
       createdBy: createdBy,
       remoteLearning: remoteLearning,
+      locationMetadataPending: !remoteLearning &&
+          !isValidCheckInCoordinates(latitude, longitude),
     );
     AttendanceStore.addSession(session);
     _notifyStoreUpdated(refreshRecordWatch: true);

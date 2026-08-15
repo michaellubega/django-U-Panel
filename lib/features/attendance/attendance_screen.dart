@@ -1740,6 +1740,7 @@ class _StartSessionScreenState extends State<StartSessionScreen> {
           ? const Duration(seconds: 5)
           : const Duration(seconds: 8),
       forceFresh: false,
+      highAccuracy: !_remoteLearning && _radiusMeters <= 100,
     );
     if (!mounted) return;
 
@@ -1763,14 +1764,24 @@ class _StartSessionScreenState extends State<StartSessionScreen> {
   }
 
   Future<Position?> _resolvePositionForSessionStart() async {
-    if (_position != null) return _position;
+    final cached = _position;
+    if (cached != null &&
+        positionCapturedWithin(cached, const Duration(seconds: 60))) {
+      return cached;
+    }
     if (_resolvingLocation && _locationLoad != null) {
       await _locationLoad;
-      if (_position != null) return _position;
+      final refreshed = _position;
+      if (refreshed != null &&
+          positionCapturedWithin(refreshed, const Duration(seconds: 60))) {
+        return refreshed;
+      }
     }
     final r = await acquireCurrentGpsPosition(
-      timeLimit: const Duration(seconds: 6),
-      forceFresh: false,
+      timeLimit: const Duration(seconds: 10),
+      reuseMaxAge: const Duration(seconds: 60),
+      forceFresh: true,
+      highAccuracy: !_remoteLearning && _radiusMeters <= 100,
     );
     if (!mounted) return r.position;
     setState(() {

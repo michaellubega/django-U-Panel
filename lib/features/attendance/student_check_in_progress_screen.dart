@@ -105,8 +105,6 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
   bool _pipelineRunning = false;
 
   static const Duration _stageMinGap = Duration(milliseconds: 200);
-  static const Duration _linkedSessionLocationMaxAge = Duration(minutes: 8);
-
   /// Resolves the session to validate against, refreshing when the store was
   /// overwritten with a stale closed/expired copy during background sync.
   Future<AttendanceSession?> _resolveSessionForPipeline() async {
@@ -265,6 +263,7 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
     required bool likelyOnline,
   }) async {
     await _advanceToStage(1);
+    final highAccuracy = sessionRequiresHighAccuracyGps(session);
 
     if (session.remoteLearning) {
       setState(() {
@@ -291,8 +290,9 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
       return null;
     }
 
+    final requiresGeofence = !sessionSkipsLocationCheck(session);
+    final maxAge = locationMaxAgeForSession(session);
     Position? recent;
-    final maxAge = _linkedSessionLocationMaxAge;
     final prefetched = widget.prefetchedPosition;
     if (prefetched != null && positionCapturedWithin(prefetched, maxAge)) {
       recent = prefetched;
@@ -302,7 +302,9 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
         recent = primed;
       }
     }
-    recent ??= await readRecentKnownPosition(maxAge: maxAge);
+    if (recent == null) {
+      recent = await readRecentKnownPosition(maxAge: maxAge);
+    }
 
     if (recent != null) {
       return (latitude: recent.latitude, longitude: recent.longitude);
@@ -328,10 +330,16 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
     }
 
     final gps = await acquireCurrentGpsPosition(
-      timeLimit:
-          likelyOnline ? const Duration(seconds: 8) : const Duration(seconds: 14),
+      timeLimit: requiresGeofence
+          ? (likelyOnline
+              ? const Duration(seconds: 12)
+              : const Duration(seconds: 16))
+          : (likelyOnline
+              ? const Duration(seconds: 8)
+              : const Duration(seconds: 14)),
       reuseMaxAge: maxAge,
-      forceFresh: false,
+      forceFresh: requiresGeofence,
+      highAccuracy: highAccuracy,
     );
     if (!mounted) return null;
     setState(() => _resolvingLocation = false);
