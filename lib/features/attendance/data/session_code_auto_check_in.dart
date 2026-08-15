@@ -263,11 +263,15 @@ class SessionCodeAutoCheckIn {
 
       final latitude = gps.position!.latitude;
       final longitude = gps.position!.longitude;
+      final accuracy = gps.position!.accuracy;
+      final studentAccuracy =
+          accuracy.isFinite && accuracy > 0 ? accuracy : null;
       final verification = verifyLinkedSessionCheckIn(
         session: session,
         at: captureIntentAt,
         latitude: latitude,
         longitude: longitude,
+        studentAccuracyMeters: studentAccuracy,
       );
       if (!verification.passed) {
         if (showFeedback) {
@@ -325,6 +329,7 @@ class SessionCodeAutoCheckIn {
           .submitStudentCheckInWithOfflineSupport(
         record,
         listIdOverride: list.id,
+        gpsAccuracyMeters: studentAccuracy,
       );
 
       switch (outcome) {

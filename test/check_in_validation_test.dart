@@ -86,4 +86,23 @@ void main() {
     expect(verification.failureMessage, contains('Too far from class'));
     expect(verification.failureMessage, contains('1.50 km'));
   });
+
+  test('gps uncertainty buffer adds tolerance for inaccurate fixes', () {
+    final session = _session(radiusMeters: 25);
+    const nearLat = 0.34814;
+    const nearLng = 32.5825;
+    expect(
+      isPositionWithinSession(session, nearLat, nearLng),
+      isFalse,
+    );
+    expect(
+      isPositionWithinSession(
+        session,
+        nearLat,
+        nearLng,
+        studentAccuracyMeters: 60,
+      ),
+      isTrue,
+    );
+  });
 }
