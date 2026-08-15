@@ -226,6 +226,9 @@ class AttendanceSession {
   /// Lecturer GPS centre not finalized yet — skip radius until updated.
   final bool locationMetadataPending;
 
+  /// Horizontal accuracy (metres) of lecturer GPS when the session centre was set.
+  final double? sessionGpsAccuracyMeters;
+
   AttendanceSession({
     required this.id,
     required this.listId,
@@ -239,6 +242,7 @@ class AttendanceSession {
     required this.createdBy,
     this.remoteLearning = false,
     this.locationMetadataPending = false,
+    this.sessionGpsAccuracyMeters,
   });
 
   bool get isExpired => DateTime.now().isAfter(endTime);
@@ -916,6 +920,7 @@ class AttendanceStore {
       createdBy: s.createdBy,
       remoteLearning: s.remoteLearning,
       locationMetadataPending: s.locationMetadataPending,
+      sessionGpsAccuracyMeters: s.sessionGpsAccuracyMeters,
     ));
   }
 
