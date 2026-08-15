@@ -220,10 +220,16 @@ class SessionCodeAutoCheckIn {
 
       final captureIntentAt = DateTime.now();
       final deviceIdFuture = DeviceIdentity.resolve();
+      final requiresGeofence = !sessionSkipsLocationCheck(session);
+      final maxAge = locationMaxAgeForSession(session);
+      final highAccuracy = sessionRequiresHighAccuracyGps(session);
       final gpsFuture = acquireCurrentGpsPosition(
-        timeLimit: const Duration(seconds: 8),
-        reuseMaxAge: const Duration(minutes: 8),
-        forceFresh: false,
+        timeLimit: requiresGeofence
+            ? const Duration(seconds: 12)
+            : const Duration(seconds: 8),
+        reuseMaxAge: maxAge,
+        forceFresh: requiresGeofence,
+        highAccuracy: highAccuracy,
       );
 
       if (!isTimestampWithinSessionBounds(session, captureIntentAt)) {
