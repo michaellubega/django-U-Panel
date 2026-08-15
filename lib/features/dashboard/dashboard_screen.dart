@@ -10,6 +10,7 @@ import '../../core/theme/app_theme.dart';
 import '../attendance/attendance_list_hierarchy.dart';
 import '../attendance/data/attendance_repository.dart';
 import '../attendance/models/attendance_models.dart';
+import '../notices/create_notice_screen.dart' show NoticeAudienceKind;
 import '../notices/data/notices_repository.dart';
 import '../notices/notice_create_flow.dart';
 import '../attendance/attendance_screen.dart';
