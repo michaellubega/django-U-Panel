@@ -1597,7 +1597,7 @@ class StartSessionScreen extends StatefulWidget {
 
 class _StartSessionScreenState extends State<StartSessionScreen> {
   final _createdByC = TextEditingController();
-  double _radiusMeters = 1500;
+  static const double _sessionRadiusMeters = 1500;
   int _durationMinutes = 15;
   bool _remoteLearning = false;
   Position? _position;
@@ -1609,7 +1609,6 @@ class _StartSessionScreenState extends State<StartSessionScreen> {
   AttendanceSession? _startedSession;
   Future<void>? _locationLoad;
 
-  static const List<double> _radiusOptions = [25, 50, 100, 150, 1500];
   static const List<int> _durationOptions = [1, 2, 10, 15, 20];
 
   bool get _lecturerOnly {
@@ -1740,7 +1739,7 @@ class _StartSessionScreenState extends State<StartSessionScreen> {
           ? const Duration(seconds: 5)
           : const Duration(seconds: 8),
       forceFresh: false,
-      highAccuracy: !_remoteLearning && _radiusMeters <= 100,
+      highAccuracy: false,
     );
     if (!mounted) return;
 
@@ -1777,7 +1776,7 @@ class _StartSessionScreenState extends State<StartSessionScreen> {
       timeLimit: const Duration(seconds: 12),
       reuseMaxAge: const Duration(seconds: 30),
       forceFresh: true,
-      highAccuracy: !_remoteLearning && _radiusMeters <= 100,
+      highAccuracy: false,
     );
     if (!mounted) return r.position;
     setState(() {
@@ -1900,7 +1899,7 @@ class _StartSessionScreenState extends State<StartSessionScreen> {
         createdBy: createdBy,
         latitude: latitude,
         longitude: longitude,
-        radiusMeters: _remoteLearning ? 0 : _radiusMeters,
+        radiusMeters: _remoteLearning ? 0 : _sessionRadiusMeters,
         durationMinutes: Duration(minutes: _durationMinutes),
         remoteLearning: _remoteLearning,
         startIntentAt: startIntentAt,
@@ -2013,26 +2012,17 @@ class _StartSessionScreenState extends State<StartSessionScreen> {
                     const SizedBox(height: 18),
                   ],
                   if (!_remoteLearning) ...[
-                    DropdownButtonFormField<double>(
-                      value: _radiusMeters,
+                    InputDecorator(
                       decoration: const InputDecoration(
                         labelText: 'Allowed radius',
                         prefixIcon: Icon(Icons.radar_rounded),
                       ),
-                      items: _radiusOptions
-                          .map(
-                            (r) => DropdownMenuItem(
-                              value: r,
-                              child: Text(
-                                r >= 1000
-                                    ? '${(r / 1000).toStringAsFixed(1)} km'
-                                    : '${r.toInt()} m',
-                              ),
+                      child: Text(
+                        '1.5 km',
+                        style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                              fontWeight: FontWeight.w600,
                             ),
-                          )
-                          .toList(),
-                      onChanged: (v) =>
-                          setState(() => _radiusMeters = v ?? 1500),
+                      ),
                     ),
                     const SizedBox(height: 16),
                   ],
