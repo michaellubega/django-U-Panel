@@ -1597,7 +1597,7 @@ class StartSessionScreen extends StatefulWidget {
 
 class _StartSessionScreenState extends State<StartSessionScreen> {
   final _createdByC = TextEditingController();
-  double _radiusMeters = 50;
+  double _radiusMeters = 1500;
   int _durationMinutes = 15;
   bool _remoteLearning = false;
   Position? _position;
@@ -2032,7 +2032,7 @@ class _StartSessionScreenState extends State<StartSessionScreen> {
                           )
                           .toList(),
                       onChanged: (v) =>
-                          setState(() => _radiusMeters = v ?? 50),
+                          setState(() => _radiusMeters = v ?? 1500),
                     ),
                     const SizedBox(height: 16),
                   ],
