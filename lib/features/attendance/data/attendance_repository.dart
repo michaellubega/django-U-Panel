@@ -6989,6 +6989,80 @@ class AttendanceRepository extends ChangeNotifier {
     await finalizeRollForSession(sessionId);
   }
 
+  /// Closes the session without writing absent rows or keeping local roll data.
+  Future<void> closeSessionWithoutSavingRoll(String sessionId) async {
+    final session = AttendanceStore.sessionById(sessionId);
+    if (session == null) return;
+
+    closeSessionLocally(sessionId);
+    await _discardLocalSessionRollData(session);
+    try {
+      await _archiveDiscardedSessionToFirestore(session);
+      unawaited(SessionRtdSync.removeRunningSession(session.id));
+      unawaited(_discardRemoteSessionRollData(session.id));
+    } catch (_) {}
+    await PendingSessionCreateQueue.removeBySessionId(session.id);
+    _schedulePersistScopedLocalSnapshot();
+    _notifyStoreUpdated(refreshRecordWatch: true);
+  }
+
+  Future<void> _discardLocalSessionRollData(AttendanceSession session) async {
+    final sessionId = session.id;
+    AttendanceStore.attendanceRecords
+        .removeWhere((r) => r.sessionId == sessionId);
+    AttendanceStore.invalidateLookupCaches();
+    await PendingCheckInQueue.removeBySessionId(sessionId);
+    await PendingSessionCodeQueue.removeForSession(
+      sessionId: sessionId,
+      sessionCodeRaw: session.sessionCode,
+    );
+  }
+
+  Future<void> _archiveDiscardedSessionToFirestore(
+    AttendanceSession session,
+  ) async {
+    final sessionMap = <String, dynamic>{
+      'listId': session.listId,
+      'sessionCode': normalizeSessionCodeInput(session.sessionCode),
+      'latitude': session.latitude,
+      'longitude': session.longitude,
+      'radiusMeters': session.radiusMeters,
+      'startTime': apiDateToField(session.startTime),
+      'endTime': apiDateToField(session.endTime),
+      'status': SessionStatus.closed.name,
+      'createdBy': session.createdBy,
+      'finalized': false,
+      'rollDiscarded': true,
+      if (session.remoteLearning) 'remoteLearning': true,
+    };
+    final creatorUid = AuthRepository.instance.currentUserId?.trim();
+    if (creatorUid != null && creatorUid.isNotEmpty) {
+      sessionMap['createdByUid'] = creatorUid;
+    }
+    await _firestore
+        .collection(ApiCollections.attendanceSessions)
+        .doc(session.id)
+        .set(sessionMap, ApiSetOptions(merge: true))
+        .timeout(_sessionPublishTimeout);
+  }
+
+  Future<void> _discardRemoteSessionRollData(String sessionId) async {
+    if (!AppConnectivity.instance.hasNetworkInterface) return;
+    final sid = sessionId.trim();
+    if (sid.isEmpty) return;
+    try {
+      final snap = await _firestore
+          .collection(ApiCollections.attendanceRecords)
+          .where('sessionId', isEqualTo: sid)
+          .get();
+      for (final doc in snap.docs) {
+        try {
+          await doc.reference.delete().timeout(_sessionPublishFastTimeout);
+        } catch (_) {}
+      }
+    } catch (_) {}
+  }
+
   /// For everyone on the list roster (sign-ins) plus anyone who checked in,
   /// writes absent rows per student once their grace window ends (7-day cap or
   /// a later session on the same list is present/absent for that student).

@@ -276,6 +276,16 @@ class PendingCheckInQueue {
     notifyPendingWorkQueuesChanged();
   }
 
+  static Future<void> removeBySessionId(String sessionId) async {
+    final sid = sessionId.trim();
+    if (sid.isEmpty) return;
+    await mutate((all) async {
+      all.removeWhere((e) => e.sessionId == sid);
+      return all;
+    });
+    notifyPendingWorkQueuesChanged();
+  }
+
   /// Caches that upload evidence reached RTD (survives Firestore read denials).
   static Future<void> markUploaded(String id, {DateTime? at}) async {
     final trimmed = id.trim();
