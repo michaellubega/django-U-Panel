@@ -127,15 +127,23 @@ bool noticeIsLive(NoticeRecord n, [DateTime? now]) {
 bool noticeAllowsPendingPreview({
   required NoticeRecord n,
   required bool admin,
+  bool kiuAdmin = false,
   bool lecturer = false,
   Set<String> lecturerListIds = const {},
 }) {
+  final manual = (n.kind ?? '').toLowerCase() == 'manual';
   if (admin) {
     if (n.audience == NoticeAudienceKind.kiuAdmins) {
-      return (n.kind ?? '').toLowerCase() == 'manual';
+      return manual;
+    }
+    if (n.audience == NoticeAudienceKind.classList) {
+      return manual;
     }
     return n.audience == NoticeAudienceKind.allAppUsers &&
         noticeNotifiesAdmin(n);
+  }
+  if (kiuAdmin && n.audience == NoticeAudienceKind.classList) {
+    return manual;
   }
   if (lecturer && n.audience == NoticeAudienceKind.classList) {
     final listId = n.targetListId?.trim() ?? '';
@@ -257,6 +265,7 @@ bool noticeVisibleToUser(
   return noticeAllowsPendingPreview(
     n: n,
     admin: admin,
+    kiuAdmin: kiuAdmin,
     lecturer: lecturer,
     lecturerListIds: lecturerListIds,
   );
