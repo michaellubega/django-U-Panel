@@ -4957,6 +4957,8 @@ class AttendanceRepository extends ChangeNotifier {
       createdBy: data['createdBy'] as String? ?? '',
       remoteLearning: data['remoteLearning'] == true,
       locationMetadataPending: data['locationMetadataPending'] == true,
+      sessionGpsAccuracyMeters:
+          (data['sessionGpsAccuracyMeters'] as num?)?.toDouble(),
     );
   }
 
@@ -6094,6 +6096,10 @@ class AttendanceRepository extends ChangeNotifier {
     if (!session.remoteLearning) {
       sessionMap['locationMetadataPending'] =
           !isSessionGeofenceConfigured(session);
+      if (session.sessionGpsAccuracyMeters != null &&
+          session.sessionGpsAccuracyMeters! > 0) {
+        sessionMap['sessionGpsAccuracyMeters'] = session.sessionGpsAccuracyMeters;
+      }
     }
     return sessionMap;
   }
@@ -6167,6 +6173,7 @@ class AttendanceRepository extends ChangeNotifier {
     required String? creatorUid,
     required bool remoteLearning,
     required AttendanceSession session,
+    double? sessionGpsAccuracyMeters,
     bool skipJoinCodeRecheck = false,
   }) async {
     final uploadCode = skipJoinCodeRecheck
@@ -6233,6 +6240,9 @@ class AttendanceRepository extends ChangeNotifier {
         remoteLearning || isSessionGeofenceConfigured(uploadSession);
     if (!remoteLearning) {
       sessionMap['locationMetadataPending'] = !sessionMetadataReady;
+      if (sessionGpsAccuracyMeters != null && sessionGpsAccuracyMeters > 0) {
+        sessionMap['sessionGpsAccuracyMeters'] = sessionGpsAccuracyMeters;
+      }
     }
 
     Future<bool> attemptWrite() async {
@@ -6307,6 +6317,7 @@ class AttendanceRepository extends ChangeNotifier {
     required String? creatorUid,
     required bool remoteLearning,
     required AttendanceSession session,
+    double? sessionGpsAccuracyMeters,
   }) async {
     _publishingSessionIds.add(sessionId);
     _notifyStoreUpdated();
@@ -6325,6 +6336,7 @@ class AttendanceRepository extends ChangeNotifier {
         creatorUid: creatorUid,
         remoteLearning: remoteLearning,
         session: session,
+        sessionGpsAccuracyMeters: sessionGpsAccuracyMeters,
         skipJoinCodeRecheck: true,
       );
       if (!uploaded) {
@@ -6350,6 +6362,7 @@ class AttendanceRepository extends ChangeNotifier {
     required Duration durationMinutes,
     bool remoteLearning = false,
     DateTime? startIntentAt,
+    double? sessionGpsAccuracyMeters,
   }) async {
     final existing = _activeSessionForList(listId);
     if (existing != null) {
@@ -6382,6 +6395,7 @@ class AttendanceRepository extends ChangeNotifier {
       remoteLearning: remoteLearning,
       locationMetadataPending: !remoteLearning &&
           !isValidCheckInCoordinates(latitude, longitude),
+      sessionGpsAccuracyMeters: remoteLearning ? null : sessionGpsAccuracyMeters,
     );
     AttendanceStore.addSession(session);
     _notifyStoreUpdated(refreshRecordWatch: true);
@@ -6459,6 +6473,7 @@ class AttendanceRepository extends ChangeNotifier {
         creatorUid: creatorUid,
         remoteLearning: remoteLearning,
         session: session,
+        sessionGpsAccuracyMeters: sessionGpsAccuracyMeters,
       ),
     );
     return (
@@ -7334,6 +7349,7 @@ class AttendanceRepository extends ChangeNotifier {
     required double longitude,
     required String deviceId,
     String? sessionCodeRaw,
+    double? gpsAccuracyMeters,
   }) async {
     if (deviceId.trim().isEmpty) {
       return _CheckInAttemptUploadResult.failed;
@@ -7368,6 +7384,7 @@ class AttendanceRepository extends ChangeNotifier {
       studentName: studentName,
       submittedByUid: uid,
       awaitingSession: awaiting,
+      gpsAccuracyMeters: gpsAccuracyMeters,
     );
     if (!rtdUploaded) {
       return _CheckInAttemptUploadResult.failed;
@@ -8890,6 +8907,7 @@ class AttendanceRepository extends ChangeNotifier {
     AttendanceRecord record, {
     String? listIdOverride,
     String? sessionCodeRaw,
+    double? gpsAccuracyMeters,
   }) async {
     record = _attendanceRecordWithCanonicalStudentId(record);
 
@@ -9100,6 +9118,7 @@ class AttendanceRepository extends ChangeNotifier {
       longitude: record.longitude,
       deviceId: record.deviceId?.trim() ?? '',
       sessionCodeRaw: codeForAttempt,
+      gpsAccuracyMeters: gpsAccuracyMeters,
     );
     var submitted = uploadResult == _CheckInAttemptUploadResult.submitted;
     var permissionDenied =
@@ -9118,6 +9137,7 @@ class AttendanceRepository extends ChangeNotifier {
         longitude: record.longitude,
         deviceId: record.deviceId?.trim() ?? '',
         sessionCodeRaw: codeForAttempt,
+        gpsAccuracyMeters: gpsAccuracyMeters,
       );
       submitted = uploadResult == _CheckInAttemptUploadResult.submitted;
       permissionDenied =

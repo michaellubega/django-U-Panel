@@ -13,7 +13,14 @@ CHECK_IN_COLLECTION = "attendance/check-in-attempts"
 SESSIONS_COLLECTION = "attendance/sessions"
 RECORDS_COLLECTION = "attendance/records"
 
-GEOFENCE_BUFFER_METERS = 15
+GEOFENCE_BUFFER_METERS = 25
+MAX_GPS_UNCERTAINTY_BUFFER_METERS = 75
+
+
+def _gps_uncertainty_buffer(accuracy_meters: float) -> float:
+    if accuracy_meters <= 0:
+        return 0.0
+    return min(accuracy_meters * 0.5, MAX_GPS_UNCERTAINTY_BUFFER_METERS)
 
 
 def maybe_process_check_in(doc: ApiDocument) -> None:
@@ -224,7 +231,18 @@ def _within_geofence(session_data: dict, attempt_data: dict) -> bool:
     if abs(lat) < 0.001 and abs(lng) < 0.001:
         return False
     distance = _haversine_meters(center_lat, center_lng, lat, lng)
-    return distance <= radius + GEOFENCE_BUFFER_METERS
+    try:
+        student_accuracy = float(attempt_data.get("gpsAccuracyMeters") or 0)
+    except (TypeError, ValueError):
+        student_accuracy = 0.0
+    try:
+        center_accuracy = float(session_data.get("sessionGpsAccuracyMeters") or 0)
+    except (TypeError, ValueError):
+        center_accuracy = 0.0
+    uncertainty = _gps_uncertainty_buffer(student_accuracy) + _gps_uncertainty_buffer(
+        center_accuracy
+    )
+    return distance <= radius + GEOFENCE_BUFFER_METERS + uncertainty
 
 
 def _haversine_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
