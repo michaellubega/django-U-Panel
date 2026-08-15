@@ -10,13 +10,13 @@ import 'data/notices_repository.dart';
 Future<bool> openCreateNoticeAndPublish(BuildContext context) async {
   await AttendanceRepository.instance.loadAttendanceListsFirst(force: false);
 
-  if (!context.mounted) return;
+  if (!context.mounted) return false;
   final draft = await Navigator.of(context).push<NoticeCreationResult>(
     MaterialPageRoute(
       builder: (ctx) => const CreateNoticeScreen(),
     ),
   );
-  if (!context.mounted || draft == null) return;
+  if (!context.mounted || draft == null) return false;
 
   var author = AuthRepository.instance.currentFullName?.trim() ?? '';
   if (author.isEmpty) {
@@ -37,7 +37,7 @@ Future<bool> openCreateNoticeAndPublish(BuildContext context) async {
     draft: draft,
     author: author,
   );
-  if (!context.mounted) return;
+  if (!context.mounted) return false;
   if (err != null) {
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
