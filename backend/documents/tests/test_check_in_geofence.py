@@ -68,4 +68,20 @@ class CheckInGeofenceTests(TestCase):
         # ~60 m north of centre — inside 50 + buffer, outside raw radius.
         attempt = self._attempt(latitude=0.34814, longitude=32.5825)
         self.assertTrue(_within_geofence(session, attempt))
-        self.assertEqual(GEOFENCE_BUFFER_METERS, 15)
+        self.assertEqual(GEOFENCE_BUFFER_METERS, 25)
+
+    def test_student_gps_accuracy_adds_tolerance(self) -> None:
+        session = self._session(radiusMeters=25)
+        # ~60 m north — outside 25+25 buffer but inside when student accuracy is 60 m.
+        attempt = self._attempt(
+            latitude=0.34814,
+            longitude=32.5825,
+            gpsAccuracyMeters=60,
+        )
+        self.assertTrue(_within_geofence(session, attempt))
+        self.assertFalse(
+            _within_geofence(
+                session,
+                self._attempt(latitude=0.34814, longitude=32.5825),
+            ),
+        )

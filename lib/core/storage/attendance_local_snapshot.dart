@@ -209,6 +209,8 @@ class AttendanceLocalSnapshot {
         'createdBy': s.createdBy,
         if (s.remoteLearning) 'remoteLearning': true,
         if (s.locationMetadataPending) 'locationMetadataPending': true,
+        if (s.sessionGpsAccuracyMeters != null)
+          'sessionGpsAccuracyMeters': s.sessionGpsAccuracyMeters,
       };
 
   static AttendanceSession _sessionFromJson(Map<String, dynamic> m) {
@@ -235,6 +237,8 @@ class AttendanceLocalSnapshot {
       createdBy: m['createdBy'] as String? ?? '',
       remoteLearning: m['remoteLearning'] == true,
       locationMetadataPending: m['locationMetadataPending'] == true,
+      sessionGpsAccuracyMeters:
+          (m['sessionGpsAccuracyMeters'] as num?)?.toDouble(),
     );
   }
 

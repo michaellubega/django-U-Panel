@@ -1764,22 +1764,18 @@ class _StartSessionScreenState extends State<StartSessionScreen> {
   }
 
   Future<Position?> _resolvePositionForSessionStart() async {
-    final cached = _position;
-    if (cached != null &&
-        positionCapturedWithin(cached, const Duration(seconds: 60))) {
-      return cached;
-    }
     if (_resolvingLocation && _locationLoad != null) {
       await _locationLoad;
-      final refreshed = _position;
-      if (refreshed != null &&
-          positionCapturedWithin(refreshed, const Duration(seconds: 60))) {
-        return refreshed;
-      }
     }
+    setState(() {
+      _resolvingLocation = true;
+      _locationError = null;
+      _locationServiceDisabled = false;
+      _locationPermissionBlocked = false;
+    });
     final r = await acquireCurrentGpsPosition(
-      timeLimit: const Duration(seconds: 10),
-      reuseMaxAge: const Duration(seconds: 60),
+      timeLimit: const Duration(seconds: 12),
+      reuseMaxAge: const Duration(seconds: 30),
       forceFresh: true,
       highAccuracy: !_remoteLearning && _radiusMeters <= 100,
     );
@@ -1850,12 +1846,14 @@ class _StartSessionScreenState extends State<StartSessionScreen> {
 
       double latitude;
       double longitude;
+      Position? sessionPosition;
       if (_remoteLearning) {
+        sessionPosition = _position;
         latitude = _position?.latitude ?? 0;
         longitude = _position?.longitude ?? 0;
       } else {
-        final position = parallel[1] as Position?;
-        if (position == null) {
+        sessionPosition = parallel[1] as Position?;
+        if (sessionPosition == null) {
           final msg = _locationError ??
               'Turn on GPS, allow location for U-Panel, then tap Refresh location.';
           ScaffoldMessenger.of(context).showSnackBar(
@@ -1863,9 +1861,17 @@ class _StartSessionScreenState extends State<StartSessionScreen> {
           );
           return;
         }
-        latitude = position.latitude;
-        longitude = position.longitude;
+        latitude = sessionPosition.latitude;
+        longitude = sessionPosition.longitude;
       }
+
+      final sessionGpsAccuracy = _remoteLearning
+          ? null
+          : (sessionPosition != null &&
+                  sessionPosition.accuracy.isFinite &&
+                  sessionPosition.accuracy > 0
+              ? sessionPosition.accuracy
+              : null);
 
       if (!mounted) {
         return;
@@ -1898,6 +1904,7 @@ class _StartSessionScreenState extends State<StartSessionScreen> {
         durationMinutes: Duration(minutes: _durationMinutes),
         remoteLearning: _remoteLearning,
         startIntentAt: startIntentAt,
+        sessionGpsAccuracyMeters: sessionGpsAccuracy,
       );
       final session = created.session;
       final noticeErr =
