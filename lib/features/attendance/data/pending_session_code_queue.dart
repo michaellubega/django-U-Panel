@@ -6,6 +6,7 @@ import '../../../core/device/device_student_registration_lock.dart';
 import '../../../core/notifications/pending_work_notification_hooks.dart';
 import '../../../core/storage/attendance_local_queues.dart';
 import '../../../core/storage/local_json_decode.dart';
+import '../models/attendance_models.dart';
 import 'attendance_repository.dart';
 import 'pending_retention.dart';
 import 'pending_session_code_claim_upload.dart';
@@ -401,6 +402,26 @@ class PendingSessionCodeQueue {
   static Future<void> removeById(String id) async {
     await mutate((all) async {
       all.removeWhere((e) => e.id == id);
+      return all;
+    });
+    notifyPendingWorkQueuesChanged();
+  }
+
+  static Future<void> removeForSession({
+    required String sessionId,
+    required String sessionCodeRaw,
+  }) async {
+    final sid = sessionId.trim();
+    final code = normalizeSessionCodeInput(sessionCodeRaw);
+    await mutate((all) async {
+      all.removeWhere((e) {
+        if (sid.isNotEmpty && e.sessionId?.trim() == sid) return true;
+        if (code.isNotEmpty &&
+            normalizeSessionCodeInput(e.sessionCodeRaw) == code) {
+          return true;
+        }
+        return false;
+      });
       return all;
     });
     notifyPendingWorkQueuesChanged();

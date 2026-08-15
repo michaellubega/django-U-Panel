@@ -1597,7 +1597,7 @@ class StartSessionScreen extends StatefulWidget {
 
 class _StartSessionScreenState extends State<StartSessionScreen> {
   final _createdByC = TextEditingController();
-  double _radiusMeters = 50;
+  double _radiusMeters = 1500;
   int _durationMinutes = 15;
   bool _remoteLearning = false;
   Position? _position;
@@ -2032,7 +2032,7 @@ class _StartSessionScreenState extends State<StartSessionScreen> {
                           )
                           .toList(),
                       onChanged: (v) =>
-                          setState(() => _radiusMeters = v ?? 50),
+                          setState(() => _radiusMeters = v ?? 1500),
                     ),
                     const SizedBox(height: 16),
                   ],
@@ -2370,6 +2370,50 @@ class _SessionCodeDisplayState extends State<_SessionCodeDisplay>
     await _closeSessionAndExit(automatic: false);
   }
 
+  Future<void> _endSessionWithoutSavingRoll() async {
+    if (_closing) return;
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('End without saving?'),
+        content: const Text(
+          'The join code will stop working and attendance from this session will '
+          'not be saved. Students who already checked in will not appear on the roll '
+          'for this session.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: AppTheme.error,
+              foregroundColor: Colors.white,
+            ),
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('End without saving'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true || !mounted) return;
+    if (_closing) return;
+    setState(() => _closing = true);
+    try {
+      await AttendanceRepository.instance
+          .closeSessionWithoutSavingRoll(_session.id);
+      if (!mounted) return;
+      Navigator.of(context).pop(true);
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not end session: $e')),
+      );
+      setState(() => _closing = false);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final session = _session;
@@ -2673,6 +2717,12 @@ class _SessionCodeDisplayState extends State<_SessionCodeDisplay>
                     )
                   : const Icon(Icons.stop_circle_outlined),
               label: Text(_closing ? 'Saving…' : 'End session & save roll'),
+            ),
+            const SizedBox(height: 8),
+            TextButton.icon(
+              onPressed: _closing ? null : _endSessionWithoutSavingRoll,
+              icon: const Icon(Icons.delete_outline_rounded, size: 20),
+              label: const Text('End without saving'),
             ),
           ],
         ),
