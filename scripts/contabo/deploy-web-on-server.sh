@@ -60,7 +60,12 @@ OLD_SHA="$(bundle_sha)"
 echo "==> Pull latest main"
 git fetch origin main
 git checkout main
-git pull origin main
+if git rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1; then
+  echo "    Aborting in-progress merge (website/app is re-synced from gh-pages below)"
+  git merge --abort
+fi
+# website/app is replaced from gh-pages on every deploy; local edits must not block pulls.
+git reset --hard origin/main
 echo "    now at: $(git log -1 --oneline)"
 
 sync_from_gh_pages() {
