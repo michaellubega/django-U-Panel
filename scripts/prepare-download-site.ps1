@@ -215,7 +215,12 @@ if ($winSrc) {
     if ($winSrc -ne $winDst) {
         Copy-ReleaseBinary -Source $winSrc -Destination $winDst
     }
-    Copy-ReleaseBinary -Source $winDst -Destination $winLegacyDst
+    # Remove legacy installer names so only buildN filename is published.
+    foreach ($legacy in @($winLegacyDst, (Join-Path $downloads "UPanelSetup.exe"))) {
+        if ((Test-Path -LiteralPath $legacy) -and ((Resolve-Path -LiteralPath $legacy).Path -ne (Resolve-Path -LiteralPath $winDst).Path)) {
+            Remove-Item -LiteralPath $legacy -Force -ErrorAction SilentlyContinue
+        }
+    }
     $release.windows.available = $true
     $release.windows.size = Format-Size (Get-Item $winDst).Length
     Write-Host "Windows installer: $winDst"
