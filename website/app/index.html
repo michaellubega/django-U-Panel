@@ -7,6 +7,9 @@
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
   <meta name="description" content="U-Panel attendance and campus tools for KIU.">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
 
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
@@ -102,7 +105,38 @@
     })();
   </script>
 
-  <link rel="preload" href="flutter_bootstrap.js" as="script">
+  <script>
+    // Force one hard reload when the server publishes a new web build.
+    (function upanelBuildReloadGuard() {
+      var KEY = 'upanel_web_build_v1';
+      fetch('version.json', { cache: 'no-store' })
+        .then(function (res) {
+          return res.ok ? res.json() : null;
+        })
+        .then(function (meta) {
+          if (!meta || meta.build_number == null) return;
+          var build = String(meta.build_number);
+          var prev = null;
+          try {
+            prev = localStorage.getItem(KEY);
+          } catch (_) {}
+          if (prev && prev !== build) {
+            try {
+              localStorage.setItem(KEY, build);
+            } catch (_) {}
+            var url = new URL(location.href);
+            url.searchParams.set('_b', build);
+            location.replace(url.toString());
+            return;
+          }
+          try {
+            localStorage.setItem(KEY, build);
+          } catch (_) {}
+        })
+        .catch(function () {});
+    })();
+  </script>
+
   <script>
     (function upanelPreloadCanvasKit() {
       var conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
@@ -319,27 +353,55 @@
       return Promise.resolve();
     };
 
+    window.upanelClearLegacyServiceWorkers = function () {
+      if (!('serviceWorker' in navigator)) return Promise.resolve();
+      return navigator.serviceWorker.getRegistrations().then(function (regs) {
+        return Promise.all(
+          regs.map(function (reg) {
+            return reg.unregister().catch(function () {});
+          })
+        );
+      });
+    };
+
     window.upanelBootFlutter = function () {
       if (window.__upanelBootstrapStarted) return;
       window.__upanelBootstrapStarted = true;
       window.__upanelBootRetries = window.__upanelBootRetries || 0;
 
-      var s = document.createElement('script');
-      s.src = 'flutter_bootstrap.js';
-      s.async = true;
-      s.onerror = function () {
-        window.__upanelBootRetries += 1;
-        window.__upanelBootstrapStarted = false;
-        if (window.__upanelBootRetries < 4) {
-          window.upanelSetBootStatus('Loading U-Panel…');
-          window.setTimeout(window.upanelBootFlutter, 600 * window.__upanelBootRetries);
-          return;
-        }
-        window.upanelShowBootRetry(
-          'Connection is slow. The app is still trying — tap Retry if needed.'
-        );
-      };
-      document.body.appendChild(s);
+      function loadBootstrap(cacheBust) {
+        var s = document.createElement('script');
+        s.src = 'flutter_bootstrap.js' + (cacheBust ? '?v=' + cacheBust : '');
+        s.async = true;
+        s.onerror = function () {
+          window.__upanelBootstrapStarted = false;
+          window.__upanelBootRetries += 1;
+          if (window.__upanelBootRetries < 4) {
+            window.upanelSetBootStatus('Loading U-Panel…');
+            window.setTimeout(window.upanelBootFlutter, 600 * window.__upanelBootRetries);
+            return;
+          }
+          window.upanelShowBootRetry(
+            'Connection is slow. The app is still trying — tap Retry if needed.'
+          );
+        };
+        document.body.appendChild(s);
+      }
+
+      fetch('version.json', { cache: 'no-store' })
+        .then(function (res) {
+          return res.ok ? res.json() : null;
+        })
+        .then(function (meta) {
+          var bust =
+            meta && meta.build_number
+              ? meta.build_number
+              : String(Date.now());
+          loadBootstrap(bust);
+        })
+        .catch(function () {
+          loadBootstrap(String(Date.now()));
+        });
     };
 
     window.upanelScheduleBootTimeout = function () {
@@ -403,8 +465,10 @@
           window.upanelShowApiSetupHelp();
           return;
         }
-        window.upanelBootFlutter();
-        window.upanelScheduleBootTimeout();
+        window.upanelClearLegacyServiceWorkers().finally(function () {
+          window.upanelBootFlutter();
+          window.upanelScheduleBootTimeout();
+        });
       }
 
       if (!needsProbe || !window.upanelResolveApiBaseUrl) {
