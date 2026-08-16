@@ -3,7 +3,7 @@ const SITE_DOMAIN = 'https://kiu.orion13.us';
 const DEFAULT_PLAY_STORE_URL =
   'https://play.google.com/store/apps/details?id=com.u_panel';
 const DEFAULT_WINDOWS_INSTALLER =
-  'https://kiu.orion13.us/downloads/U-Panel-1.0.0-build11-windows-setup.exe';
+  'https://kiu.orion13.us/downloads/U-Panel-1.0.0-build12-windows-setup.exe';
 
 function applyWebButton(button, noteEl, url) {
   if (!button) return;
@@ -51,7 +51,7 @@ async function loadReleaseInfo() {
     applyWebButton(webBtn, null, webUrl);
     applyWebButton(iosWebBtn, null, webUrl);
   } catch (_) {
-    if (versionEl) versionEl.textContent = 'Version 1.0.0 (build 7)';
+    if (versionEl) versionEl.textContent = 'Version 1.0.0 (build 12)';
     configureAndroid(
       { playStoreUrl: DEFAULT_PLAY_STORE_URL, available: true },
       androidPlayBtn,

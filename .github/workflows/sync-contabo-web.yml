@@ -27,19 +27,22 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Require SSH secret
+        id: ssh_check
         env:
           HAS_KEY: ${{ secrets.CONTABO_SSH_PRIVATE_KEY != '' }}
         run: |
           if [[ "${HAS_KEY}" != "true" ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "::warning::CONTABO_SSH_PRIVATE_KEY is not set — skipping server sync."
             echo "GitHub Pages (gh-pages) was updated, but kiu.orion13.us will stay stale"
             echo "until you SSH to the server and run:"
             echo "  cd /opt/upanel && bash scripts/contabo/deploy-web-on-server.sh"
             exit 0
           fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
 
       - name: Sync gh-pages bundle to Contabo
-        if: secrets.CONTABO_SSH_PRIVATE_KEY != ''
+        if: steps.ssh_check.outputs.skip != 'true'
         uses: appleboy/ssh-action@v1.2.0
         with:
           host: ${{ secrets.CONTABO_HOST || '169.58.135.136' }}
