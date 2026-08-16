@@ -2740,10 +2740,7 @@ class _ConsolidatedRollModel {
 
   static _ConsolidatedRollModel build(String listId) {
     final studentsById = AttendanceStore.rosterStudentMapForList(listId);
-    final listSessions = AttendanceStore.sessions
-        .where((s) => s.listId == listId)
-        .toList()
-      ..sort((a, b) => b.startTime.compareTo(a.startTime));
+    final listSessions = AttendanceStore.sessionsForListNewestFirst(listId);
     final listSessionIds = listSessions.map((s) => s.id).toSet();
     final listRecords = AttendanceStore.attendanceRecords
         .where((r) => listSessionIds.contains(r.sessionId))

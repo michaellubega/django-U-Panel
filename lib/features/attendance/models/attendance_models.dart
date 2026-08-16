@@ -226,6 +226,9 @@ class AttendanceSession {
   /// Lecturer GPS centre not finalized yet — skip radius until updated.
   final bool locationMetadataPending;
 
+  /// Session ended without saving roll — must not appear on rolls or stats.
+  final bool rollDiscarded;
+
   /// Horizontal accuracy (metres) of lecturer GPS when the session centre was set.
   final double? sessionGpsAccuracyMeters;
 
@@ -242,6 +245,7 @@ class AttendanceSession {
     required this.createdBy,
     this.remoteLearning = false,
     this.locationMetadataPending = false,
+    this.rollDiscarded = false,
     this.sessionGpsAccuracyMeters,
   });
 
@@ -255,7 +259,8 @@ class AttendanceSession {
   /// Completed sessions that count toward student attendance percentage
   /// (ended by time or closed in Firestore).
   bool get countsTowardRollStats =>
-      DateTime.now().isAfter(endTime) || status == SessionStatus.closed;
+      !rollDiscarded &&
+      (DateTime.now().isAfter(endTime) || status == SessionStatus.closed);
 }
 
 /// One check-in record: student + session + location.
@@ -920,9 +925,24 @@ class AttendanceStore {
       createdBy: s.createdBy,
       remoteLearning: s.remoteLearning,
       locationMetadataPending: s.locationMetadataPending,
+      rollDiscarded: s.rollDiscarded,
       sessionGpsAccuracyMeters: s.sessionGpsAccuracyMeters,
     ));
   }
+
+  /// Drops a session from memory — used when a session is discarded (never saved).
+  static void removeSession(String sessionId) {
+    final trimmed = sessionId.trim();
+    if (trimmed.isEmpty) return;
+    sessions.removeWhere((s) => s.id == trimmed);
+    _sessionByIdMemo?.remove(trimmed);
+    attendanceRecords.removeWhere((r) => r.sessionId == trimmed);
+    invalidateLookupCaches();
+  }
+
+  /// Sessions that appear in history, rolls, and reports (excludes discarded).
+  static bool sessionVisibleOnRoll(AttendanceSession session) =>
+      !session.rollDiscarded;
 
   static bool hasCheckedIn(String sessionId, String studentId) {
     return attendanceRecords
@@ -993,7 +1013,9 @@ class AttendanceStore {
 
   /// All sessions for a list, newest first (includes closed / expired).
   static List<AttendanceSession> sessionsForListNewestFirst(String listId) {
-    return sessions.where((s) => s.listId == listId).toList()
+    return sessions
+        .where((s) => s.listId == listId && sessionVisibleOnRoll(s))
+        .toList()
       ..sort((a, b) => b.startTime.compareTo(a.startTime));
   }
 
