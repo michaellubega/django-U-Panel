@@ -2471,7 +2471,8 @@ class AttendanceRepository extends ChangeNotifier {
     }
 
     final filteredRemoteSessions = remoteSessions
-        .where((s) => protectedListIds.contains(s.listId))
+        .where((s) =>
+            protectedListIds.contains(s.listId) && _sessionCountsOnRoll(s))
         .toList();
     final filteredRemoteSignIns = remoteSignIns
         .where((s) => protectedListIds.contains(s.listId))
@@ -4957,10 +4958,14 @@ class AttendanceRepository extends ChangeNotifier {
       createdBy: data['createdBy'] as String? ?? '',
       remoteLearning: data['remoteLearning'] == true,
       locationMetadataPending: data['locationMetadataPending'] == true,
+      rollDiscarded: data['rollDiscarded'] == true,
       sessionGpsAccuracyMeters:
           (data['sessionGpsAccuracyMeters'] as num?)?.toDouble(),
     );
   }
+
+  static bool _sessionCountsOnRoll(AttendanceSession session) =>
+      !session.rollDiscarded;
 
   static AttendanceRecord _recordFromDoc(
       ApiDocumentSnapshot d) {
@@ -5987,7 +5992,9 @@ class AttendanceRepository extends ChangeNotifier {
           .limit(limit)
           .get(_loadQueryOptions(force: true));
       for (final d in snap.docs) {
-        mergeSession(_sessionFromDoc(d));
+        final session = _sessionFromDoc(d);
+        if (!_sessionCountsOnRoll(session)) continue;
+        mergeSession(session);
       }
     }
 
@@ -6994,16 +7001,28 @@ class AttendanceRepository extends ChangeNotifier {
     final session = AttendanceStore.sessionById(sessionId);
     if (session == null) return;
 
-    closeSessionLocally(sessionId);
     await _discardLocalSessionRollData(session);
+    AttendanceStore.removeSession(session.id);
     try {
-      await _archiveDiscardedSessionToFirestore(session);
       unawaited(SessionRtdSync.removeRunningSession(session.id));
+      unawaited(_deleteDiscardedSessionFromFirestore(session.id));
       unawaited(_discardRemoteSessionRollData(session.id));
     } catch (_) {}
     await PendingSessionCreateQueue.removeBySessionId(session.id);
     _schedulePersistScopedLocalSnapshot();
     _notifyStoreUpdated(refreshRecordWatch: true);
+  }
+
+  Future<void> _deleteDiscardedSessionFromFirestore(String sessionId) async {
+    final sid = sessionId.trim();
+    if (sid.isEmpty) return;
+    try {
+      await _firestore
+          .collection(ApiCollections.attendanceSessions)
+          .doc(sid)
+          .delete()
+          .timeout(_sessionPublishTimeout);
+    } catch (_) {}
   }
 
   Future<void> _discardLocalSessionRollData(AttendanceSession session) async {
@@ -7016,34 +7035,6 @@ class AttendanceRepository extends ChangeNotifier {
       sessionId: sessionId,
       sessionCodeRaw: session.sessionCode,
     );
-  }
-
-  Future<void> _archiveDiscardedSessionToFirestore(
-    AttendanceSession session,
-  ) async {
-    final sessionMap = <String, dynamic>{
-      'listId': session.listId,
-      'sessionCode': normalizeSessionCodeInput(session.sessionCode),
-      'latitude': session.latitude,
-      'longitude': session.longitude,
-      'radiusMeters': session.radiusMeters,
-      'startTime': apiDateToField(session.startTime),
-      'endTime': apiDateToField(session.endTime),
-      'status': SessionStatus.closed.name,
-      'createdBy': session.createdBy,
-      'finalized': false,
-      'rollDiscarded': true,
-      if (session.remoteLearning) 'remoteLearning': true,
-    };
-    final creatorUid = AuthRepository.instance.currentUserId?.trim();
-    if (creatorUid != null && creatorUid.isNotEmpty) {
-      sessionMap['createdByUid'] = creatorUid;
-    }
-    await _firestore
-        .collection(ApiCollections.attendanceSessions)
-        .doc(session.id)
-        .set(sessionMap, ApiSetOptions(merge: true))
-        .timeout(_sessionPublishTimeout);
   }
 
   Future<void> _discardRemoteSessionRollData(String sessionId) async {
@@ -7068,7 +7059,7 @@ class AttendanceRepository extends ChangeNotifier {
   /// a later session on the same list is present/absent for that student).
   Future<void> finalizeRollForSession(String sessionId) async {
     final session = AttendanceStore.sessionById(sessionId);
-    if (session == null) return;
+    if (session == null || session.rollDiscarded) return;
 
     final awaitingUpload = await _sessionIdsAwaitingUpload();
     if (awaitingUpload.contains(sessionId)) return;

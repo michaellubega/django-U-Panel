@@ -2,7 +2,7 @@
 /// Matches [pubspec.yaml] `version: x.y.z+BUILD` for web verification.
 const String kAppBuildNumber = String.fromEnvironment(
   'APP_BUILD_NUMBER',
-  defaultValue: '10',
+  defaultValue: '11',
 );
 
 const String kAppVersionLabel = String.fromEnvironment(
