@@ -39,6 +39,28 @@ curl -sI https://kiu.orion13.us/app/main.dart.js | grep -i content-length
 
 Hard-refresh the browser (Ctrl+Shift+R) after deploy.
 
+### Cloudflare cache (important)
+
+Cloudflare can cache `/app/main.dart.js` at the edge for **up to 4 hours** even after
+the server is updated. Symptoms: deploy script succeeds but browsers still show the
+old UI.
+
+**Fix on deploy:** add to `.env.production` on the server:
+
+```env
+CLOUDFLARE_API_TOKEN=your-api-token
+CLOUDFLARE_ZONE_ID=your-zone-id
+```
+
+`deploy-web-on-server.sh` runs `purge-cloudflare-cache.sh` automatically.
+
+**Manual purge:** Cloudflare dashboard → **Caching** → **Purge by URL**:
+
+- `https://kiu.orion13.us/app/main.dart.js`
+- `https://kiu.orion13.us/app/index.html`
+
+**On your device:** hard refresh (Ctrl+Shift+R) or clear site data for `kiu.orion13.us`.
+
 ## Windows (commit website/ — optional)
 
 ```powershell
