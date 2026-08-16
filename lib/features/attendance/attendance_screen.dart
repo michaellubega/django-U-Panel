@@ -2015,6 +2015,7 @@ class _StartSessionScreenState extends State<StartSessionScreen> {
                     InputDecorator(
                       decoration: const InputDecoration(
                         labelText: 'Allowed radius',
+                        helperText: 'Fixed at 1.5 km for all on-campus sessions',
                         prefixIcon: Icon(Icons.radar_rounded),
                       ),
                       child: Text(
@@ -2709,7 +2710,7 @@ class _SessionCodeDisplayState extends State<_SessionCodeDisplay>
               label: Text(_closing ? 'Saving…' : 'End session & save roll'),
             ),
             const SizedBox(height: 8),
-            TextButton.icon(
+            OutlinedButton.icon(
               onPressed: _closing ? null : _endSessionWithoutSavingRoll,
               icon: const Icon(Icons.delete_outline_rounded, size: 20),
               label: const Text('End without saving'),
