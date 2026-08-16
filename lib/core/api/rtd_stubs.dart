@@ -243,6 +243,7 @@ abstract final class CheckInRtdAttemptPublish {
     String? submittedByUid,
     bool awaitingSession = false,
     DateTime? pendingUntil,
+    double? gpsAccuracyMeters,
   }) async {
     if (!isApiConfigured) return false;
     await ApiClient.instance.ensureLoaded();
@@ -269,6 +270,7 @@ abstract final class CheckInRtdAttemptPublish {
       submittedByUid: submittedByUid,
       awaitingSession: awaitingSession,
       pendingUntil: pendingUntil,
+      gpsAccuracyMeters: gpsAccuracyMeters,
     );
     try {
       await apiStore()
@@ -359,6 +361,7 @@ abstract final class CheckInRtdAttemptPublish {
     String? submittedByUid,
     bool awaitingSession = false,
     DateTime? pendingUntil,
+    double? gpsAccuracyMeters,
   }) {
     final canonicalId =
         AttendanceRepository.instance.canonicalStudentIdForUpload(studentId);
@@ -373,6 +376,10 @@ abstract final class CheckInRtdAttemptPublish {
       'capturedAt': apiDateToField(capturedAt),
       'latitude': latitude,
       'longitude': longitude,
+      if (gpsAccuracyMeters != null &&
+          gpsAccuracyMeters.isFinite &&
+          gpsAccuracyMeters > 0)
+        'gpsAccuracyMeters': gpsAccuracyMeters,
       'awaitingSession': awaiting,
       if (pendingUntil != null) 'pendingUntil': apiDateToField(pendingUntil),
       if (registrationNumber != null && registrationNumber.trim().isNotEmpty)

@@ -6,6 +6,7 @@ import '../../core/navigation/app_navigator.dart';
 import '../../core/theme/app_theme.dart';
 import 'delete_account_screen.dart';
 import 'privacy_policy_screen.dart';
+import '../portal/student_portal_screen.dart';
 
 String settingsInitialsFrom(String? fullName, String? email) {
   final name = fullName?.trim();
@@ -321,6 +322,32 @@ Widget settingsSecurityCard({
           title: 'Change password',
           subtitle: 'Update the password for this account',
           onTap: onChangePassword,
+        ),
+      ),
+    ],
+  );
+}
+
+Widget settingsStudentPortalCard(BuildContext context) {
+  return Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      settingsSectionHeader(context, 'KIU'),
+      const SizedBox(height: 10),
+      Card(
+        clipBehavior: Clip.antiAlias,
+        child: settingsActionTile(
+          icon: Icons.language_rounded,
+          title: 'Portal',
+          subtitle:
+              'Open the KIU student portal — your saved passwords can autofill',
+          onTap: () {
+            Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => const StudentPortalScreen(),
+              ),
+            );
+          },
         ),
       ),
     ],

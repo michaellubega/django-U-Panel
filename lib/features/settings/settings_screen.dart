@@ -16,6 +16,7 @@ import '../attendance/attendance_list_title.dart';
 import '../attendance/models/attendance_models.dart';
 import 'lecturer_settings_screen.dart';
 import 'qa_staff_settings_screen.dart';
+import 'kiu_admin_settings_screen.dart';
 import '../campus_presence/kiu_admin_ui.dart';
 import '../../core/navigation/app_section.dart';
 import '../../core/navigation/screen_refresh.dart';
@@ -791,6 +792,9 @@ class _SettingsScreenState extends State<SettingsScreen>
       listenable: AuthRepository.instance,
       builder: (context, _) {
         final auth = AuthRepository.instance;
+        if (auth.roleCheckDone && auth.isKiuAdministratorAccount) {
+          return KiuAdminSettingsScreen(shellSection: widget.shellSection);
+        }
         if (auth.roleCheckDone && auth.isQaStaff) {
           return QaStaffSettingsScreen(shellSection: widget.shellSection);
         }
@@ -851,6 +855,11 @@ class _SettingsScreenState extends State<SettingsScreen>
               onUpdateProfile: () => _openUpdateProfile(context),
               onChangePassword: () => _openChangePasswordDialog(context),
             ),
+            if (auth.roleCheckDone &&
+                auth.resolvedRole == UserRole.student) ...[
+              const SizedBox(height: 18),
+              settingsStudentPortalCard(context),
+            ],
             settingsAboutCard(context),
             const SizedBox(height: 24),
             ],

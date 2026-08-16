@@ -16,6 +16,10 @@ echo "==> Recreating web, worker, beat (reload .env.production)"
 "${COMPOSE[@]}" up -d --force-recreate web worker beat
 
 echo ""
+echo "==> Recreate nginx (picks up new web container IP / DNS)"
+"${COMPOSE[@]}" up -d --force-recreate nginx
+
+echo ""
 echo "==> Wait for API health"
 for i in $(seq 1 30); do
   if curl -sf http://127.0.0.1/api/health/ >/dev/null 2>&1; then

@@ -220,10 +220,16 @@ class SessionCodeAutoCheckIn {
 
       final captureIntentAt = DateTime.now();
       final deviceIdFuture = DeviceIdentity.resolve();
+      final requiresGeofence = !sessionSkipsLocationCheck(session);
+      final maxAge = locationMaxAgeForSession(session);
+      final highAccuracy = sessionRequiresHighAccuracyGps(session);
       final gpsFuture = acquireCurrentGpsPosition(
-        timeLimit: const Duration(seconds: 8),
-        reuseMaxAge: const Duration(minutes: 8),
-        forceFresh: false,
+        timeLimit: requiresGeofence
+            ? const Duration(seconds: 12)
+            : const Duration(seconds: 8),
+        reuseMaxAge: maxAge,
+        forceFresh: requiresGeofence,
+        highAccuracy: highAccuracy,
       );
 
       if (!isTimestampWithinSessionBounds(session, captureIntentAt)) {
@@ -257,11 +263,15 @@ class SessionCodeAutoCheckIn {
 
       final latitude = gps.position!.latitude;
       final longitude = gps.position!.longitude;
+      final accuracy = gps.position!.accuracy;
+      final studentAccuracy =
+          accuracy.isFinite && accuracy > 0 ? accuracy : null;
       final verification = verifyLinkedSessionCheckIn(
         session: session,
         at: captureIntentAt,
         latitude: latitude,
         longitude: longitude,
+        studentAccuracyMeters: studentAccuracy,
       );
       if (!verification.passed) {
         if (showFeedback) {
@@ -319,6 +329,7 @@ class SessionCodeAutoCheckIn {
           .submitStudentCheckInWithOfflineSupport(
         record,
         listIdOverride: list.id,
+        gpsAccuracyMeters: studentAccuracy,
       );
 
       switch (outcome) {

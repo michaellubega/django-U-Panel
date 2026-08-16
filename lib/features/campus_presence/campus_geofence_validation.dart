@@ -8,6 +8,9 @@ const double campusGeofenceMinRadiusMeters = 1500;
 /// Maximum check-in area radius.
 const double campusGeofenceMaxRadiusMeters = 5000;
 
+/// Tolerance for GPS inaccuracy (matches class check-in buffer scale).
+const double kCampusGeofenceBufferMeters = 25;
+
 /// Selectable radii for QA staff (all ≥ [campusGeofenceMinRadiusMeters]).
 const List<double> campusGeofenceRadiusOptions = [
   1500,
@@ -57,7 +60,7 @@ bool isPositionWithinCampus(CampusGeofence fence, double lat, double lng) {
     lat,
     lng,
   );
-  return dist <= fence.radiusMeters;
+  return dist <= fence.radiusMeters + kCampusGeofenceBufferMeters;
 }
 
 String campusDistanceMessage(

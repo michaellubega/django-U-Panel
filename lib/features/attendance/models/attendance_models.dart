@@ -3,6 +3,7 @@ import 'dart:math';
 import '../student_session_grace.dart';
 import '../../../core/api/api_store.dart';
 import '../../../core/api/api_collections.dart';
+import '../../../core/api/api_datetime.dart';
 import '../../../core/auth/student_registration_number.dart';
 
 /// Short labels for [DateTime.weekday] (1 = Monday … 7 = Sunday).
@@ -31,6 +32,21 @@ const kAttendanceWeekdayFullNames = [
 DateTime attendanceListDateForWeekday(int weekday) {
   final w = weekday.clamp(1, 7);
   return DateTime(2024, 1, w);
+}
+
+/// Class day (1 = Mon … 7 = Sun) from a stored or in-memory list date.
+int attendanceListWeekdayFromDate(DateTime date) =>
+    date.toLocal().weekday.clamp(1, 7);
+
+/// Parse API/local storage and return the canonical weekday anchor date.
+DateTime attendanceListDateFromStored(dynamic raw) {
+  final parsed = apiDateFromField(raw);
+  if (parsed == null) {
+    return attendanceListDateForWeekday(
+      DateTime.now().toLocal().weekday.clamp(1, 7),
+    );
+  }
+  return attendanceListDateForWeekday(attendanceListWeekdayFromDate(parsed));
 }
 
 /// Newest-first: [AttendanceList.date] is weekday-only for new data, so [id] breaks ties.
@@ -210,6 +226,12 @@ class AttendanceSession {
   /// Lecturer GPS centre not finalized yet — skip radius until updated.
   final bool locationMetadataPending;
 
+  /// Session ended without saving roll — must not appear on rolls or stats.
+  final bool rollDiscarded;
+
+  /// Horizontal accuracy (metres) of lecturer GPS when the session centre was set.
+  final double? sessionGpsAccuracyMeters;
+
   AttendanceSession({
     required this.id,
     required this.listId,
@@ -223,6 +245,8 @@ class AttendanceSession {
     required this.createdBy,
     this.remoteLearning = false,
     this.locationMetadataPending = false,
+    this.rollDiscarded = false,
+    this.sessionGpsAccuracyMeters,
   });
 
   bool get isExpired => DateTime.now().isAfter(endTime);
@@ -235,7 +259,8 @@ class AttendanceSession {
   /// Completed sessions that count toward student attendance percentage
   /// (ended by time or closed in Firestore).
   bool get countsTowardRollStats =>
-      DateTime.now().isAfter(endTime) || status == SessionStatus.closed;
+      !rollDiscarded &&
+      (DateTime.now().isAfter(endTime) || status == SessionStatus.closed);
 }
 
 /// One check-in record: student + session + location.
@@ -516,6 +541,21 @@ class SignInRecord {
   }
 }
 
+/// Metadata from a server pending check-in attempt (first-time join).
+class ServerPendingStudentHint {
+  const ServerPendingStudentHint({
+    required this.studentId,
+    this.studentName,
+    this.registrationNumber,
+    this.course,
+  });
+
+  final String studentId;
+  final String? studentName;
+  final String? registrationNumber;
+  final String? course;
+}
+
 /// In-memory store for attendance (lists, sessions, students, sign-ins, records).
 class AttendanceStore {
   AttendanceStore._();
@@ -541,6 +581,73 @@ class AttendanceStore {
   }
 
   static void clearSessionRollStats() => _sessionRollStatsById.clear();
+
+  static final Map<String, Set<String>> _serverPendingCheckInStudentIdsBySession =
+      {};
+
+  /// Students with a pending server check-in attempt for [sessionId].
+  static Set<String> serverPendingCheckInStudentIds(String sessionId) =>
+      _serverPendingCheckInStudentIdsBySession[sessionId.trim()] ??
+      const {};
+
+  static void setServerPendingCheckInStudentIds(
+    String sessionId,
+    Set<String> studentIds,
+  ) {
+    final id = sessionId.trim();
+    if (id.isEmpty) return;
+    if (studentIds.isEmpty) {
+      _serverPendingCheckInStudentIdsBySession.remove(id);
+    } else {
+      _serverPendingCheckInStudentIdsBySession[id] = studentIds;
+    }
+  }
+
+  static void clearServerPendingCheckIns() {
+    _serverPendingCheckInStudentIdsBySession.clear();
+    _serverPendingStudentHintsByList.clear();
+  }
+
+  static final Map<String, Map<String, ServerPendingStudentHint>>
+      _serverPendingStudentHintsByList = {};
+
+  static Map<String, ServerPendingStudentHint> serverPendingStudentHints(
+    String listId,
+  ) =>
+      _serverPendingStudentHintsByList[listId.trim()] ?? const {};
+
+  static void setServerPendingStudentHints(
+    String listId,
+    Map<String, ServerPendingStudentHint> hints,
+  ) {
+    final id = listId.trim();
+    if (id.isEmpty) return;
+    if (hints.isEmpty) {
+      _serverPendingStudentHintsByList.remove(id);
+    } else {
+      _serverPendingStudentHintsByList[id] = hints;
+    }
+  }
+
+  /// Roll rows: enrolled sign-ins, attendance records, and live server pending.
+  static Set<String> rollStudentIdsForList(String listId) {
+    final lid = listId.trim();
+    if (lid.isEmpty) return const {};
+    final sessionIds =
+        sessions.where((s) => s.listId == lid).map((s) => s.id).toSet();
+    final ids = <String>{
+      ...studentIdsSignedIntoList(lid),
+      ...attendanceRecords
+          .where((r) => sessionIds.contains(r.sessionId))
+          .map((r) => r.studentId),
+    };
+    for (final sessionId in sessionIds) {
+      ids.addAll(serverPendingCheckInStudentIds(sessionId));
+    }
+    ids.addAll(serverPendingStudentHints(lid).keys);
+    ids.removeWhere((id) => id.trim().isEmpty);
+    return ids;
+  }
 
   static final Map<String, StudentRollStatsSnapshot> _studentRollStatsById = {};
 
@@ -817,8 +924,25 @@ class AttendanceStore {
       status: SessionStatus.closed,
       createdBy: s.createdBy,
       remoteLearning: s.remoteLearning,
+      locationMetadataPending: s.locationMetadataPending,
+      rollDiscarded: s.rollDiscarded,
+      sessionGpsAccuracyMeters: s.sessionGpsAccuracyMeters,
     ));
   }
+
+  /// Drops a session from memory — used when a session is discarded (never saved).
+  static void removeSession(String sessionId) {
+    final trimmed = sessionId.trim();
+    if (trimmed.isEmpty) return;
+    sessions.removeWhere((s) => s.id == trimmed);
+    _sessionByIdMemo?.remove(trimmed);
+    attendanceRecords.removeWhere((r) => r.sessionId == trimmed);
+    invalidateLookupCaches();
+  }
+
+  /// Sessions that appear in history, rolls, and reports (excludes discarded).
+  static bool sessionVisibleOnRoll(AttendanceSession session) =>
+      !session.rollDiscarded;
 
   static bool hasCheckedIn(String sessionId, String studentId) {
     return attendanceRecords
@@ -889,7 +1013,9 @@ class AttendanceStore {
 
   /// All sessions for a list, newest first (includes closed / expired).
   static List<AttendanceSession> sessionsForListNewestFirst(String listId) {
-    return sessions.where((s) => s.listId == listId).toList()
+    return sessions
+        .where((s) => s.listId == listId && sessionVisibleOnRoll(s))
+        .toList()
       ..sort((a, b) => b.startTime.compareTo(a.startTime));
   }
 
@@ -1351,9 +1477,10 @@ class AttendanceStore {
 
   /// Roster lookup for one list: store students plus sign-in metadata fallbacks.
   static Map<String, StudentRecord> rosterStudentMapForList(String listId) {
+    final lid = listId.trim();
     final byId = studentMapById();
     for (final si in signIns) {
-      if (si.listId != listId) continue;
+      if (si.listId != lid) continue;
       final sid = si.studentId.trim();
       if (sid.isEmpty) continue;
 
@@ -1386,24 +1513,220 @@ class AttendanceStore {
         continue;
       }
 
-      if (signInName.isEmpty && signInReg.isEmpty) {
-        final fromStore = findStudentByReg(sid);
-        if (fromStore != null) {
-          byId[sid] = fromStore;
-        }
+      final resolved = resolveStudentForRoll(
+        sid,
+        listId: lid,
+        signInName: signInName,
+        signInReg: signInReg,
+        cache: byId,
+      );
+      if (resolved != null) {
+        _indexRollStudent(byId, sid, resolved);
+      }
+    }
+    for (final hint in serverPendingStudentHints(lid).values) {
+      final sid = hint.studentId.trim();
+      if (sid.isEmpty) continue;
+      final hintName = hint.studentName?.trim() ?? '';
+      var hintReg = hint.registrationNumber?.trim().toUpperCase() ?? '';
+      if (hintReg.isEmpty &&
+          StudentRegistrationNumber.isCanonicalFormat(sid)) {
+        hintReg = StudentRegistrationNumber.normalize(sid);
+      }
+      final existing = byId[sid];
+      if (existing != null) {
+        final nameBetter = hintName.isNotEmpty &&
+            (existing.name.trim().isEmpty ||
+                existing.name.trim() == 'Unknown');
+        final regBetter = hintReg.isNotEmpty &&
+            (existing.registrationNumber.trim().isEmpty ||
+                existing.registrationNumber.trim() == '—');
+        if (!nameBetter && !regBetter) continue;
+        byId[sid] = StudentRecord(
+          id: existing.id,
+          name: nameBetter ? hintName : existing.name,
+          registrationNumber:
+              regBetter ? hintReg : existing.registrationNumber,
+          threeDigitCode: existing.threeDigitCode,
+          initials: nameBetter
+              ? deriveStudentInitialsFromName(hintName)
+              : existing.initials,
+        );
         continue;
       }
-      byId[sid] = StudentRecord(
-        id: sid,
-        name: signInName.isNotEmpty ? signInName : 'Unknown',
-        registrationNumber: signInReg.isNotEmpty ? signInReg : '—',
-        threeDigitCode: '000',
-        initials: signInName.isNotEmpty
-            ? deriveStudentInitialsFromName(signInName)
-            : '??',
+      final resolved = resolveStudentForRoll(
+        sid,
+        listId: lid,
+        signInName: hintName,
+        signInReg: hintReg,
+        cache: byId,
       );
+      if (resolved != null) {
+        _indexRollStudent(byId, sid, resolved);
+      }
+    }
+    for (final sid in rollStudentIdsForList(lid)) {
+      final existing = byId[sid];
+      if (existing != null && _rollStudentNameIsKnown(existing.name)) {
+        continue;
+      }
+      final resolved = resolveStudentForRoll(
+        sid,
+        listId: lid,
+        cache: byId,
+      );
+      if (resolved != null) {
+        _indexRollStudent(byId, sid, resolved);
+      }
     }
     return byId;
+  }
+
+  static bool _rollStudentNameIsKnown(String name) {
+    final trimmed = name.trim();
+    return trimmed.isNotEmpty && trimmed != 'Unknown';
+  }
+
+  static void _indexRollStudent(
+    Map<String, StudentRecord> byId,
+    String rollStudentId,
+    StudentRecord student,
+  ) {
+    final sid = rollStudentId.trim();
+    if (sid.isNotEmpty) {
+      byId[sid] = student;
+    }
+    final canonId = student.id.trim();
+    if (canonId.isNotEmpty) {
+      byId[canonId] = student;
+    }
+    final reg = student.registrationNumber.trim().toUpperCase();
+    if (reg.isNotEmpty && reg != '—') {
+      byId[reg] = student;
+    }
+  }
+
+  /// Resolves a roll row to the best available [StudentRecord] (sync, in-memory).
+  static StudentRecord? resolveStudentForRoll(
+    String studentId, {
+    String? listId,
+    String? signInName,
+    String? signInReg,
+    Map<String, StudentRecord>? cache,
+  }) {
+    final sid = studentId.trim();
+    if (sid.isEmpty) return null;
+
+    final byId = cache ?? studentMapById();
+    StudentRecord? base = byId[sid];
+    base ??= studentMapById()[sid];
+    if (base == null && StudentRegistrationNumber.isCanonicalFormat(sid)) {
+      base = findStudentByReg(sid);
+    }
+    if (base == null) {
+      final upper = sid.toUpperCase();
+      for (final s in students) {
+        if (s.id.trim() == sid ||
+            s.registrationNumber.trim().toUpperCase() == upper) {
+          base = s;
+          break;
+        }
+      }
+    }
+
+    var name = signInName?.trim() ?? '';
+    if (name.isEmpty && base != null && _rollStudentNameIsKnown(base.name)) {
+      name = base.name.trim();
+    }
+    var reg = signInReg?.trim().toUpperCase() ?? '';
+    if (reg.isEmpty && base != null) {
+      final existingReg = base.registrationNumber.trim().toUpperCase();
+      if (existingReg.isNotEmpty && existingReg != '—') reg = existingReg;
+    }
+    if (reg.isEmpty && StudentRegistrationNumber.isCanonicalFormat(sid)) {
+      reg = StudentRegistrationNumber.normalize(sid);
+    }
+
+    void absorbSignIn(SignInRecord si) {
+      if (si.studentId.trim() != sid) return;
+      final sn = si.studentName?.trim() ?? '';
+      if (sn.isNotEmpty && !_rollStudentNameIsKnown(name)) name = sn;
+      final sr = si.registrationNumber?.trim().toUpperCase() ?? '';
+      if (sr.isNotEmpty && (reg.isEmpty || reg == '—')) reg = sr;
+    }
+
+    final lid = listId?.trim();
+    if (lid != null && lid.isNotEmpty) {
+      for (final si in signIns) {
+        if (si.listId == lid) absorbSignIn(si);
+      }
+      final hint = serverPendingStudentHints(lid)[sid];
+      if (hint != null) {
+        final hn = hint.studentName?.trim() ?? '';
+        if (hn.isNotEmpty && !_rollStudentNameIsKnown(name)) name = hn;
+        final hr = hint.registrationNumber?.trim().toUpperCase() ?? '';
+        if (hr.isNotEmpty && (reg.isEmpty || reg == '—')) reg = hr;
+      }
+    }
+    for (final si in signIns) {
+      absorbSignIn(si);
+    }
+
+    if (!_rollStudentNameIsKnown(name) && reg.isNotEmpty) {
+      final byReg = findStudentByReg(reg);
+      if (byReg != null && _rollStudentNameIsKnown(byReg.name)) {
+        base ??= byReg;
+        name = byReg.name.trim();
+      }
+    }
+
+    if (base != null) {
+      final upgradedName =
+          _rollStudentNameIsKnown(name) ? name : base.name.trim();
+      final upgradedReg = reg.isNotEmpty ? reg : base.registrationNumber;
+      final nameChanged =
+          _rollStudentNameIsKnown(upgradedName) && upgradedName != base.name;
+      final regChanged = upgradedReg.trim().isNotEmpty &&
+          upgradedReg.trim() != '—' &&
+          upgradedReg.trim().toUpperCase() !=
+              base.registrationNumber.trim().toUpperCase();
+      if (nameChanged || regChanged) {
+        return StudentRecord(
+          id: base.id,
+          name: nameChanged ? upgradedName : base.name,
+          registrationNumber: regChanged ? upgradedReg : base.registrationNumber,
+          threeDigitCode: base.threeDigitCode,
+          initials: nameChanged
+              ? deriveStudentInitialsFromName(upgradedName)
+              : base.initials,
+        );
+      }
+      return base;
+    }
+
+    if (!_rollStudentNameIsKnown(name) && reg.isEmpty) return null;
+    return StudentRecord(
+      id: sid,
+      name: _rollStudentNameIsKnown(name) ? name : 'Unknown',
+      registrationNumber: reg.isNotEmpty ? reg : '—',
+      threeDigitCode: '000',
+      initials: _rollStudentNameIsKnown(name)
+          ? deriveStudentInitialsFromName(name)
+          : '??',
+    );
+  }
+
+  /// Cheap fingerprint so roll UIs rebuild when names are resolved asynchronously.
+  static int rollRosterNameRevision(String listId) {
+    final lid = listId.trim();
+    if (lid.isEmpty) return 0;
+    final map = rosterStudentMapForList(lid);
+    var revision = 0;
+    for (final sid in rollStudentIdsForList(lid)) {
+      final name = map[sid]?.name.trim() ?? '';
+      revision = 31 * revision + sid.hashCode + name.hashCode;
+    }
+    return revision;
   }
 
   /// Lightweight hot-path index for O(1) session lookup in UI/reports.
