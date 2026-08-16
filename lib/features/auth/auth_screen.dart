@@ -168,8 +168,7 @@ class _AuthScreenState extends State<AuthScreen> {
     AuthRepository.instance.clearAuthFormError();
     try {
       if (!mounted) return;
-      await pushAppPage<AuthActionResult>(
-        context,
+      await pushRootAppPage<AuthActionResult>(
         _LoginVerificationScreen(
           registering: _register,
           email: _emailC.text,
@@ -220,8 +219,8 @@ class _AuthScreenState extends State<AuthScreen> {
                   ListenableBuilder(
                     listenable: AppConnectivity.instance,
                     builder: (context, _) {
-                      final offline = AppConnectivity.instance.initialized &&
-                          !AppConnectivity.instance.isOnline;
+                      final offline =
+                          AppConnectivity.instance.shouldShowOfflineBanner;
                       if (!offline || _offlineBannerDismissed) {
                         return const SizedBox.shrink();
                       }
@@ -617,6 +616,8 @@ class _LoginVerificationScreenState extends State<_LoginVerificationScreen>
     if (!mounted) return;
     if (result.needsEmailVerification) {
       AuthRepository.instance.clearAuthFormDraft();
+      if (!mounted) return;
+      popToRootRoute();
       return;
     }
     Navigator.of(context).pop(result);
