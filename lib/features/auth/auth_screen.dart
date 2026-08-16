@@ -15,6 +15,7 @@ import '../../core/navigation/app_navigator.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/widgets/app_brand_logo.dart';
 import '../../core/widgets/dismissible_error_banner.dart';
+import '../../core/widgets/web_build_label.dart';
 import 'forgot_password_screen.dart';
 
 /// Email + password sign-in and registration (Django API).
@@ -490,6 +491,7 @@ class _AuthScreenState extends State<AuthScreen> {
                       ],
                     ),
                   ),
+                  const WebBuildLabel(),
                 ],
               ),
             ),
