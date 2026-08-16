@@ -1,6 +1,6 @@
 {
     "version":  "1.0.0",
-    "build":  11,
+    "build":  12,
     "releasedAt":  "2026-08-16",
     "hostBase":  "https://kiu.orion13.us",
     "ios":  {
@@ -16,7 +16,7 @@
                     "available":  true
                 },
     "windows":  {
-                    "file":  "https://kiu.orion13.us/downloads/U-Panel-1.0.0-build11-windows-setup.exe",
+                    "file":  "https://kiu.orion13.us/downloads/U-Panel-1.0.0-build12-windows-setup.exe",
                     "label":  "Windows installer",
                     "minWindows":  "Windows 10 (64-bit)",
                     "available":  true,
