@@ -1,0 +1,53 @@
+# After CI publishes a fresh Flutter web build to gh-pages, sync it onto the
+# Contabo VPS (nginx bakes website/app into its image at build time).
+#
+# One-time setup (GitHub → Settings → Secrets and variables → Actions):
+#   CONTABO_SSH_PRIVATE_KEY  — private key for root@169.58.135.136 (ed25519)
+# Optional:
+#   CONTABO_HOST             — default 169.58.135.136
+#   CONTABO_SSH_PORT         — default 443
+
+name: Sync web to Contabo server
+
+on:
+  workflow_run:
+    workflows: ['Deploy web app to GitHub Pages']
+    types: [completed]
+  workflow_dispatch:
+
+concurrency:
+  group: contabo-web-sync
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require SSH secret
+        env:
+          HAS_KEY: ${{ secrets.CONTABO_SSH_PRIVATE_KEY != '' }}
+        run: |
+          if [[ "${HAS_KEY}" != "true" ]]; then
+            echo "::warning::CONTABO_SSH_PRIVATE_KEY is not set — skipping server sync."
+            echo "GitHub Pages (gh-pages) was updated, but kiu.orion13.us will stay stale"
+            echo "until you SSH to the server and run:"
+            echo "  cd /opt/upanel && bash scripts/contabo/deploy-web-on-server.sh"
+            exit 0
+          fi
+
+      - name: Sync gh-pages bundle to Contabo
+        if: secrets.CONTABO_SSH_PRIVATE_KEY != ''
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.CONTABO_HOST || '169.58.135.136' }}
+          username: root
+          key: ${{ secrets.CONTABO_SSH_PRIVATE_KEY }}
+          port: ${{ secrets.CONTABO_SSH_PORT || 443 }}
+          command_timeout: 15m
+          script: |
+            set -euo pipefail
+            cd /opt/upanel
+            bash scripts/contabo/deploy-web-on-server.sh

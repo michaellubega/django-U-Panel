@@ -201,12 +201,24 @@ if [[ -n "${SERVED_BYTES}" && "${SERVED_BYTES}" != "${NEW_BYTES}" ]]; then
   exit 1
 fi
 
+if [[ -f website/app/version.json ]]; then
+  echo "==> Deployed web build: $(cat website/app/version.json)"
+fi
+
+echo "==> Purge Cloudflare edge cache (prevents stale main.dart.js for up to 4h)"
+bash scripts/contabo/purge-cloudflare-cache.sh || true
+
 echo ""
 echo "Deploy OK. Verify from your machine:"
 echo "  curl -sI http://169.58.135.136/app/main.dart.js | grep -i content-length"
 echo "  curl -sI https://kiu.orion13.us/app/main.dart.js | grep -i content-length"
 echo "  curl -sf https://kiu.orion13.us/.well-known/assetlinks.json | head"
 echo "Expected content-length: ${NEW_BYTES}"
+echo ""
+echo "If the browser still shows the old UI:"
+echo "  1. Hard refresh: Ctrl+Shift+R (or Cmd+Shift+R on Mac)"
+echo "  2. Or: DevTools → Application → Clear site data for kiu.orion13.us"
+echo "  3. Or: open in a private/incognito window"
 echo ""
 echo "Web app (HTTP):  http://169.58.135.136/app/"
 echo "After Cloudflare: https://kiu.orion13.us/app/"
