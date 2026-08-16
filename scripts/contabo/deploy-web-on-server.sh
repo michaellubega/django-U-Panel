@@ -172,11 +172,23 @@ if ! grep -q playStoreUrl website/releases.json; then
   exit 1
 fi
 
-WIN_INSTALLER="U-Panel-1.0.0-build7-windows-setup.exe"
-WIN_STATUS=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1/downloads/${WIN_INSTALLER}")
-echo " /downloads/${WIN_INSTALLER} HTTP ${WIN_STATUS}"
-if [[ "${WIN_STATUS}" != "200" ]]; then
-  echo "WARN: Windows installer returned HTTP ${WIN_STATUS}. Run scripts/prepare-download-site.sh and redeploy." >&2
+WIN_INSTALLER="$(python3 - <<'PY'
+import json, urllib.parse
+from pathlib import Path
+data = json.loads(Path("website/releases.json").read_text(encoding="utf-8-sig"))
+url = (data.get("windows") or {}).get("file") or ""
+name = urllib.parse.unquote(urllib.parse.urlparse(url).path.rsplit("/", 1)[-1])
+print(name or "")
+PY
+)"
+if [[ -n "${WIN_INSTALLER}" ]]; then
+  WIN_STATUS=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1/downloads/${WIN_INSTALLER}")
+  echo " /downloads/${WIN_INSTALLER} HTTP ${WIN_STATUS}"
+  if [[ "${WIN_STATUS}" != "200" ]]; then
+    echo "WARN: Windows installer returned HTTP ${WIN_STATUS}. Run scripts/prepare-download-site.ps1 and redeploy." >&2
+  fi
+else
+  echo "WARN: No Windows installer URL in website/releases.json" >&2
 fi
 
 PRIVACY_STATUS=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1/privacy.html)
