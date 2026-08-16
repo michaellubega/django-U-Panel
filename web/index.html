@@ -319,27 +319,55 @@
       return Promise.resolve();
     };
 
+    window.upanelClearLegacyServiceWorkers = function () {
+      if (!('serviceWorker' in navigator)) return Promise.resolve();
+      return navigator.serviceWorker.getRegistrations().then(function (regs) {
+        return Promise.all(
+          regs.map(function (reg) {
+            return reg.unregister().catch(function () {});
+          })
+        );
+      });
+    };
+
     window.upanelBootFlutter = function () {
       if (window.__upanelBootstrapStarted) return;
       window.__upanelBootstrapStarted = true;
       window.__upanelBootRetries = window.__upanelBootRetries || 0;
 
-      var s = document.createElement('script');
-      s.src = 'flutter_bootstrap.js';
-      s.async = true;
-      s.onerror = function () {
-        window.__upanelBootRetries += 1;
-        window.__upanelBootstrapStarted = false;
-        if (window.__upanelBootRetries < 4) {
-          window.upanelSetBootStatus('Loading U-Panel…');
-          window.setTimeout(window.upanelBootFlutter, 600 * window.__upanelBootRetries);
-          return;
-        }
-        window.upanelShowBootRetry(
-          'Connection is slow. The app is still trying — tap Retry if needed.'
-        );
-      };
-      document.body.appendChild(s);
+      function loadBootstrap(cacheBust) {
+        var s = document.createElement('script');
+        s.src = 'flutter_bootstrap.js' + (cacheBust ? '?v=' + cacheBust : '');
+        s.async = true;
+        s.onerror = function () {
+          window.__upanelBootstrapStarted = false;
+          window.__upanelBootRetries += 1;
+          if (window.__upanelBootRetries < 4) {
+            window.upanelSetBootStatus('Loading U-Panel…');
+            window.setTimeout(window.upanelBootFlutter, 600 * window.__upanelBootRetries);
+            return;
+          }
+          window.upanelShowBootRetry(
+            'Connection is slow. The app is still trying — tap Retry if needed.'
+          );
+        };
+        document.body.appendChild(s);
+      }
+
+      fetch('version.json', { cache: 'no-store' })
+        .then(function (res) {
+          return res.ok ? res.json() : null;
+        })
+        .then(function (meta) {
+          var bust =
+            meta && meta.build_number
+              ? meta.build_number
+              : String(Date.now());
+          loadBootstrap(bust);
+        })
+        .catch(function () {
+          loadBootstrap(String(Date.now()));
+        });
     };
 
     window.upanelScheduleBootTimeout = function () {
@@ -403,8 +431,10 @@
           window.upanelShowApiSetupHelp();
           return;
         }
-        window.upanelBootFlutter();
-        window.upanelScheduleBootTimeout();
+        window.upanelClearLegacyServiceWorkers().finally(function () {
+          window.upanelBootFlutter();
+          window.upanelScheduleBootTimeout();
+        });
       }
 
       if (!needsProbe || !window.upanelResolveApiBaseUrl) {
