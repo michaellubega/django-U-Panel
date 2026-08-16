@@ -166,10 +166,12 @@ function Find-WindowsInstaller {
     param([string]$Version, [string]$ProjectRoot)
 
     $searchDirs = Get-WindowsInstallerSearchDirs -ProjectRoot $ProjectRoot
+    $searchDirs += (Join-Path $ProjectRoot "installer\output")
     $desktop = [Environment]::GetFolderPath('Desktop')
 
     $candidates = @(
         (Join-Path $ProjectRoot "installer\U-Panel-$Version-windows-setup.exe"),
+        (Join-Path $ProjectRoot "installer\output\U-Panel-$Version-windows-setup.exe"),
         (Join-Path $ProjectRoot "installer\UPanelSetup.exe")
     )
 
