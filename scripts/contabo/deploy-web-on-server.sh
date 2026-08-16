@@ -80,8 +80,12 @@ if ! sync_from_gh_pages; then
   if command -v flutter >/dev/null 2>&1; then
     echo "==> gh-pages unavailable — build Flutter web locally"
     flutter pub get
+    BUILD_NUM="$(grep -E '^version:' pubspec.yaml | sed -E 's/.*\+([0-9]+).*/\1/')"
+    VERSION_LABEL="$(grep -E '^version:' pubspec.yaml | sed -E 's/version: ([0-9.]+).*/\1/')"
     flutter build web --release \
       --dart-define=UPANEL_API_BASE_URL="${UPANEL_API_BASE_URL:-http://169.58.135.136}" \
+      --dart-define=APP_BUILD_NUMBER="${BUILD_NUM}" \
+      --dart-define=APP_VERSION_LABEL="${VERSION_LABEL}" \
       --base-href=/app/
     bash scripts/finalize-web-build.sh
     rm -rf website/app

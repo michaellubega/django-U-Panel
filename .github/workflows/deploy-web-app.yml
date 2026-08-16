@@ -52,6 +52,8 @@ jobs:
           flutter pub get
           flutter build web --release \
             --dart-define=UPANEL_API_BASE_URL="$API_URL" \
+            --dart-define=APP_BUILD_NUMBER="$(grep -E '^version:' pubspec.yaml | sed -E 's/.*\\+([0-9]+).*/\\1/')" \
+            --dart-define=APP_VERSION_LABEL="$(grep -E '^version:' pubspec.yaml | sed -E 's/version: ([0-9.]+).*/\\1/')" \
             --base-href=/app/
           bash scripts/finalize-web-build.sh
 
