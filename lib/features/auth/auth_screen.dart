@@ -168,8 +168,7 @@ class _AuthScreenState extends State<AuthScreen> {
     AuthRepository.instance.clearAuthFormError();
     try {
       if (!mounted) return;
-      await pushAppPage<AuthActionResult>(
-        context,
+      await pushRootAppPage<AuthActionResult>(
         _LoginVerificationScreen(
           registering: _register,
           email: _emailC.text,
@@ -617,6 +616,8 @@ class _LoginVerificationScreenState extends State<_LoginVerificationScreen>
     if (!mounted) return;
     if (result.needsEmailVerification) {
       AuthRepository.instance.clearAuthFormDraft();
+      if (!mounted) return;
+      popToRootRoute();
       return;
     }
     Navigator.of(context).pop(result);

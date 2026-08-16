@@ -2614,6 +2614,8 @@ class AuthRepository extends ChangeNotifier {
       clearAuthFormError();
       if (_needsStudentEmailVerification(signedInUser) ||
           _needsKiuStaffEmailVerification(signedInUser)) {
+        markVerificationEmailQueuedAtSignup();
+        markPendingSignupEmailVerification();
         return const AuthActionResult(needsEmailVerification: true);
       }
       return const AuthActionResult();
