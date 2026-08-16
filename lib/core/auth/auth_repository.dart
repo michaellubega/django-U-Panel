@@ -2865,6 +2865,10 @@ class AuthRepository extends ChangeNotifier {
 
   Future<ApiAuth> _registrationAuth() async => ApiAuth.instance;
 
+  Future<void> _restoreGranterSession(ApiAuthSessionSnapshot snapshot) async {
+    await ApiAuth.instance.restoreActiveSession(snapshot);
+  }
+
   /// Refreshes admin flag then returns an error message if the caller is not an admin.
   Future<String?> _requireAdmin({bool skipRefreshIfKnown = false}) async {
     if (!_apiReady) {
@@ -3106,6 +3110,7 @@ class AuthRepository extends ChangeNotifier {
     }
 
     final regAuth = await _registrationAuth();
+    final granterSession = await regAuth.captureActiveSession();
     ApiUserCredential? cred;
     try {
       cred = await regAuth.createUserWithEmailAndPassword(
@@ -3114,7 +3119,6 @@ class AuthRepository extends ChangeNotifier {
       );
       final user = cred.user;
       if (user == null) {
-        await regAuth.signOut();
         return 'Account created but user id is missing. Try signing in.';
       }
       final newUid = user.uid;
@@ -3139,28 +3143,18 @@ class AuthRepository extends ChangeNotifier {
         ApiSetOptions(merge: true),
       );
 
-      await regAuth.signOut();
       return null;
     } on ApiAuthException catch (ex) {
-      try {
-        await regAuth.signOut();
-      } catch (_) {}
       return _mapAuthError(ex);
     } on PlatformException catch (ex) {
       try {
         await cred?.user?.delete();
-      } catch (_) {}
-      try {
-        await regAuth.signOut();
       } catch (_) {}
       return _describeAuthChannelFailure(ex) ??
           UserFacingErrors.saveAccountFailed;
     } on ApiException catch (fe) {
       try {
         await cred?.user?.delete();
-      } catch (_) {}
-      try {
-        await regAuth.signOut();
       } catch (_) {}
       if (fe.code == 'permission-denied') {
         return UserFacingErrors.saveAccountFailed;
@@ -3170,11 +3164,10 @@ class AuthRepository extends ChangeNotifier {
       try {
         await cred?.user?.delete();
       } catch (_) {}
-      try {
-        await regAuth.signOut();
-      } catch (_) {}
       return _describeAuthChannelFailure(ex) ??
           UserFacingErrors.saveAccountFailed;
+    } finally {
+      await _restoreGranterSession(granterSession);
     }
   }
 
@@ -3325,6 +3318,7 @@ class AuthRepository extends ChangeNotifier {
     }
 
     final regAuth = await _registrationAuth();
+    final granterSession = await regAuth.captureActiveSession();
     ApiUserCredential? cred;
     try {
       cred = await regAuth.createUserWithEmailAndPassword(
@@ -3336,7 +3330,6 @@ class AuthRepository extends ChangeNotifier {
         if (manual != null && manual.isNotEmpty) {
           await staffLockRef.delete();
         }
-        await regAuth.signOut();
         return (
           error: 'Account created but user id is missing. Try again.',
           staffNumber: null,
@@ -3390,7 +3383,6 @@ class AuthRepository extends ChangeNotifier {
         ));
       }
 
-      unawaited(regAuth.signOut());
       return (error: null, staffNumber: staffNumber);
     } on ApiAuthException catch (ex) {
       try {
@@ -3401,9 +3393,6 @@ class AuthRepository extends ChangeNotifier {
           await staffLockRef.delete();
         } catch (_) {}
       }
-      try {
-        await regAuth.signOut();
-      } catch (_) {}
       return (error: _mapAuthError(ex), staffNumber: null);
     } on PlatformException catch (ex) {
       try {
@@ -3414,9 +3403,6 @@ class AuthRepository extends ChangeNotifier {
           await staffLockRef.delete();
         } catch (_) {}
       }
-      try {
-        await regAuth.signOut();
-      } catch (_) {}
       return (
         error: _describeAuthChannelFailure(ex) ??
             UserFacingErrors.saveAccountFailed,
@@ -3431,9 +3417,6 @@ class AuthRepository extends ChangeNotifier {
           await staffLockRef.delete();
         } catch (_) {}
       }
-      try {
-        await regAuth.signOut();
-      } catch (_) {}
       if (fe.code == 'permission-denied') {
         return (
           error: UserFacingErrors.saveAccountFailed,
@@ -3453,14 +3436,13 @@ class AuthRepository extends ChangeNotifier {
           await staffLockRef.delete();
         } catch (_) {}
       }
-      try {
-        await regAuth.signOut();
-      } catch (_) {}
       return (
         error: _describeAuthChannelFailure(ex) ??
             UserFacingErrors.saveAccountFailed,
         staffNumber: null,
       );
+    } finally {
+      await _restoreGranterSession(granterSession);
     }
   }
 
@@ -3573,6 +3555,7 @@ class AuthRepository extends ChangeNotifier {
     }
 
     final regAuth = await _registrationAuth();
+    final granterSession = await regAuth.captureActiveSession();
     ApiUserCredential? cred;
     try {
       cred = await regAuth.createUserWithEmailAndPassword(
@@ -3584,7 +3567,6 @@ class AuthRepository extends ChangeNotifier {
         if (manual != null && manual.isNotEmpty) {
           await staffLockRef.delete();
         }
-        await regAuth.signOut();
         return (
           error: 'Account created but user id is missing. Try again.',
           staffNumber: null,
@@ -3663,7 +3645,6 @@ class AuthRepository extends ChangeNotifier {
         ));
       }
 
-      unawaited(regAuth.signOut());
       return (error: null, staffNumber: staffNumber);
     } on ApiAuthException catch (ex) {
       try {
@@ -3674,9 +3655,6 @@ class AuthRepository extends ChangeNotifier {
           await staffLockRef.delete();
         } catch (_) {}
       }
-      try {
-        await regAuth.signOut();
-      } catch (_) {}
       return (error: _mapAuthError(ex), staffNumber: null);
     } on PlatformException catch (ex) {
       try {
@@ -3687,9 +3665,6 @@ class AuthRepository extends ChangeNotifier {
           await staffLockRef.delete();
         } catch (_) {}
       }
-      try {
-        await regAuth.signOut();
-      } catch (_) {}
       return (
         error: _describeAuthChannelFailure(ex) ??
             UserFacingErrors.saveAccountFailed,
@@ -3704,9 +3679,6 @@ class AuthRepository extends ChangeNotifier {
           await staffLockRef.delete();
         } catch (_) {}
       }
-      try {
-        await regAuth.signOut();
-      } catch (_) {}
       if (fe.code == 'permission-denied') {
         return (
           error:
@@ -3727,14 +3699,13 @@ class AuthRepository extends ChangeNotifier {
           await staffLockRef.delete();
         } catch (_) {}
       }
-      try {
-        await regAuth.signOut();
-      } catch (_) {}
       return (
         error: _describeAuthChannelFailure(ex) ??
             UserFacingErrors.saveAccountFailed,
         staffNumber: null,
       );
+    } finally {
+      await _restoreGranterSession(granterSession);
     }
   }
 
@@ -3945,6 +3916,7 @@ class AuthRepository extends ChangeNotifier {
     final granterUid = granter.uid;
     final db = apiStore();
     final regAuth = await _registrationAuth();
+    final granterSession = await regAuth.captureActiveSession();
     ApiUserCredential? cred;
 
     try {
@@ -3956,7 +3928,6 @@ class AuthRepository extends ChangeNotifier {
       );
       final user = cred.user;
       if (user == null) {
-        await regAuth.signOut();
         return (
           error: 'Account created but user id is missing.',
           registrationNumber: null,
@@ -4009,22 +3980,15 @@ class AuthRepository extends ChangeNotifier {
         ApiSetOptions(merge: true),
       );
       await batch.commit();
-      await regAuth.signOut();
       return (error: null, registrationNumber: reg);
     } on ApiAuthException catch (ex) {
       try {
         await cred?.user?.delete();
       } catch (_) {}
-      try {
-        await regAuth.signOut();
-      } catch (_) {}
       return (error: _mapAuthError(ex), registrationNumber: null);
     } on ApiException catch (fe) {
       try {
         await cred?.user?.delete();
-      } catch (_) {}
-      try {
-        await regAuth.signOut();
       } catch (_) {}
       if (fe.code == 'permission-denied') {
         return (
@@ -4037,10 +4001,9 @@ class AuthRepository extends ChangeNotifier {
       try {
         await cred?.user?.delete();
       } catch (_) {}
-      try {
-        await regAuth.signOut();
-      } catch (_) {}
       return (error: UserFacingErrors.saveAccountFailed, registrationNumber: null);
+    } finally {
+      await _restoreGranterSession(granterSession);
     }
   }
 

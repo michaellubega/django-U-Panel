@@ -66,6 +66,14 @@ class ApiUserCredential {
   final ApiUser? user;
 }
 
+/// Saved token + user before a registration call replaces the active session.
+class ApiAuthSessionSnapshot {
+  const ApiAuthSessionSnapshot({this.token, this.user});
+
+  final String? token;
+  final ApiUser? user;
+}
+
 /// Token-based auth against the Django REST API (replaces [FirebaseAuth]).
 class ApiAuth {
   ApiAuth._();
@@ -193,6 +201,27 @@ class ApiAuth {
     await _emit(null);
   }
 
+  /// Captures the signed-in session before [createUserWithEmailAndPassword]
+  /// replaces the active token with the newly registered user.
+  Future<ApiAuthSessionSnapshot> captureActiveSession() async {
+    await ApiClient.instance.ensureLoaded();
+    return ApiAuthSessionSnapshot(
+      token: ApiClient.instance.token,
+      user: _currentUser,
+    );
+  }
+
+  /// Restores a session captured by [captureActiveSession].
+  Future<void> restoreActiveSession(ApiAuthSessionSnapshot snapshot) async {
+    final token = snapshot.token?.trim();
+    if (token != null && token.isNotEmpty) {
+      await ApiClient.instance.setToken(token);
+    } else {
+      await ApiClient.instance.clearToken();
+    }
+    await _emit(snapshot.user);
+  }
+
   Future<void> sendPasswordResetEmail({required String email}) async {
     await ApiClient.instance.postJson('/api/auth/password-reset/', {
       'email': email.trim().toLowerCase(),
@@ -200,5 +229,6 @@ class ApiAuth {
   }
 }
 
-/// Secondary auth instance for staff registration flows (no separate Firebase app).
+/// Registration uses the same [ApiAuth] instance; callers must
+/// [ApiAuth.captureActiveSession] / [ApiAuth.restoreActiveSession] around create-user flows.
 ApiAuth registrationAuth() => ApiAuth.instance;
