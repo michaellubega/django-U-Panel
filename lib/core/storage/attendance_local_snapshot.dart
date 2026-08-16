@@ -110,7 +110,9 @@ class AttendanceLocalSnapshot {
         ..addAll(lists);
       AttendanceStore.sessions
         ..clear()
-        ..addAll(sessions);
+        ..addAll(
+          sessions.where(AttendanceStore.sessionVisibleOnRoll),
+        );
       AttendanceStore.students
         ..clear()
         ..addAll(students);
@@ -209,6 +211,7 @@ class AttendanceLocalSnapshot {
         'createdBy': s.createdBy,
         if (s.remoteLearning) 'remoteLearning': true,
         if (s.locationMetadataPending) 'locationMetadataPending': true,
+        if (s.rollDiscarded) 'rollDiscarded': true,
         if (s.sessionGpsAccuracyMeters != null)
           'sessionGpsAccuracyMeters': s.sessionGpsAccuracyMeters,
       };
@@ -237,6 +240,7 @@ class AttendanceLocalSnapshot {
       createdBy: m['createdBy'] as String? ?? '',
       remoteLearning: m['remoteLearning'] == true,
       locationMetadataPending: m['locationMetadataPending'] == true,
+      rollDiscarded: m['rollDiscarded'] == true,
       sessionGpsAccuracyMeters:
           (m['sessionGpsAccuracyMeters'] as num?)?.toDouble(),
     );
