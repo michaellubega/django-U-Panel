@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart'
 
 import '../api/api_client.dart';
 import '../api/api_config.dart';
+import 'connectivity_online_state.dart';
 
 /// App-wide online/offline status.
 ///
@@ -17,7 +18,7 @@ class AppConnectivity extends ChangeNotifier {
   static final AppConnectivity instance = AppConnectivity._();
 
   static const Duration _probeTimeout = Duration(seconds: 4);
-  static const Duration _probeInterval = Duration(seconds: 10);
+  static const Duration _probeInterval = Duration(seconds: 5);
   static const Duration _reachabilityGrace = Duration(seconds: 8);
   static const Duration _minProbeGap = Duration(seconds: 2);
   static const int _failuresBeforeOffline = 2;
@@ -46,14 +47,20 @@ class AppConnectivity extends ChangeNotifier {
 
   /// True when the device has a network interface and the API was reachable
   /// recently, or reachability has not been disproved yet.
-  bool get isOnline {
-    if (!_hasNetworkInterface) return false;
-    if (!_apiAttached || !_initialized) return true;
-    if (_apiReachable) return true;
-    if (_recentlyReachable) return true;
-    if (_consecutiveProbeFailures < _failuresBeforeOffline) return true;
-    return false;
-  }
+  bool get isOnline => connectivityIsOnline(
+        hasNetworkInterface: _hasNetworkInterface,
+        apiAttached: _apiAttached,
+        initialized: _initialized,
+        apiReachable: _apiReachable,
+        consecutiveProbeFailures: _consecutiveProbeFailures,
+        lastSuccessfulProbe: _lastSuccessfulProbe,
+        reachabilityGrace: _reachabilityGrace,
+        failuresBeforeOffline: _failuresBeforeOffline,
+      );
+
+  /// Two failed API probes in a row — used by the offline banner.
+  bool get shouldShowOfflineBanner =>
+      initialized && _apiAttached && !isOnline;
 
   bool get _recentlyReachable {
     final at = _lastSuccessfulProbe;
@@ -191,14 +198,26 @@ class AppConnectivity extends ChangeNotifier {
   }
 
   void _recordProbeFailure() {
+    final onlineBefore = isOnline;
     _consecutiveProbeFailures =
         (_consecutiveProbeFailures + 1).clamp(0, _failuresBeforeOffline + 2);
     if (_consecutiveProbeFailures >= _failuresBeforeOffline) {
-      _setApiReachable(false);
-    } else if (kDebugMode) {
+      _lastSuccessfulProbe = null;
+      _apiReachable = false;
+    }
+    if (kDebugMode &&
+        _consecutiveProbeFailures < _failuresBeforeOffline) {
       debugPrint(
         'AppConnectivity: probe failed ($_consecutiveProbeFailures/$_failuresBeforeOffline) — still treating as online.',
       );
+    }
+    if (isOnline != onlineBefore) {
+      if (kDebugMode) {
+        debugPrint(
+          'AppConnectivity: isOnline=$isOnline failures=$_consecutiveProbeFailures',
+        );
+      }
+      notifyListeners();
     }
   }
 

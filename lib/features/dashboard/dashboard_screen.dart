@@ -10,8 +10,9 @@ import '../../core/theme/app_theme.dart';
 import '../attendance/attendance_list_hierarchy.dart';
 import '../attendance/data/attendance_repository.dart';
 import '../attendance/models/attendance_models.dart';
-import '../notices/create_notice_screen.dart';
+import '../notices/create_notice_screen.dart' show NoticeAudienceKind;
 import '../notices/data/notices_repository.dart';
+import '../notices/notice_create_flow.dart';
 import '../attendance/attendance_screen.dart';
 import '../attendance/qa_overdue_attendance_screen.dart';
 import '../attendance/today_attendance_list_filter.dart';
@@ -417,13 +418,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           DashboardCompactQuickAction(
                             icon: Icons.add_circle_outline_rounded,
                             label: 'New notice',
-                            onTap: () {
-                              Navigator.of(context).push<void>(
-                                MaterialPageRoute<void>(
-                                  builder: (_) => const CreateNoticeScreen(),
-                                ),
-                              );
-                            },
+                            onTap: () => unawaited(openCreateNoticeAndPublish(context)),
                           ),
                           DashboardCompactQuickAction(
                             icon: Icons.analytics_rounded,

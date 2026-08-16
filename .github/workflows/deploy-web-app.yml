@@ -52,6 +52,8 @@ jobs:
           flutter pub get
           flutter build web --release \
             --dart-define=UPANEL_API_BASE_URL="$API_URL" \
+            --dart-define=APP_BUILD_NUMBER="$(grep -E '^version:' pubspec.yaml | sed -E 's/.*\\+([0-9]+).*/\\1/')" \
+            --dart-define=APP_VERSION_LABEL="$(grep -E '^version:' pubspec.yaml | sed -E 's/version: ([0-9.]+).*/\\1/')" \
             --base-href=/app/
           bash scripts/finalize-web-build.sh
 
@@ -77,3 +79,10 @@ jobs:
           publish_dir: ./_site
           publish_branch: gh-pages
           force_orphan: true
+
+      - name: Remind — sync Contabo server
+        run: |
+          echo "::notice::gh-pages updated. Production at https://kiu.orion13.us/app/ updates only after:"
+          echo "  ssh root@169.58.135.136 -p 443"
+          echo "  cd /opt/upanel && bash scripts/contabo/deploy-web-on-server.sh"
+          echo "Or add secret CONTABO_SSH_PRIVATE_KEY to enable workflow 'Sync web to Contabo server'."

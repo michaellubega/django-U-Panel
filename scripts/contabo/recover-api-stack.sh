@@ -17,9 +17,14 @@ echo "==> Ensure core env keys exist"
 bash scripts/contabo/fix-production-env.sh || true
 
 echo ""
-echo "==> Start database + redis, then recreate API containers"
+echo "==> Start database + redis, then rebuild and recreate API containers"
 "${COMPOSE[@]}" up -d db redis
-"${COMPOSE[@]}" up -d --build --force-recreate web worker beat
+"${COMPOSE[@]}" build --no-cache web worker beat
+"${COMPOSE[@]}" up -d --force-recreate web worker beat
+
+echo ""
+echo "==> Recreate nginx (picks up new web container IP / DNS)"
+"${COMPOSE[@]}" up -d --force-recreate nginx
 
 echo ""
 echo "==> Wait for API health"

@@ -82,10 +82,7 @@ Future<AttendanceListRollData> buildAttendanceListRoll(
       .where((r) => listSessionIds.contains(r.sessionId))
       .toList();
 
-  final studentIds = <String>{
-    ...AttendanceStore.studentIdsSignedIntoList(list.id),
-    ...listRecords.map((r) => r.studentId),
-  };
+  final studentIds = AttendanceStore.rollStudentIdsForList(list.id);
 
   final studentIdsByKey = <String, List<String>>{};
   for (final sid in studentIds) {
@@ -151,7 +148,13 @@ Future<AttendanceListRollData> buildAttendanceListRoll(
     studentRows.add(
       AttendanceListRollStudentRow(
         studentId: sid,
-        name: student?.name ?? 'Unknown',
+        name: student?.name ??
+            AttendanceStore.resolveStudentForRoll(
+              sid,
+              listId: list.id,
+              cache: studentsById,
+            )?.name ??
+            'Unknown',
         registrationNumber: student?.registrationNumber ?? '—',
         attendancePercent: percent,
         sessionLabels: sessionLabels,

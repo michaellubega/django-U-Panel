@@ -65,24 +65,34 @@ List<AttendanceList> attendanceListsForCurrentStaff() {
   final auth = AuthRepository.instance;
   final sorted = List<AttendanceList>.from(AttendanceStore.lists)
     ..sort(compareAttendanceListsNewestFirst);
-  if (auth.isKiuAdmin) {
-    final uid = auth.currentUserId?.trim();
-    if (uid == null || uid.isEmpty) return [];
-    return filterListsForHierarchy(
-      sorted.where((l) => attendanceListAccessibleToLecturer(l, uid)),
-    );
-  }
+  if (!auth.showsStaffAttendanceUi) return [];
   if (auth.adminCheckDone && auth.isAdmin) {
     return filterListsForHierarchy(sorted);
   }
-  if (auth.lecturerCheckDone && auth.isLecturer && !auth.isAdmin) {
-    final uid = auth.currentUserId?.trim();
-    if (uid == null || uid.isEmpty) return [];
-    return filterListsForHierarchy(
-      sorted.where((l) => attendanceListAccessibleToLecturer(l, uid)),
-    );
+  final uid = auth.currentUserId?.trim();
+  if (uid == null || uid.isEmpty) return [];
+  return filterListsForHierarchy(
+    sorted.where((l) => attendanceListAccessibleToLecturer(l, uid)),
+  );
+}
+
+/// Resolves optional scoped list snapshots against the live in-memory store.
+///
+/// Filtered hubs (e.g. present/absent today) pass a snapshot when navigating
+/// deeper; after delete the snapshot must not keep showing removed lists.
+List<AttendanceList> attendanceListsFromOptionalScope(
+  Iterable<AttendanceList>? scopedLists,
+) {
+  if (scopedLists == null) {
+    return attendanceListsForCurrentStaff();
   }
-  return [];
+  final scopedIds = scopedLists.map((l) => l.id.trim()).where((id) => id.isNotEmpty).toSet();
+  if (scopedIds.isEmpty) return const [];
+
+  return filterListsForHierarchy(
+    AttendanceStore.lists.where((l) => scopedIds.contains(l.id)),
+  ).toList()
+    ..sort(compareAttendanceListsNewestFirst);
 }
 
 /// Weekday (1 = Mon … 7 = Sun) → lists on that class day.

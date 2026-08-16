@@ -3,7 +3,48 @@ import 'package:geolocator/geolocator.dart';
 import 'models/attendance_models.dart';
 
 /// Matches server-side buffer in `documents/services/check_in.py`.
-const double kCheckInGeofenceBufferMeters = 15;
+const double kCheckInGeofenceBufferMeters = 25;
+
+/// Cap extra tolerance derived from reported GPS accuracy (metres).
+const double kMaxGpsUncertaintyBufferMeters = 75;
+
+/// Extra metres allowed for a reported horizontal GPS accuracy ring.
+double gpsUncertaintyBufferMeters(double? accuracyMeters) {
+  if (accuracyMeters == null || !accuracyMeters.isFinite || accuracyMeters <= 0) {
+    return 0;
+  }
+  return (accuracyMeters * 0.5).clamp(0, kMaxGpsUncertaintyBufferMeters);
+}
+
+/// Allowed distance from session centre including radius, buffer, and GPS uncertainty.
+double sessionGeofenceToleranceMeters(
+  AttendanceSession s, {
+  double? studentAccuracyMeters,
+  double? sessionCenterAccuracyMeters,
+}) {
+  return s.radiusMeters +
+      kCheckInGeofenceBufferMeters +
+      gpsUncertaintyBufferMeters(studentAccuracyMeters) +
+      gpsUncertaintyBufferMeters(sessionCenterAccuracyMeters);
+}
+
+/// On-campus geofence checks need a recent GPS fix (not an old cached position).
+const Duration checkInGeofenceLocationMaxAge = Duration(seconds: 90);
+
+/// Reuse a slightly older fix for remote sessions where GPS is optional metadata.
+const Duration checkInRemoteLocationMaxAge = Duration(minutes: 8);
+
+Duration locationMaxAgeForSession(AttendanceSession session) {
+  return sessionSkipsLocationCheck(session)
+      ? checkInRemoteLocationMaxAge
+      : checkInGeofenceLocationMaxAge;
+}
+
+/// Tight class radii need a more accurate GPS fix (≤ 100 m).
+bool sessionRequiresHighAccuracyGps(AttendanceSession session) {
+  if (sessionSkipsLocationCheck(session)) return false;
+  return session.radiusMeters <= 100;
+}
 
 // Client-trusted time/GPS (same model as before). Queued check-ins re-validate
 // using capture-time coordinates against the session center when syncing.
@@ -81,11 +122,23 @@ double sessionDistanceMeters(AttendanceSession s, double lat, double lng) {
 }
 
 /// True if [lat],[lng] is within [s.radiusMeters] of the session center.
-bool isPositionWithinSession(AttendanceSession s, double lat, double lng) {
+bool isPositionWithinSession(
+  AttendanceSession s,
+  double lat,
+  double lng, {
+  double? studentAccuracyMeters,
+  double? sessionCenterAccuracyMeters,
+}) {
   if (sessionSkipsLocationCheck(s)) return true;
   if (!isValidCheckInCoordinates(lat, lng)) return false;
   final dist = sessionDistanceMeters(s, lat, lng);
-  return dist <= s.radiusMeters + kCheckInGeofenceBufferMeters;
+  return dist <=
+      sessionGeofenceToleranceMeters(
+        s,
+        studentAccuracyMeters: studentAccuracyMeters,
+        sessionCenterAccuracyMeters:
+            sessionCenterAccuracyMeters ?? s.sessionGpsAccuracyMeters,
+      );
 }
 
 /// Relaxed GPS match when upgrading an official absent row from device evidence.
@@ -122,6 +175,7 @@ LinkedSessionCheckInVerification verifyLinkedSessionCheckIn({
   required DateTime at,
   required double latitude,
   required double longitude,
+  double? studentAccuracyMeters,
 }) {
   final timeOk = isTimestampWithinSessionBounds(session, at);
   if (!timeOk) {
@@ -138,8 +192,12 @@ LinkedSessionCheckInVerification verifyLinkedSessionCheckIn({
       locationOk: true,
     );
   }
-  final locationOk =
-      isPositionWithinSession(session, latitude, longitude);
+  final locationOk = isPositionWithinSession(
+    session,
+    latitude,
+    longitude,
+    studentAccuracyMeters: studentAccuracyMeters,
+  );
   if (!locationOk) {
     return LinkedSessionCheckInVerification(
       passed: false,

@@ -17,6 +17,7 @@ import '../../features/attendance/attendance_screen.dart';
 import '../../features/attendance/data/attendance_offline_sync.dart';
 import '../../features/attendance/data/attendance_repository.dart';
 import '../../features/attendance/data/attendance_remote_list_watch.dart';
+import '../../features/attendance/data/attendance_remote_record_watch.dart';
 import '../../features/attendance/data/attendance_rtd_record_watch.dart';
 import '../../features/attendance/student_attendance_live_sync.dart';
 import '../../features/attendance/models/attendance_models.dart';
@@ -25,6 +26,7 @@ import '../../features/notices/data/notices_repository.dart';
 import '../../features/reports/reports_screen.dart';
 import '../../features/settings/settings_screen.dart';
 import '../../features/settings/lecturer_settings_screen.dart';
+import '../../features/settings/kiu_admin_settings_screen.dart';
 import '../../features/settings/staff_admin_hub_screen.dart';
 import '../../features/campus_presence/update_campus_location_screen.dart';
 import '../../features/campus_presence/campus_presence_log_screen.dart';
@@ -65,6 +67,8 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   DateTime? _lastStudentAttendanceReloadAt;
   bool _staffAttendanceBootstrapAttempted = false;
   Timer? _authRepoSideEffectsDebounce;
+  Timer? _staffAttendanceRefreshTimer;
+  static const Duration _staffAttendanceRefreshInterval = Duration(seconds: 45);
   UserRole? _sectionCacheRole;
   final Map<AppSection, Widget> _sectionWidgets = {};
   final Set<AppSection> _builtSections = {};
@@ -97,8 +101,10 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
         unawaited(PushController.instance.initialize());
         unawaited(PushController.instance.syncTopicsForCurrentUser());
         unawaited(AttendanceRemoteListWatch.instance.start());
+        unawaited(AttendanceRemoteRecordWatch.instance.start());
         unawaited(StudentLocationPriming.instance.primeOnAppOpen());
-        Future<void>.delayed(const Duration(milliseconds: 400), () {
+        _startStaffAttendanceRefreshTimer();
+        Future<void>.delayed(const Duration(milliseconds: 100), () {
           if (!mounted) return;
           PendingOfflineCoordinator.instance.start();
         });
@@ -115,6 +121,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     PendingOfflineCoordinator.instance.stop();
     _authRepoSideEffectsDebounce?.cancel();
+    _staffAttendanceRefreshTimer?.cancel();
     _currentSection.dispose();
     _refreshHost.dispose();
     AuthRepository.instance.removeListener(_onAuthRepo);
@@ -130,6 +137,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
       unawaited(AppConnectivity.instance.probeNow());
       unawaited(PushController.instance.syncTopicsForCurrentUser());
       unawaited(_bootstrapAttendanceStore());
+      unawaited(_refreshStaffAttendanceIfNeeded(force: true));
       unawaited(StudentLocationPriming.instance.primeOnAppOpen());
     }
   }
@@ -286,16 +294,18 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
       setState(() {});
     }
     _authRepoSideEffectsDebounce?.cancel();
-    _authRepoSideEffectsDebounce = Timer(const Duration(milliseconds: 350), () {
+    _authRepoSideEffectsDebounce = Timer(const Duration(milliseconds: 200), () {
       if (!mounted || !AuthRepository.instance.isLoggedIn) return;
       _refreshUnseenNotices();
       unawaited(PushController.instance.syncTopicsForCurrentUser());
       unawaited(AttendanceRemoteListWatch.instance.start());
+      unawaited(AttendanceRemoteRecordWatch.instance.start());
       if (roleChanged) {
         unawaited(StudentLocationPriming.instance.primeOnAppOpen());
       }
       _reloadStudentAttendanceWhenRegistrationReady();
       _reloadStaffAttendanceWhenRoleReady();
+      _startStaffAttendanceRefreshTimer();
     });
   }
 
@@ -351,6 +361,28 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     if (repo.hasCachedStore || _staffAttendanceBootstrapAttempted) return;
     _staffAttendanceBootstrapAttempted = true;
     unawaited(repo.bootstrapLoadIfNeeded(force: true));
+    unawaited(repo.syncStaffAttendanceForeground(force: !repo.hasCachedStore));
+  }
+
+  void _startStaffAttendanceRefreshTimer() {
+    final auth = AuthRepository.instance;
+    if (!auth.isLoggedIn || !auth.showsStaffAttendanceUi) {
+      _staffAttendanceRefreshTimer?.cancel();
+      _staffAttendanceRefreshTimer = null;
+      return;
+    }
+    _staffAttendanceRefreshTimer ??= Timer.periodic(
+      _staffAttendanceRefreshInterval,
+      (_) => unawaited(_refreshStaffAttendanceIfNeeded()),
+    );
+  }
+
+  Future<void> _refreshStaffAttendanceIfNeeded({bool force = false}) async {
+    final auth = AuthRepository.instance;
+    if (!auth.isLoggedIn || auth.needsEmailVerification) return;
+    if (!auth.showsStaffAttendanceUi) return;
+    if (!AppConnectivity.instance.isOnline) return;
+    await AttendanceRepository.instance.syncStaffAttendanceForeground(force: force);
   }
 
   void _ensureSectionCacheForRole(UserRole role) {
@@ -376,8 +408,15 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   }
 
   void _prewarmNavSections() {
+    final auth = AuthRepository.instance;
+    if (!auth.roleCheckDone) {
+      _navPrewarmScheduled = false;
+      return;
+    }
     final role = _resolvedRole();
-    final sections = _navSectionsForRole(role);
+    // Avoid mounting desktop-only / heavy tabs (e.g. Reports) on phones.
+    final sections =
+        _isDesktop ? _navSectionsForRole(role) : _mobileBottomSections();
     var changed = false;
     for (final s in sections) {
       if (_builtSections.add(s)) changed = true;
@@ -699,15 +738,22 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
     );
   }
 
-  bool _isShellAdmin() =>
-      AuthRepository.instance.adminCheckDone && AuthRepository.instance.isAdmin;
+  bool _isShellAdmin() {
+    final auth = AuthRepository.instance;
+    if (!auth.adminCheckDone) return false;
+    final role = auth.resolvedRole;
+    return role == UserRole.admin || role == UserRole.qaStaff;
+  }
 
   bool _isShellQaStaff() =>
       AuthRepository.instance.adminCheckDone && AuthRepository.instance.isQaStaff;
 
   bool _isShellLecturer() {
     final auth = AuthRepository.instance;
-    return auth.lecturerCheckDone && auth.isLecturer && !auth.isAdmin;
+    return auth.lecturerCheckDone &&
+        auth.isLecturer &&
+        !auth.isAdmin &&
+        !auth.isKiuAdmin;
   }
 
   List<AppSection> _navSectionsForRole(UserRole role) {
@@ -722,6 +768,12 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
           AppSection.settings,
         ];
       case UserRole.lecturer:
+        return const [
+          AppSection.dashboard,
+          AppSection.attendance,
+          AppSection.notices,
+          AppSection.settings,
+        ];
       case UserRole.kiuAdmin:
         return const [
           AppSection.dashboard,
@@ -751,6 +803,12 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
           AppSection.settings,
         ];
       case UserRole.lecturer:
+        return const [
+          AppSection.dashboard,
+          AppSection.attendance,
+          AppSection.notices,
+          AppSection.settings,
+        ];
       case UserRole.kiuAdmin:
         return const [
           AppSection.dashboard,
@@ -817,6 +875,7 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
           case UserRole.lecturer:
             return LecturerSettingsScreen(shellSection: section);
           case UserRole.kiuAdmin:
+            return KiuAdminSettingsScreen(shellSection: section);
           case UserRole.admin:
           case UserRole.qaStaff:
           case UserRole.student:
@@ -1169,28 +1228,27 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   }
 
   Widget _connectivityBanner({required bool mobile}) {
-    if (!AppConnectivity.instance.initialized) {
+    if (!AppConnectivity.instance.shouldShowOfflineBanner) {
       return const SizedBox.shrink();
     }
-    final online = AppConnectivity.instance.isOnline;
     return Container(
       width: double.infinity,
       padding: EdgeInsets.symmetric(
         horizontal: mobile ? 12 : 16,
         vertical: mobile ? 8 : 10,
       ),
-      color: online ? AppTheme.success : AppTheme.warning,
+      color: AppTheme.warning,
       child: Row(
         children: [
-          Icon(
-            online ? Icons.wifi_rounded : Icons.wifi_off_rounded,
+          const Icon(
+            Icons.wifi_off_rounded,
             color: Colors.white,
             size: 18,
           ),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              online ? 'You are online' : 'You are offline',
+              'You are offline',
               style: Theme.of(context).textTheme.bodySmall?.copyWith(
                     color: Colors.white,
                     fontWeight: FontWeight.w600,

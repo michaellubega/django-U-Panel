@@ -104,9 +104,7 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
   bool _pipelineLikelyOnline = true;
   bool _pipelineRunning = false;
 
-  static const Duration _stageMinGap = Duration(milliseconds: 550);
-  static const Duration _linkedSessionLocationMaxAge = Duration(minutes: 8);
-
+  static const Duration _stageMinGap = Duration(milliseconds: 200);
   /// Resolves the session to validate against, refreshing when the store was
   /// overwritten with a stale closed/expired copy during background sync.
   Future<AttendanceSession?> _resolveSessionForPipeline() async {
@@ -170,7 +168,7 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
     if (!mounted) return;
     setState(() => _stageIndex = _stageLabels.length);
     if (!_pipelineLikelyOnline) {
-      await Future<void>.delayed(const Duration(milliseconds: 450));
+      await Future<void>.delayed(const Duration(milliseconds: 150));
     }
   }
 
@@ -260,11 +258,14 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
     );
   }
 
-  Future<({double latitude, double longitude})?> _resolveCoordinates(
+  Future<({double latitude, double longitude, double? accuracyMeters})?>
+      _resolveCoordinates(
     AttendanceSession session, {
     required bool likelyOnline,
+    bool forceFresh = false,
   }) async {
     await _advanceToStage(1);
+    final highAccuracy = sessionRequiresHighAccuracyGps(session);
 
     if (session.remoteLearning) {
       setState(() {
@@ -277,9 +278,13 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
       );
       if (!mounted) return null;
       setState(() => _resolvingLocation = false);
+      final pos = gps.position;
       return (
-        latitude: gps.position?.latitude ?? 0,
-        longitude: gps.position?.longitude ?? 0,
+        latitude: pos?.latitude ?? 0,
+        longitude: pos?.longitude ?? 0,
+        accuracyMeters: pos != null && pos.accuracy.isFinite && pos.accuracy > 0
+            ? pos.accuracy
+            : null,
       );
     }
 
@@ -291,8 +296,57 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
       return null;
     }
 
+    final requiresGeofence = !sessionSkipsLocationCheck(session);
+    final maxAge = locationMaxAgeForSession(session);
+
+    if (requiresGeofence || forceFresh) {
+      setState(() {
+        _resolvingLocation = true;
+        _locationServiceDisabled = false;
+        _permissionBlocked = false;
+      });
+      final gps = await acquireCurrentGpsPosition(
+        timeLimit: requiresGeofence
+            ? (likelyOnline
+                ? const Duration(seconds: 14)
+                : const Duration(seconds: 18))
+            : (likelyOnline
+                ? const Duration(seconds: 8)
+                : const Duration(seconds: 14)),
+        reuseMaxAge: maxAge,
+        forceFresh: true,
+        highAccuracy: highAccuracy,
+      );
+      if (!mounted) return null;
+      setState(() => _resolvingLocation = false);
+
+      if (gps.locationServiceDisabled) {
+        setState(() {
+          _locationServiceDisabled = true;
+          _phase = _CheckInUiPhase.error;
+        });
+        return null;
+      }
+
+      if (gps.position == null) {
+        setState(() {
+          _errorMessage = gps.errorMessage ??
+              'Could not read your current location. Turn on GPS and try again.';
+          _permissionBlocked = gps.permissionBlocked;
+          _phase = _CheckInUiPhase.error;
+        });
+        return null;
+      }
+      final pos = gps.position!;
+      return (
+        latitude: pos.latitude,
+        longitude: pos.longitude,
+        accuracyMeters:
+            pos.accuracy.isFinite && pos.accuracy > 0 ? pos.accuracy : null,
+      );
+    }
+
     Position? recent;
-    final maxAge = _linkedSessionLocationMaxAge;
     final prefetched = widget.prefetchedPosition;
     if (prefetched != null && positionCapturedWithin(prefetched, maxAge)) {
       recent = prefetched;
@@ -302,10 +356,18 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
         recent = primed;
       }
     }
-    recent ??= await readRecentKnownPosition(maxAge: maxAge);
+    if (recent == null) {
+      recent = await readRecentKnownPosition(maxAge: maxAge);
+    }
 
     if (recent != null) {
-      return (latitude: recent.latitude, longitude: recent.longitude);
+      return (
+        latitude: recent.latitude,
+        longitude: recent.longitude,
+        accuracyMeters: recent.accuracy.isFinite && recent.accuracy > 0
+            ? recent.accuracy
+            : null,
+      );
     }
 
     setState(() {
@@ -314,24 +376,12 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
       _permissionBlocked = false;
     });
 
-    if (StudentLocationPriming.instance.resolving) {
-      await StudentLocationPriming.instance.acquireFreshForCheckIn();
-      final primed = StudentLocationPriming.instance.lastPosition;
-      if (primed != null && positionCapturedWithin(primed, maxAge)) {
-        recent = primed;
-      }
-    }
-
-    if (recent != null) {
-      if (mounted) setState(() => _resolvingLocation = false);
-      return (latitude: recent.latitude, longitude: recent.longitude);
-    }
-
     final gps = await acquireCurrentGpsPosition(
-      timeLimit:
-          likelyOnline ? const Duration(seconds: 8) : const Duration(seconds: 14),
+      timeLimit: likelyOnline
+          ? const Duration(seconds: 8)
+          : const Duration(seconds: 14),
       reuseMaxAge: maxAge,
-      forceFresh: false,
+      highAccuracy: highAccuracy,
     );
     if (!mounted) return null;
     setState(() => _resolvingLocation = false);
@@ -354,7 +404,12 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
       return null;
     }
     final pos = gps.position!;
-    return (latitude: pos.latitude, longitude: pos.longitude);
+    return (
+      latitude: pos.latitude,
+      longitude: pos.longitude,
+      accuracyMeters:
+          pos.accuracy.isFinite && pos.accuracy > 0 ? pos.accuracy : null,
+    );
   }
 
   Future<void> _runPipeline() async {
@@ -408,18 +463,49 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
       return;
     }
 
+    if (!sessionSkipsLocationCheck(session) &&
+        DateTime.now().difference(session.startTime) <
+            const Duration(minutes: 3)) {
+      final refreshed = await AttendanceRepository.instance
+          .resolveActiveSessionByCodeForSignIn(session.sessionCode);
+      if (refreshed != null && refreshed.isOpenForCheckIn) {
+        session = refreshed;
+      }
+    }
+
     final coordsFuture =
         _resolveCoordinates(session, likelyOnline: likelyOnline);
-    final coords = await coordsFuture;
+    var coords = await coordsFuture;
     if (!mounted || coords == null) return;
 
     await _advanceToStage(2);
-    final verification = verifyLinkedSessionCheckIn(
+    var verification = verifyLinkedSessionCheckIn(
       session: session,
       at: captureIntentAt,
       latitude: coords.latitude,
       longitude: coords.longitude,
+      studentAccuracyMeters: coords.accuracyMeters,
     );
+    if (!verification.passed &&
+        verification.locationOk == false &&
+        !sessionSkipsLocationCheck(session)) {
+      final retryCoords = await _resolveCoordinates(
+        session,
+        likelyOnline: likelyOnline,
+        forceFresh: true,
+      );
+      if (!mounted) return;
+      if (retryCoords != null) {
+        coords = retryCoords;
+        verification = verifyLinkedSessionCheckIn(
+          session: session,
+          at: captureIntentAt,
+          latitude: coords.latitude,
+          longitude: coords.longitude,
+          studentAccuracyMeters: coords.accuracyMeters,
+        );
+      }
+    }
     if (!verification.passed) {
       _showError(
         verification.failureMessage ??
@@ -496,6 +582,7 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
       record,
       listIdOverride: widget.list.id,
       sessionCodeRaw: session.sessionCode,
+      gpsAccuracyMeters: coords.accuracyMeters,
     );
     if (AppConnectivity.instance.hasNetworkInterface) {
       PendingOfflineCoordinator.instance.requestCheckInSync();

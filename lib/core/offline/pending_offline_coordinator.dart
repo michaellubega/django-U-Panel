@@ -16,8 +16,8 @@ class PendingOfflineCoordinator {
   static final PendingOfflineCoordinator instance =
       PendingOfflineCoordinator._();
 
-  static const _tickInterval = Duration(minutes: 3);
-  static const _syncDebounce = Duration(milliseconds: 300);
+  static const _tickInterval = Duration(seconds: 5);
+  static const _syncDebounce = Duration(milliseconds: 150);
   static const _backgroundSyncTimeout = Duration(seconds: 50);
   static DateTime? _lastBackgroundSyncLogAt;
 

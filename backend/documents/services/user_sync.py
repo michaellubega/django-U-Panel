@@ -26,29 +26,43 @@ def sync_user_profile(user: User) -> None:
         "kiuAdminOnboardingComplete": user.kiu_admin_onboarding_complete,
         "emailVerified": user.email_verified,
     }
+    if user.role == User.Role.KIU_ADMIN:
+        user_data["staffAccountRole"] = "kiu_administrator"
+    elif user.is_lecturer:
+        user_data["staffAccountRole"] = "staff"
     reg = (user.registration_number or "").strip().upper()
     if user.is_student and not user.email_verified and reg:
         user_data["pendingRegistrationNumber"] = reg
     _upsert(USERS, uid, user_data)
 
     if user.is_administrator:
-        admin_data = {
-            "isAdmin": True,
-            "fullName": user.full_name,
-            "email": user.email,
-            "staffNumber": user.staff_number,
-        }
-        if user.role == User.Role.QA_STAFF:
-            admin_data["role"] = "qa_staff"
-            admin_data["isQaStaff"] = True
         if user.role == User.Role.KIU_ADMIN:
-            admin_data["isKiuAdmin"] = True
-            admin_data["kiuAdminJobTitle"] = user.kiu_admin_job_title
-        _upsert(ADMINS, uid, admin_data)
+            admin_data = {
+                "isKiuAdmin": True,
+                "isAdmin": False,
+                "fullName": user.full_name,
+                "email": user.email,
+                "staffNumber": user.staff_number,
+                "registrationNumber": user.registration_number,
+                "kiuAdminJobTitle": user.kiu_admin_job_title,
+                "adminRole": "kiu_administrator",
+            }
+            _upsert(ADMINS, uid, admin_data)
+        else:
+            admin_data = {
+                "isAdmin": True,
+                "fullName": user.full_name,
+                "email": user.email,
+                "staffNumber": user.staff_number,
+            }
+            if user.role == User.Role.QA_STAFF:
+                admin_data["role"] = "qa_staff"
+                admin_data["isQaStaff"] = True
+            _upsert(ADMINS, uid, admin_data)
     else:
         _delete_if_exists(ADMINS, uid)
 
-    if user.is_lecturer:
+    if user.is_lecturer or user.role == User.Role.KIU_ADMIN:
         _upsert(
             LECTURERS,
             uid,
@@ -57,6 +71,7 @@ def sync_user_profile(user: User) -> None:
                 "fullName": user.full_name,
                 "email": user.email,
                 "staffNumber": user.staff_number,
+                "registrationNumber": user.registration_number,
             },
         )
     else:

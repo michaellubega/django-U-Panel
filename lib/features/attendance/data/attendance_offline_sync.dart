@@ -108,6 +108,14 @@ class AttendanceOfflineSync {
       await _runStep(label, fn);
     }
 
+    // Check-ins first — students waiting on upload should not wait for list/session drains.
+    await step(
+      'AttendanceRepository.syncUnuploadedSignIns',
+      AttendanceRepository.instance.syncUnuploadedSignIns,
+    );
+    if (!withinBudget()) return;
+    await step('_drainCheckInsWithoutReload', _drainCheckInsWithoutReload);
+    if (!withinBudget()) return;
     await step('PendingListCreateSync.drain', PendingListCreateSync.drain);
     if (!withinBudget()) return;
     await step(

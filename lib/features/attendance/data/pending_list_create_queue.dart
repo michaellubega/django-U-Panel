@@ -86,8 +86,10 @@ class PendingListCreateEntry {
       room: m['room'] as String? ?? '',
       whoTaught: m['whoTaught'] as String? ?? '',
       date: dateMs != null
-          ? DateTime.fromMillisecondsSinceEpoch(dateMs)
-          : DateTime.now(),
+          ? attendanceListDateFromStored(dateMs)
+          : attendanceListDateForWeekday(
+              DateTime.now().toLocal().weekday.clamp(1, 7),
+            ),
       program: AttendanceProgram.fromStorage(m['program'] as String?),
       courses: (m['courses'] as List<dynamic>?)?.cast<String>(),
       year: m['year'] as String? ?? '1',

@@ -61,6 +61,7 @@ abstract final class CampusPresenceCheckActions {
       progress.setStep(CampusPresenceCheckStep.locating);
       final location = await acquireCurrentGpsPosition(
         timeLimit: const Duration(seconds: 30),
+        highAccuracy: false,
       );
 
       if (location.position == null) {
