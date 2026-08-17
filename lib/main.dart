@@ -10,6 +10,7 @@ import 'core/navigation/auth_gate.dart';
 import 'core/auth/auth_repository.dart';
 import 'core/api/api_auth.dart';
 import 'core/api/api_client.dart';
+import 'core/api/api_config.dart';
 import 'core/monitoring/app_sentry.dart';
 import 'core/push/onesignal_service.dart';
 import 'core/push/onesignal_integration_verification.dart';
@@ -34,6 +35,9 @@ Future<void> _bootstrap() async {
   }
 
   runApp(const UPanelApp());
+  if (kDebugMode) {
+    debugPrint('U-Panel API base: $uPanelApiBaseUrl');
+  }
   unawaited(_initNativeStorageAndApi());
 }
 
