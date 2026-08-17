@@ -17,7 +17,7 @@ class AppConnectivity extends ChangeNotifier {
   AppConnectivity._();
   static final AppConnectivity instance = AppConnectivity._();
 
-  static const Duration _probeTimeout = Duration(seconds: 4);
+  static const Duration _probeTimeout = Duration(seconds: 12);
   static const Duration _probeInterval = Duration(seconds: 5);
   static const Duration _reachabilityGrace = Duration(seconds: 8);
   static const Duration _minProbeGap = Duration(seconds: 2);
@@ -149,13 +149,23 @@ class AppConnectivity extends ChangeNotifier {
     Duration timeout = _probeTimeout,
   }) async {
     if (!isApiConfigured) return _hasNetworkInterface;
+    final url = '$uPanelApiBaseUrl/api/health/';
     try {
       return await ApiClient.instance.ping(timeout: timeout);
     } on TimeoutException {
+      if (kDebugMode) {
+        debugPrint('AppConnectivity: probe timed out — $url');
+      }
       return false;
-    } on SocketException {
+    } on SocketException catch (e) {
+      if (kDebugMode) {
+        debugPrint('AppConnectivity: probe socket error — $url ($e)');
+      }
       return false;
-    } catch (_) {
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('AppConnectivity: probe failed — $url ($e)');
+      }
       return false;
     }
   }
@@ -208,7 +218,7 @@ class AppConnectivity extends ChangeNotifier {
     if (kDebugMode &&
         _consecutiveProbeFailures < _failuresBeforeOffline) {
       debugPrint(
-        'AppConnectivity: probe failed ($_consecutiveProbeFailures/$_failuresBeforeOffline) — still treating as online.',
+        'AppConnectivity: probe failed ($_consecutiveProbeFailures/$_failuresBeforeOffline) — still treating as online. url=$uPanelApiBaseUrl/api/health/',
       );
     }
     if (isOnline != onlineBefore) {

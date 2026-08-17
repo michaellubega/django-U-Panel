@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import '../../core/api/api_config.dart';
 import '../../core/auth/auth_action_result.dart';
 import '../../core/auth/auth_repository.dart';
 import '../../core/auth/staff_auth_email.dart';
@@ -491,6 +492,8 @@ class _AuthScreenState extends State<AuthScreen> {
                       ],
                     ),
                   ),
+                  const SizedBox(height: 16),
+                  const _DebugApiBaseLabel(),
                   const WebBuildLabel(),
                 ],
               ),
@@ -763,6 +766,26 @@ class _LoginVerificationScreenState extends State<_LoginVerificationScreen>
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _DebugApiBaseLabel extends StatelessWidget {
+  const _DebugApiBaseLabel();
+
+  @override
+  Widget build(BuildContext context) {
+    if (!kDebugMode) return const SizedBox.shrink();
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Text(
+        'API: $uPanelApiBaseUrl',
+        textAlign: TextAlign.center,
+        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: AppTheme.textTertiary,
+              fontSize: 11,
+            ),
       ),
     );
   }

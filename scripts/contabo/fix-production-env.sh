@@ -59,15 +59,15 @@ for line in lines:
 upsert("DJANGO_DEBUG", "False", out)
 upsert(
     "DJANGO_ALLOWED_HOSTS",
-    "169.58.135.136,api.orion13.us,kiu.orion13.us,localhost,127.0.0.1",
+    "169.58.135.136,api.kiu.orion13.us,api.orion13.us,kiu.orion13.us,localhost,127.0.0.1",
     out,
 )
 upsert(
     "CORS_ALLOWED_ORIGINS",
-    "https://kiu.orion13.us,https://api.orion13.us,http://169.58.135.136,http://localhost",
+    "https://kiu.orion13.us,https://api.kiu.orion13.us,https://api.orion13.us,http://169.58.135.136,http://localhost",
     out,
 )
-upsert("CSRF_TRUSTED_ORIGINS", "https://kiu.orion13.us,https://api.orion13.us", out)
+upsert("CSRF_TRUSTED_ORIGINS", "https://kiu.orion13.us,https://api.kiu.orion13.us,https://api.orion13.us", out)
 upsert("PUBLIC_API_URL", "https://kiu.orion13.us", out)
 upsert("APP_RETURN_URL", "https://kiu.orion13.us/app/", out)
 upsert("ONESIGNAL_APP_ID", "882dcbec-c505-4c12-95c5-78da7e8ef25c", out)
