@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:u_panel/core/api/api_config.dart';
 
@@ -53,10 +54,34 @@ void main() {
       );
     });
 
-    test('falls back to local Django', () {
+    test('adds https when the host is given without a scheme', () {
       expect(
-        resolveUPanelApiBaseUrl(compiled: ''),
-        'http://127.0.0.1:8000',
+        resolveUPanelApiBaseUrl(compiled: 'kiu.orion13.us'),
+        'https://kiu.orion13.us',
+      );
+    });
+
+    test('strips /app so the web URL is not used as the API origin', () {
+      expect(
+        resolveUPanelApiBaseUrl(compiled: 'https://kiu.orion13.us/app/'),
+        'https://kiu.orion13.us',
+      );
+    });
+
+    test('upgrades cleartext production hosts to https', () {
+      expect(
+        resolveUPanelApiBaseUrl(compiled: 'http://kiu.orion13.us'),
+        'https://kiu.orion13.us',
+      );
+    });
+
+    test('iOS defaults to the production API when dart-define is empty', () {
+      expect(
+        defaultApiBaseUrlForPlatform(
+          isWeb: false,
+          platform: TargetPlatform.iOS,
+        ),
+        'https://kiu.orion13.us',
       );
     });
   });

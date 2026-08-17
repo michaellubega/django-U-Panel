@@ -1,17 +1,21 @@
 /// REST API base URL for the Django backend.
 ///
 /// Override at compile time (either define works):
-/// `flutter run -d <device-id> --dart-define=API_URL=https://api.kiu.orion13.us`
+/// `flutter run -d <device-id> --dart-define=API_URL=https://kiu.orion13.us`
 /// `flutter run --dart-define=UPANEL_API_BASE_URL=http://192.168.1.10:8000`
 ///
 /// On web, [web/index.html] may set `window.upanelApiBaseUrl` at runtime
 /// (same-origin on Contabo, or https://api.kiu.orion13.us when configured).
+import 'package:flutter/foundation.dart'
+    show TargetPlatform, defaultTargetPlatform, kIsWeb;
+
 import 'api_config_stub.dart' if (dart.library.js_interop) 'api_config_web.dart';
 
 const String _kApiBaseUrlFromEnv = String.fromEnvironment('UPANEL_API_BASE_URL');
 const String _kApiUrlAliasFromEnv = String.fromEnvironment('API_URL');
 
 const String kDefaultLocalApiBaseUrl = 'http://127.0.0.1:8000';
+const String kDefaultProductionApiBaseUrl = 'https://kiu.orion13.us';
 
 /// Prefer `UPANEL_API_BASE_URL`, then the `API_URL` alias used by device runs.
 String compiledApiBaseUrlDefine({
@@ -23,13 +27,53 @@ String compiledApiBaseUrlDefine({
   return apiUrl.trim();
 }
 
+/// iOS/Android default to the live API. `127.0.0.1` is the phone itself, not
+/// the Mac, so a physical iPhone can never reach local Django that way.
+String defaultApiBaseUrlForPlatform({
+  bool? isWeb,
+  TargetPlatform? platform,
+}) {
+  if (isWeb ?? kIsWeb) return kDefaultLocalApiBaseUrl;
+  switch (platform ?? defaultTargetPlatform) {
+    case TargetPlatform.iOS:
+    case TargetPlatform.android:
+      return kDefaultProductionApiBaseUrl;
+    default:
+      return kDefaultLocalApiBaseUrl;
+  }
+}
+
 String normalizeApiBaseUrl(
   String raw, {
   String fallback = kDefaultLocalApiBaseUrl,
 }) {
-  final v = raw.trim();
+  var v = raw.trim();
   if (v.isEmpty) return fallback;
-  return v.endsWith('/') ? v.substring(0, v.length - 1) : v;
+
+  // `API_URL=kiu.orion13.us` (no scheme) is not a valid HTTP origin on iOS.
+  if (!v.contains('://')) {
+    v = 'https://$v';
+  }
+
+  if (v.endsWith('/')) v = v.substring(0, v.length - 1);
+  // People sometimes paste the web app URL; API lives at the origin, not /app.
+  if (v.toLowerCase().endsWith('/app')) {
+    v = v.substring(0, v.length - 4);
+  }
+
+  final uri = Uri.tryParse(v);
+  final host = uri?.host.toLowerCase() ?? '';
+  if (uri != null &&
+      uri.scheme == 'http' &&
+      (host == 'kiu.orion13.us' ||
+          host == 'www.kiu.orion13.us' ||
+          host == 'api.kiu.orion13.us' ||
+          host.endsWith('.kiu.orion13.us'))) {
+    v = uri.replace(scheme: 'https').toString();
+    if (v.endsWith('/')) v = v.substring(0, v.length - 1);
+  }
+
+  return v;
 }
 
 /// Web runtime origin wins so HTTPS pages stay same-origin; native uses dart-define.
@@ -51,6 +95,7 @@ String get uPanelApiBaseUrl => resolveUPanelApiBaseUrl(
         apiUrl: _kApiUrlAliasFromEnv,
       ),
       runtimeWeb: webRuntimeApiBaseUrl,
+      fallback: defaultApiBaseUrlForPlatform(),
     );
 
 bool get isApiConfigured => uPanelApiBaseUrl.trim().isNotEmpty;

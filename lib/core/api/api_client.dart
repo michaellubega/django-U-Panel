@@ -130,15 +130,21 @@ class ApiClient {
   }
 
   /// Lightweight reachability probe (replaces Firestore meta/connectivity ping).
-  Future<bool> ping({Duration timeout = const Duration(seconds: 6)}) async {
+  Future<bool> ping({Duration timeout = const Duration(seconds: 12)}) async {
+    final url = _uri('/api/health/');
     try {
-      final res = await _send(
-        () => http
-            .get(_uri('/api/health/'), headers: _headers())
-            .timeout(timeout),
-      );
-      return res.statusCode >= 200 && res.statusCode < 300;
-    } catch (_) {
+      final res = await http
+          .get(url, headers: const {'Accept': 'application/json'})
+          .timeout(timeout);
+      final ok = res.statusCode >= 200 && res.statusCode < 300;
+      if (!ok && kDebugMode) {
+        debugPrint('API ping HTTP ${res.statusCode} — $url');
+      }
+      return ok;
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('API ping failed — $url ($e)');
+      }
       return false;
     }
   }
