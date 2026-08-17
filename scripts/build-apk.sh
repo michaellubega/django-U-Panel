@@ -17,7 +17,11 @@ bash scripts/setup-android-signing.sh
 
 API_URL="${UPANEL_API_BASE_URL:-https://kiu.orion13.us}"
 ONESIGNAL_ID="${ONESIGNAL_APP_ID:-882dcbec-c505-4c12-95c5-78da7e8ef25c}"
-DART_DEFINES=(--dart-define="UPANEL_API_BASE_URL=${API_URL}" --dart-define="ONESIGNAL_APP_ID=${ONESIGNAL_ID}")
+DART_DEFINES=(
+  --dart-define="UPANEL_API_BASE_URL=${API_URL}"
+  --dart-define="API_URL=${API_URL}"
+  --dart-define="ONESIGNAL_APP_ID=${ONESIGNAL_ID}"
+)
 
 if [[ -n "${SENTRY_DSN:-}" ]]; then
   DART_DEFINES+=(--dart-define="SENTRY_DSN=${SENTRY_DSN}")

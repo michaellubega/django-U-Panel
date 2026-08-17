@@ -156,7 +156,7 @@ ufw enable
 ## Step 6 — Point Flutter app to production API
 
 ```bash
-flutter run --dart-define=UPANEL_API_BASE_URL=https://api.orion13.us
+flutter run -d <device-id> --dart-define=API_URL=https://api.kiu.orion13.us
 ```
 
 Until HTTPS is ready, use:
