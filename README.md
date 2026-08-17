@@ -30,8 +30,15 @@ Download the **Android APK** and **Windows installer** from GitHub (landing page
 
 ```bash
 flutter pub get
+
+# Local Django
 flutter run --dart-define=UPANEL_API_BASE_URL=http://127.0.0.1:8000
+
+# Production API (iPhone / Android — must include https://)
+flutter run -d <device-id> --dart-define=API_URL=https://kiu.orion13.us
 ```
+
+`API_URL` and `UPANEL_API_BASE_URL` are equivalent. Always include `https://`. On iOS/Android the app defaults to `https://kiu.orion13.us` if you omit the define. `127.0.0.1` is the phone itself, so a physical iPhone cannot reach Django on your Mac that way.
 
 ### Django backend
 

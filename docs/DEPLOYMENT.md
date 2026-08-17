@@ -97,7 +97,9 @@ kamal app exec -i web "python manage.py seed_qa_demo_user"
 Point the app at your public API:
 
 ```powershell
-flutter run --dart-define=UPANEL_API_BASE_URL=https://api.orion13.us
+flutter run -d <device-id> --dart-define=API_URL=https://api.kiu.orion13.us
+# equivalent:
+flutter run --dart-define=UPANEL_API_BASE_URL=https://api.kiu.orion13.us
 ```
 
 ## HTTPS
