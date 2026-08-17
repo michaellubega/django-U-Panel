@@ -1,26 +1,57 @@
 /// REST API base URL for the Django backend.
 ///
-/// Override at compile time:
+/// Override at compile time (either define works):
+/// `flutter run -d <device-id> --dart-define=API_URL=https://api.kiu.orion13.us`
 /// `flutter run --dart-define=UPANEL_API_BASE_URL=http://192.168.1.10:8000`
 ///
 /// On web, [web/index.html] may set `window.upanelApiBaseUrl` at runtime
-/// (same-origin on Contabo, or https://api.orion13.us when configured).
+/// (same-origin on Contabo, or https://api.kiu.orion13.us when configured).
 import 'api_config_stub.dart' if (dart.library.js_interop) 'api_config_web.dart';
 
-const String _kApiBaseUrlFromEnv = String.fromEnvironment(
-  'UPANEL_API_BASE_URL',
-  defaultValue: 'http://127.0.0.1:8000',
-);
+const String _kApiBaseUrlFromEnv = String.fromEnvironment('UPANEL_API_BASE_URL');
+const String _kApiUrlAliasFromEnv = String.fromEnvironment('API_URL');
 
-String get uPanelApiBaseUrl {
-  final runtime = webRuntimeApiBaseUrl;
-  if (runtime != null && runtime.isNotEmpty) {
-    return runtime.endsWith('/') ? runtime.substring(0, runtime.length - 1) : runtime;
-  }
-  final v = _kApiBaseUrlFromEnv.trim();
-  if (v.isEmpty) return 'http://127.0.0.1:8000';
+const String kDefaultLocalApiBaseUrl = 'http://127.0.0.1:8000';
+
+/// Prefer `UPANEL_API_BASE_URL`, then the `API_URL` alias used by device runs.
+String compiledApiBaseUrlDefine({
+  required String upanelApiBaseUrl,
+  required String apiUrl,
+}) {
+  final primary = upanelApiBaseUrl.trim();
+  if (primary.isNotEmpty) return primary;
+  return apiUrl.trim();
+}
+
+String normalizeApiBaseUrl(
+  String raw, {
+  String fallback = kDefaultLocalApiBaseUrl,
+}) {
+  final v = raw.trim();
+  if (v.isEmpty) return fallback;
   return v.endsWith('/') ? v.substring(0, v.length - 1) : v;
 }
+
+/// Web runtime origin wins so HTTPS pages stay same-origin; native uses dart-define.
+String resolveUPanelApiBaseUrl({
+  required String compiled,
+  String? runtimeWeb,
+  String fallback = kDefaultLocalApiBaseUrl,
+}) {
+  final runtime = runtimeWeb?.trim();
+  if (runtime != null && runtime.isNotEmpty) {
+    return normalizeApiBaseUrl(runtime, fallback: fallback);
+  }
+  return normalizeApiBaseUrl(compiled, fallback: fallback);
+}
+
+String get uPanelApiBaseUrl => resolveUPanelApiBaseUrl(
+      compiled: compiledApiBaseUrlDefine(
+        upanelApiBaseUrl: _kApiBaseUrlFromEnv,
+        apiUrl: _kApiUrlAliasFromEnv,
+      ),
+      runtimeWeb: webRuntimeApiBaseUrl,
+    );
 
 bool get isApiConfigured => uPanelApiBaseUrl.trim().isNotEmpty;
 

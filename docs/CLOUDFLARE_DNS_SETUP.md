@@ -6,7 +6,7 @@ HTTPS pages cannot call `http://169.58.135.136` (browser blocks it). You need **
 
 ## Fastest fix (recommended): point `kiu` at the VPS
 
-One DNS record — app and API on the same domain.
+One DNS record for the site (`kiu`) plus an optional API host (`api.kiu`) for native clients.
 
 ### 1. Cloudflare
 
@@ -25,6 +25,7 @@ Wait 10–30 minutes.
 | Type | Name | Content | Proxy |
 |------|------|---------|-------|
 | **A** | `kiu` | `169.58.135.136` | **Proxied** (orange cloud) |
+| **A** | `api.kiu` | `169.58.135.136` | **Proxied** (orange cloud) |
 
 Remove any `kiu` CNAME to `michaellubega.github.io` (VPS serves the app instead of GitHub Pages).
 
@@ -46,11 +47,18 @@ bash scripts/contabo/deploy-web-on-server.sh
 
 ```bash
 curl -s https://kiu.orion13.us/api/health/
+curl -s https://api.kiu.orion13.us/api/health/
 ```
 
 Expected: `{"status": "ok", "service": "upanel-api"}`
 
 Open **https://kiu.orion13.us/app/** and sign in.
+
+Native clients:
+
+```bash
+flutter run -d <device-id> --dart-define=API_URL=https://api.kiu.orion13.us
+```
 
 ---
 

@@ -37,6 +37,7 @@ $Build = [int]$Matches[2]
 
 $dartDefines = @(
     "--dart-define=UPANEL_API_BASE_URL=$ApiBaseUrl",
+    "--dart-define=API_URL=$ApiBaseUrl",
     "--dart-define=ONESIGNAL_APP_ID=$OneSignalAppId"
 )
 
