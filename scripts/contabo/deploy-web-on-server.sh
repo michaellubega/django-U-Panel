@@ -229,6 +229,19 @@ fi
 echo "==> Purge Cloudflare edge cache (prevents stale main.dart.js for up to 4h)"
 bash scripts/contabo/purge-cloudflare-cache.sh || true
 
+# Verify Cloudflare is serving the new bundle (HTTPS can remain stale).
+HTTPS_BYTES=$(curl -sI https://kiu.orion13.us/app/main.dart.js 2>/dev/null \
+  | tr -d '\r' \
+  | awk -F': ' 'tolower($1)=="content-length"{print $2}' \
+  | tail -1)
+echo "==> Cloudflare-served main.dart.js content-length: ${HTTPS_BYTES:-?} (expected ${NEW_BYTES})"
+if [[ -n "${HTTPS_BYTES}" && "${HTTPS_BYTES}" != "${NEW_BYTES}" ]]; then
+  echo "WARN: HTTPS still serving an older main.dart.js via Cloudflare." >&2
+  echo "      Cloudflare purge may have failed/been partial or require time to propagate." >&2
+  echo "      Re-run purge manually, e.g.:" >&2
+  echo "        bash scripts/contabo/purge-cloudflare-cache.sh" >&2
+fi
+
 echo ""
 echo "Deploy OK. Verify from your machine:"
 echo "  curl -sI http://169.58.135.136/app/main.dart.js | grep -i content-length"
