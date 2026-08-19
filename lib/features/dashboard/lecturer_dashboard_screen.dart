@@ -42,6 +42,10 @@ class _LecturerDashboardScreenState extends State<LecturerDashboardScreen> {
   List<NoticeRecord> _notices = [];
   DateTime? _lastUpdated;
 
+  /// Last successfully computed metrics — held steady during background
+  /// refreshes so numbers don't flicker or drop to zero mid-repopulation.
+  _LecturerDashMetrics? _stableMetrics;
+
   @override
   void initState() {
     super.initState();
@@ -128,12 +132,20 @@ class _LecturerDashboardScreenState extends State<LecturerDashboardScreen> {
         AttendanceStore.sessions.where((s) => s.isActive).toList()
           ..sort((a, b) => a.endTime.compareTo(b.endTime));
 
-    return _LecturerDashMetrics(
+    final fresh = _LecturerDashMetrics(
       presentToday: presentToday,
       absentToday: absentToday,
       activeLists: activeLists,
       liveSessions: liveSessions,
     );
+
+    // Keep last meaningful snapshot while store is being repopulated so the UI
+    // doesn't flicker to zeros during a background 45-second poll.
+    final prev = _stableMetrics;
+    if (prev == null || listIds.isNotEmpty || !_refreshing) {
+      _stableMetrics = fresh;
+    }
+    return _stableMetrics!;
   }
 
   String _formatNoticeTime(BuildContext context, NoticeRecord n) {
