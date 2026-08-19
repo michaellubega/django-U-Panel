@@ -1606,8 +1606,11 @@ class _StartSessionScreenState extends State<StartSessionScreen> {
   bool _resolvingLocation = false;
   bool _locationServiceDisabled = false;
   bool _locationPermissionBlocked = false;
+  /// True once GPS has been resolving for more than 15 s with no fix.
+  bool _locationSlowWarning = false;
   AttendanceSession? _startedSession;
   Future<void>? _locationLoad;
+  Timer? _locationSlowTimer;
 
   static const List<int> _durationOptions = [1, 2, 10, 15, 20];
 
@@ -1703,6 +1706,7 @@ class _StartSessionScreenState extends State<StartSessionScreen> {
   @override
   void dispose() {
     _createdByC.dispose();
+    _locationSlowTimer?.cancel();
     super.dispose();
   }
 
@@ -1726,28 +1730,45 @@ class _StartSessionScreenState extends State<StartSessionScreen> {
         _locationServiceDisabled = true;
         _locationError = null;
         _resolvingLocation = false;
+        _locationSlowWarning = false;
       });
       return;
     }
+
+    _locationSlowTimer?.cancel();
+    _locationSlowTimer = null;
 
     setState(() {
       _locationError = null;
       _locationServiceDisabled = false;
       _locationPermissionBlocked = false;
       _resolvingLocation = true;
+      _locationSlowWarning = false;
+    });
+
+    // After 15 s of waiting show a suggestion to switch to long-distance mode.
+    _locationSlowTimer = Timer(const Duration(seconds: 15), () {
+      if (mounted && _resolvingLocation && _position == null) {
+        setState(() => _locationSlowWarning = true);
+      }
     });
 
     final r = await acquireCurrentGpsPosition(
       timeLimit: AppConnectivity.instance.isOnline
-          ? const Duration(seconds: 5)
-          : const Duration(seconds: 8),
+          ? const Duration(seconds: 20)
+          : const Duration(seconds: 20),
       forceFresh: false,
       highAccuracy: false,
     );
+
+    _locationSlowTimer?.cancel();
+    _locationSlowTimer = null;
+
     if (!mounted) return;
 
     setState(() {
       _resolvingLocation = false;
+      _locationSlowWarning = false;
       if (r.locationServiceDisabled) {
         _locationServiceDisabled = true;
         _position = null;
@@ -2016,7 +2037,10 @@ class _StartSessionScreenState extends State<StartSessionScreen> {
                   ],
                   if (!_remoteLearning) ...[
                     DropdownButtonFormField<double>(
-                      value: _sessionRadiusMeters,
+                      key: const ValueKey('radius-dropdown'),
+                      value: _radiusOptions.contains(_sessionRadiusMeters)
+                          ? _sessionRadiusMeters
+                          : 1500,
                       decoration: const InputDecoration(
                         labelText: 'Allowed check-in radius',
                         helperText:
@@ -2027,9 +2051,8 @@ class _StartSessionScreenState extends State<StartSessionScreen> {
                         final label = r >= 1000
                             ? '${(r / 1000).toStringAsFixed(1)} km'
                             : '${r.toInt()} m';
-                        final suffix =
-                            r == 1500 ? ' (default)' : '';
-                        return DropdownMenuItem(
+                        final suffix = r == 1500 ? ' (default)' : '';
+                        return DropdownMenuItem<double>(
                           value: r,
                           child: Text('$label$suffix'),
                         );
@@ -2077,6 +2100,72 @@ class _StartSessionScreenState extends State<StartSessionScreen> {
                 permissionBlocked: _locationPermissionBlocked,
                 onRetry: _getLocation,
               ),
+              if (_locationSlowWarning) ...[
+                const SizedBox(height: 12),
+                Container(
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: Colors.amber.shade50,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.amber.shade400),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Row(
+                        children: [
+                          Icon(Icons.access_time_rounded,
+                              color: Colors.amber.shade800, size: 20),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'GPS is taking a while…',
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .bodyMedium
+                                  ?.copyWith(
+                                    fontWeight: FontWeight.w700,
+                                    color: Colors.amber.shade900,
+                                  ),
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        'Your device is having trouble getting a GPS fix. '
+                        'This can happen indoors or in areas with poor satellite signal. '
+                        'You can wait for the fix, or switch to Long-distance mode if '
+                        'students do not need to be physically on campus.',
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                              color: Colors.amber.shade900,
+                              height: 1.4,
+                            ),
+                      ),
+                      const SizedBox(height: 10),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: [
+                          FilledButton.icon(
+                            style: FilledButton.styleFrom(
+                              backgroundColor: Colors.amber.shade700,
+                            ),
+                            onPressed: () =>
+                                setState(() => _remoteLearning = true),
+                            icon: const Icon(Icons.wifi_rounded, size: 18),
+                            label: const Text('Use long-distance mode'),
+                          ),
+                          TextButton(
+                            onPressed: _getLocation,
+                            child: const Text('Keep waiting'),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ],
             ] else ...[
               const SizedBox(height: 20),
               const QaInfoCallout(
