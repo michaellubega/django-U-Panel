@@ -116,12 +116,29 @@ if not DEBUG:
     _use_https = os.environ.get("PUBLIC_API_URL", "").startswith("https://")
     SESSION_COOKIE_SECURE = _use_https
     CSRF_COOKIE_SECURE = _use_https
+    # Cloudflare Flexible SSL terminates TLS at the edge and forwards HTTP to
+    # the origin.  Django sees HTTP and sets SameSite=Lax on the CSRF cookie,
+    # which modern mobile browsers (Chrome for Android / Safari on iOS) refuse
+    # to send on cross-site POST.  Explicitly setting SameSite=None would need
+    # Secure=True on the cookie as well, but the real fix is SameSite=Lax with
+    # the correct Referer/Origin header matching.  The root cause on mobile is
+    # that the CSRF cookie arrives with SameSite=Lax yet the Referer header is
+    # stripped or mismatched — solved by trusting the production HTTPS origin.
+    CSRF_COOKIE_SAMESITE = "Lax"
+    SESSION_COOKIE_SAMESITE = "Lax"
 
 CSRF_TRUSTED_ORIGINS = [
     o.strip()
     for o in os.environ.get("CSRF_TRUSTED_ORIGINS", "").split(",")
     if o.strip()
 ]
+
+# Always include the production origin so admin login works from mobile
+# browsers regardless of what is set in CSRF_TRUSTED_ORIGINS env var.
+_default_csrf_origins = ["https://kiu.orion13.us"]
+for _o in _default_csrf_origins:
+    if _o not in CSRF_TRUSTED_ORIGINS:
+        CSRF_TRUSTED_ORIGINS.append(_o)
 
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [
