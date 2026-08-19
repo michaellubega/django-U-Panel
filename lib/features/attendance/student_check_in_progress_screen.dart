@@ -647,17 +647,34 @@ class _StudentCheckInProgressScreenState extends State<StudentCheckInProgressScr
         return;
       case StudentOfflineCheckInOutcome.submittedPendingVerification:
         if (_pipelineLikelyOnline) {
-          await _showVerifiedPresentResult(
-            refreshFromServer: false,
-            serverVerified: false,
+          // Wait up to 8 s for the server to confirm before showing the result.
+          // This avoids showing a green checkmark when verification never completes.
+          final verified =
+              await AttendanceRepository.instance.awaitCheckInVerificationAfterUpload(
+            sessionId: session.id,
+            studentId: widget.student.id,
+            sessionCodeRaw: session.sessionCode,
+            timeout: const Duration(seconds: 8),
           );
-          unawaited(
-            AttendanceRepository.instance.awaitCheckInVerificationAfterUpload(
-              sessionId: session.id,
-              studentId: widget.student.id,
-              sessionCodeRaw: session.sessionCode,
-            ),
-          );
+          if (!mounted) return;
+          if (verified) {
+            await _showVerifiedPresentResult(
+              refreshFromServer: false,
+              serverVerified: true,
+            );
+          } else {
+            // Server did not confirm within the window — show "submitted" card
+            // (not a green "present" card) so the student knows to wait.
+            await _showResult(
+              kind: _CheckInResultKind.pendingSync,
+              result: StudentCheckInProgressResult(
+                success: true,
+                wasQueued: false,
+                serverVerified: false,
+                uploadedToServer: await _checkInAttemptUploaded(),
+              ),
+            );
+          }
           return;
         }
         final verified = await AttendanceRepository.instance

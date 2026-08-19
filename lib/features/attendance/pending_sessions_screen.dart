@@ -221,6 +221,8 @@ class _PendingSessionsScreenState extends State<PendingSessionsScreen> {
         return AppTheme.error;
       case PendingSessionCodeStatus.deviceBlocked:
         return AppTheme.error;
+      case PendingSessionCodeStatus.uploadFailed:
+        return AppTheme.error;
     }
   }
 
@@ -233,27 +235,31 @@ class _PendingSessionsScreenState extends State<PendingSessionsScreen> {
     }
   }
 
-  String _statusText(PendingSessionCodeStatus s) {
-    switch (s) {
+  String _statusText(PendingSessionCodeEntry e) {
+    switch (e.status) {
       case PendingSessionCodeStatus.queued:
-        return 'Queued';
+        return e.hasLocalUploadEvidence
+            ? 'Waiting for lecturer session'
+            : 'Saving — uploading…';
       case PendingSessionCodeStatus.approved:
-        return 'Approved';
+        return 'Confirmed present ✓';
       case PendingSessionCodeStatus.needsRegistration:
-        return 'Needs registration';
+        return 'Reg. number not found — check your profile';
       case PendingSessionCodeStatus.invalidOrExpired:
-        return 'Session mismatch';
+        return 'Outside session bounds';
       case PendingSessionCodeStatus.deviceBlocked:
-        return 'Another student';
+        return 'Device already used by another student';
+      case PendingSessionCodeStatus.uploadFailed:
+        return 'Upload failed — will retry automatically';
     }
   }
 
   String _checkInQueueStatusText(PendingCheckInQueueStatus s) {
     switch (s) {
       case PendingCheckInQueueStatus.queued:
-        return 'Queued';
+        return 'Saved — uploading…';
       case PendingCheckInQueueStatus.approved:
-        return 'Approved';
+        return 'Confirmed present ✓';
     }
   }
 
@@ -507,7 +513,7 @@ class _PendingSessionsScreenState extends State<PendingSessionsScreen> {
                     borderRadius: BorderRadius.circular(999),
                   ),
                   child: Text(
-                    _statusText(e.status),
+                    _statusText(e),
                     style: TextStyle(
                       color: _statusColor(e.status),
                       fontWeight: FontWeight.w600,
