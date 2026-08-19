@@ -69,7 +69,11 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
   bool _staffAttendanceBootstrapAttempted = false;
   Timer? _authRepoSideEffectsDebounce;
   Timer? _staffAttendanceRefreshTimer;
-  static const Duration _staffAttendanceRefreshInterval = Duration(seconds: 45);
+  // Refresh every 3 minutes instead of every 45 s — the Firestore realtime
+  // listeners already push record updates instantly. The periodic poll only
+  // catches structural list changes (new list published etc.), which don't
+  // need sub-minute latency and cause visible dashboard flicker at 45 s.
+  static const Duration _staffAttendanceRefreshInterval = Duration(minutes: 3);
   UserRole? _sectionCacheRole;
   final Map<AppSection, Widget> _sectionWidgets = {};
   final Set<AppSection> _builtSections = {};
