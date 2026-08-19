@@ -50,6 +50,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
     absentToday: 0,
   );
 
+  /// Last successfully loaded metrics. Held steady during background refreshes
+  /// so the UI doesn't flicker or show zeros while the store is being
+  /// repopulated.
+  _DashboardMetrics? _stableMetrics;
+  _StudentDashViewModel? _stableStudentVm;
+
   @override
   void initState() {
     super.initState();
@@ -62,6 +68,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final blocking = !AttendanceRepository.instance.hasCachedStore;
     setState(() {
       _loading = blocking;
+      // Only show "refreshing" spinner when explicitly requested and we already
+      // have data to show — never wipe displayed numbers.
       _refreshing = forceNetwork && !blocking;
       _loadError = null;
     });
@@ -71,6 +79,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
           force: forceNetwork,
         );
       } else {
+        // Background refresh — store data will arrive via notifyListeners.
+        // We do NOT await so the displayed numbers never go blank.
         unawaited(AttendanceRepository.instance.bootstrapLoadIfNeeded());
       }
       AttendanceRepository.instance.prefetchActiveListDetails();
@@ -159,7 +169,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         AttendanceStore.sessions.where((s) => s.isActive).toList()
           ..sort((a, b) => a.endTime.compareTo(b.endTime));
 
-    return _DashboardMetrics(
+    final fresh = _DashboardMetrics(
       presentToday: presentToday,
       absentToday: absentToday,
       draftLists: draftLists,
@@ -169,6 +179,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
       listEnrollments: AttendanceStore.signIns.length,
       liveSessions: liveSessions,
     );
+
+    // Only replace the stable snapshot when the data looks meaningful (avoids
+    // showing zeros/decrements while the store is mid-repopulation during a
+    // background poll).
+    final prev = _stableMetrics;
+    final hasLists = draftLists + activeLists + closedLists > 0 ||
+        AttendanceStore.lists.isNotEmpty;
+    if (prev == null || hasLists || !_refreshing) {
+      _stableMetrics = fresh;
+    }
+    return _stableMetrics!;
   }
 
   _StudentDashViewModel _studentViewModel() {
@@ -229,7 +250,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     final roll = AttendanceStore.rollStatsForRegistrationNormalized(reg);
 
-    return _StudentDashViewModel(
+    final fresh = _StudentDashViewModel(
       hasRegistration: true,
       onRoster: true,
       rollStats: roll,
@@ -238,6 +259,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
       absentToday: absentToday,
       liveSessions: liveSessions,
     );
+
+    // Keep displaying last meaningful value during background repopulation.
+    final prev = _stableStudentVm;
+    if (prev == null || signedListIds.isNotEmpty || !_refreshing) {
+      _stableStudentVm = fresh;
+    }
+    return _stableStudentVm!;
   }
 
   String _formatNoticeTime(BuildContext context, NoticeRecord n) {
