@@ -1597,7 +1597,7 @@ class StartSessionScreen extends StatefulWidget {
 
 class _StartSessionScreenState extends State<StartSessionScreen> {
   final _createdByC = TextEditingController();
-  static const double _sessionRadiusMeters = 1500;
+  double _sessionRadiusMeters = 1500;
   int _durationMinutes = 15;
   bool _remoteLearning = false;
   Position? _position;
@@ -1610,6 +1610,9 @@ class _StartSessionScreenState extends State<StartSessionScreen> {
   Future<void>? _locationLoad;
 
   static const List<int> _durationOptions = [1, 2, 10, 15, 20];
+
+  /// Radius options in metres; 1500 m is the default.
+  static const List<double> _radiusOptions = [100, 200, 500, 1500];
 
   bool get _lecturerOnly {
     final auth = AuthRepository.instance;
@@ -2012,17 +2015,27 @@ class _StartSessionScreenState extends State<StartSessionScreen> {
                     const SizedBox(height: 18),
                   ],
                   if (!_remoteLearning) ...[
-                    InputDecorator(
+                    DropdownButtonFormField<double>(
+                      value: _sessionRadiusMeters,
                       decoration: const InputDecoration(
-                        labelText: 'Allowed radius',
-                        helperText: 'Fixed at 1.5 km for all on-campus sessions',
+                        labelText: 'Allowed check-in radius',
+                        helperText:
+                            'Students must be within this distance of your GPS location',
                         prefixIcon: Icon(Icons.radar_rounded),
                       ),
-                      child: Text(
-                        '1.5 km',
-                        style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                              fontWeight: FontWeight.w600,
-                            ),
+                      items: _radiusOptions.map((r) {
+                        final label = r >= 1000
+                            ? '${(r / 1000).toStringAsFixed(1)} km'
+                            : '${r.toInt()} m';
+                        final suffix =
+                            r == 1500 ? ' (default)' : '';
+                        return DropdownMenuItem(
+                          value: r,
+                          child: Text('$label$suffix'),
+                        );
+                      }).toList(),
+                      onChanged: (v) => setState(
+                        () => _sessionRadiusMeters = v ?? 1500,
                       ),
                     ),
                     const SizedBox(height: 16),
