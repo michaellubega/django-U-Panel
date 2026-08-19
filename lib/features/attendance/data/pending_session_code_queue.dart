@@ -18,6 +18,9 @@ enum PendingSessionCodeStatus {
   needsRegistration,
   invalidOrExpired,
   deviceBlocked,
+  /// Upload attempted but failed (network error / server rejection).
+  /// The user sees an actionable message; next drain will retry automatically.
+  uploadFailed,
 }
 
 class PendingSessionCodeEntry {
@@ -39,6 +42,7 @@ class PendingSessionCodeEntry {
     this.invalidMarkedAt,
     DateTime? pendingSince,
     this.uploadedAt,
+    this.retryCount = 0,
   }) : pendingSince = PendingRetention.pendingSinceOr(capturedAt, pendingSince);
 
   /// When waiting for session verification (or upload).
@@ -62,6 +66,10 @@ class PendingSessionCodeEntry {
   final DateTime? invalidMarkedAt;
   final DateTime? uploadedAt;
 
+  /// Number of consecutive drain attempts that ended in a transient failure.
+  /// Used to decide when to surface an error to the user.
+  final int retryCount;
+
   bool get hasLocalUploadEvidence => uploadedAt != null;
 
   PendingSessionCodeEntry copyWith({
@@ -75,6 +83,7 @@ class PendingSessionCodeEntry {
     DateTime? invalidMarkedAt,
     DateTime? pendingSince,
     DateTime? uploadedAt,
+    int? retryCount,
   }) {
     return PendingSessionCodeEntry(
       id: id,
@@ -94,6 +103,7 @@ class PendingSessionCodeEntry {
       invalidMarkedAt: invalidMarkedAt ?? this.invalidMarkedAt,
       pendingSince: pendingSince ?? this.pendingSince,
       uploadedAt: uploadedAt ?? this.uploadedAt,
+      retryCount: retryCount ?? this.retryCount,
     );
   }
 
@@ -115,6 +125,7 @@ class PendingSessionCodeEntry {
         'invalidMarkedAt': invalidMarkedAt?.toIso8601String(),
         'pendingSince': pendingSince.toIso8601String(),
         if (uploadedAt != null) 'uploadedAt': uploadedAt!.toIso8601String(),
+        if (retryCount > 0) 'retryCount': retryCount,
       };
 
   static PendingSessionCodeEntry? fromJson(Map<String, dynamic> m) {
@@ -167,6 +178,7 @@ class PendingSessionCodeEntry {
         uploadedAt: (m['uploadedAt'] as String?) != null
             ? DateTime.tryParse(m['uploadedAt'] as String)
             : null,
+        retryCount: (m['retryCount'] as num?)?.toInt() ?? 0,
       );
     } catch (_) {
       return null;

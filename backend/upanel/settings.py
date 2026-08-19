@@ -245,6 +245,17 @@ CELERY_BEAT_SCHEDULE = {
         "task": "notices.publish_due_scheduled",
         "schedule": 60.0,
     },
+    # Sweep check-in claims waiting for the lecturer to start a session.
+    # Runs every 30 s so students get linked even when the app is in background.
+    "sweep-awaiting-session-claims": {
+        "task": "documents.sweep_awaiting_session_claims",
+        "schedule": 30.0,
+    },
+    # Close sessions that exceeded their end_time without the lecturer closing manually.
+    "finalize-expired-sessions": {
+        "task": "attendance.finalize_expired_sessions",
+        "schedule": 120.0,
+    },
 }
 
 # --- OneSignal ---

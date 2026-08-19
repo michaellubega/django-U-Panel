@@ -1,6 +1,5 @@
 import 'dart:async';
 
-
 import '../check_in_outcome.dart';
 import '../../../core/device/device_student_registration_lock.dart';
 import '../check_in_rejection.dart';
@@ -21,6 +20,7 @@ import 'attendance_repository.dart';
 import 'pending_retention.dart';
 import 'pending_session_code_queue.dart';
 import 'pending_session_code_claim_upload.dart';
+import '../../../core/push/local_push_display.dart';
 
 class PendingSessionCodeSync {
   PendingSessionCodeSync._();
@@ -516,7 +516,7 @@ class PendingSessionCodeSync {
         }
         return;
       }
-      final updated = result as PendingSessionCodeEntry;
+      var updated = result as PendingSessionCodeEntry;
       if (updated.status == PendingSessionCodeStatus.invalidOrExpired) {
         final marked = updated.invalidMarkedAt ?? updated.pendingSince;
         if (PendingRetention.isExpired(marked, now)) {
@@ -526,10 +526,31 @@ class PendingSessionCodeSync {
         invalidMarkedCount++;
       } else if (updated.status == PendingSessionCodeStatus.needsRegistration) {
         needsRegistrationCount++;
+        // After the 2nd consecutive retry, surface a local notification so the
+        // student sees "check your profile" even with the app in the background.
+        if (updated.retryCount >= 2) {
+          unawaited(_notifyNeedsRegistration(updated));
+        }
       } else if (updated.status == PendingSessionCodeStatus.deviceBlocked) {
         deviceBlockedCount++;
       } else if (updated.status == PendingSessionCodeStatus.approved) {
         autoSubmittedCount++;
+      } else if (updated.status == PendingSessionCodeStatus.queued &&
+          !updated.hasLocalUploadEvidence) {
+        // Transient failure (network, server error): bump retry counter.
+        // After 5 consecutive failures surface uploadFailed so the user knows.
+        final newRetry = updated.retryCount + 1;
+        const maxRetries = 5;
+        updated = updated.copyWith(
+          retryCount: newRetry,
+          status: newRetry >= maxRetries
+              ? PendingSessionCodeStatus.uploadFailed
+              : PendingSessionCodeStatus.queued,
+          note: newRetry >= maxRetries
+              ? 'Upload failed after several attempts. Will retry automatically '
+                'when the connection is stable. Tap Pending Sessions to retry now.'
+              : updated.note,
+        );
       }
       onlineKeep.add(updated);
     }
@@ -1281,12 +1302,12 @@ class PendingSessionCodeSync {
       entry.latitude,
       entry.longitude,
     )) {
-      if (kDebugMode) {
-        debugPrint(
-          'PendingSessionCodeSync: GPS soft-fail for ${entry.sessionCodeRaw} '
-          '(session ${session.id}) — submitting for server verification.',
-        );
-      }
+      // Always log in all builds so ops/support can diagnose false-absent issues.
+      debugPrint(
+        'PendingSessionCodeSync: GPS mismatch for ${entry.sessionCodeRaw} '
+        '(session ${session.id}) — captured coords (${entry.latitude}, ${entry.longitude}) '
+        'are outside the session geofence. Submitting for server-side decision.',
+      );
     }
 
     final withMeta = entry.copyWith(
@@ -1372,5 +1393,20 @@ class PendingSessionCodeSync {
       course: course,
       outcome: outcome,
     );
+  }
+
+  static Future<void> _notifyNeedsRegistration(
+    PendingSessionCodeEntry entry,
+  ) async {
+    try {
+      await localPushShow(
+        id: entry.id.hashCode.abs() & 0x7FFFFFFF,
+        title: 'Check-in pending',
+        body: 'Your registration number (${entry.registrationNumber}) '
+            'was not found on the class roster for session code '
+            '${entry.sessionCodeRaw.toUpperCase()}. '
+            'Open the app → Profile and verify your registration number.',
+      );
+    } catch (_) {}
   }
 }
