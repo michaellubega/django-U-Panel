@@ -1775,20 +1775,33 @@ class AttendanceRepository extends ChangeNotifier {
   }
 
   /// True when upload should use an `await_{code}` claim (lecturer session not on
-  /// server). False when the session is already known locally — use
-  /// [PendingCheckInQueue] and a direct [check_in_attempts] write on reconnect.
+  /// server yet). False only when we can confirm the session doc exists on the
+  /// server — use [PendingCheckInQueue] and a direct [check_in_attempts] write.
   Future<bool> _shouldUseAwaitingSessionClaimPath(String sessionId) async {
     final id = sessionId.trim();
     if (id.isEmpty) return true;
 
+    // Session is queued for upload — server has no doc yet.
     final awaitingUpload = await _sessionIdsAwaitingUpload();
     if (awaitingUpload.contains(id)) return true;
 
+    // Fast path: in-memory cache already confirmed the session is on the server.
+    // This is set to `true` the moment `_uploadNewSessionToFirestore` succeeds.
+    final cachedPublished = _sessionPublishedOnServerCache[id];
+    if (cachedPublished == true) return false;
+
+    // Session is present locally but the server-publish cache doesn't have a
+    // confirmed entry yet. This means the background publish unawaited Future
+    // is still in flight (or failed silently). Do NOT use the direct path —
+    // fall through to the awaiting-session claim so the server can link it once
+    // the session doc appears.
     final localSession = AttendanceStore.sessionById(id);
     if (localSession != null) {
-      // Session is already in the local store — use the direct check-in path
-      // instead of a slower await_{code} claim while lecturer publish finishes.
-      return awaitingUpload.contains(id);
+      // Only trust the local session if we can quickly verify it's on the
+      // server (cached false = verified absent, null = never checked).
+      if (cachedPublished == false) return true;
+      if (!AppConnectivity.instance.hasNetworkInterface) return true;
+      return !await isLecturerSessionPublishedOnServer(id);
     }
 
     if (!AppConnectivity.instance.hasNetworkInterface) return true;
@@ -6453,6 +6466,7 @@ class AttendanceRepository extends ChangeNotifier {
       createdBy: createdBy,
       remoteLearning: remoteLearning,
       enqueuedAt: DateTime.now(),
+      sessionGpsAccuracyMeters: sessionGpsAccuracyMeters,
     );
     if (!AppConnectivity.instance.hasNetworkInterface) {
       await PendingSessionCreateQueue.enqueue(pendingEntry);

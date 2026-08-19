@@ -167,6 +167,7 @@ class PendingSessionCreateSync {
           status: SessionStatus.active,
           createdBy: entry.createdBy,
           remoteLearning: entry.remoteLearning,
+          sessionGpsAccuracyMeters: entry.sessionGpsAccuracyMeters,
         );
         final metadataReady =
             entry.remoteLearning || isSessionGeofenceConfigured(session);
