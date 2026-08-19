@@ -23,6 +23,7 @@ class PendingSessionCreateEntry {
     required this.createdBy,
     required this.enqueuedAt,
     this.remoteLearning = false,
+    this.sessionGpsAccuracyMeters,
   });
 
   final String sessionId;
@@ -36,6 +37,10 @@ class PendingSessionCreateEntry {
   final String createdBy;
   final DateTime enqueuedAt;
   final bool remoteLearning;
+  /// Lecturer device GPS accuracy at session-create time. Included in the
+  /// Firestore doc so the student check-in geofence can apply the correct
+  /// uncertainty buffer even when the session was created offline.
+  final double? sessionGpsAccuracyMeters;
 
   Map<String, dynamic> toJson() => {
         'sessionId': sessionId,
@@ -49,6 +54,9 @@ class PendingSessionCreateEntry {
         'createdBy': createdBy,
         'enqueuedAt': enqueuedAt.toIso8601String(),
         if (remoteLearning) 'remoteLearning': true,
+        if (sessionGpsAccuracyMeters != null &&
+            sessionGpsAccuracyMeters! > 0)
+          'sessionGpsAccuracyMeters': sessionGpsAccuracyMeters,
       };
 
   static PendingSessionCreateEntry? fromJson(Map<String, dynamic> m) {
@@ -91,6 +99,8 @@ class PendingSessionCreateEntry {
         createdBy: createdBy,
         enqueuedAt: enq,
         remoteLearning: m['remoteLearning'] == true,
+        sessionGpsAccuracyMeters:
+            (m['sessionGpsAccuracyMeters'] as num?)?.toDouble(),
       );
     } catch (_) {
       return null;
