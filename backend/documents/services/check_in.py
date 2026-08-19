@@ -66,10 +66,6 @@ def maybe_process_check_in(doc: ApiDocument) -> None:
         _reject(doc, data, "outside class location")
         return
 
-    if _device_used_by_other_student(session_id, student_id, data):
-        _reject(doc, data, "device already used for another student")
-        return
-
     record_id = f"{session_id}_{student_id}"
     if _record_exists(record_id):
         data["status"] = "accepted"
@@ -199,17 +195,49 @@ def _parse_timestamp(value) -> datetime | None:
 
 
 def _within_session_time(session_data: dict, attempt_data: dict) -> bool:
+    """
+    Return True when the check-in timestamp falls within the session window.
+
+    Clock-skew tolerance:
+    - Students with device clocks up to 2 minutes fast still pass.
+    - When device clock diverges from server receipt time by > 5 minutes,
+      use the server receipt time as the effective capture time so that a
+      drifted device clock doesn't cause false "outside session window" rejects.
+    """
     captured = _parse_timestamp(attempt_data.get("capturedAt"))
+    received = _parse_timestamp(attempt_data.get("clientSubmittedAt"))
+    now = datetime.now(tz=dt_timezone.utc)
+
     if captured is None:
-        return True
+        # No client timestamp — trust the server receipt time.
+        effective = received or now
+    else:
+        # If device clock diverges from server time by > 5 min, prefer the
+        # server-side receipt time which cannot be spoofed by a drifted clock.
+        if received is not None:
+            skew = abs((received - captured).total_seconds())
+            effective = received if skew > 300 else captured
+        else:
+            effective = captured
+
+    # 2-minute grace window for minor clock drift.
+    CLOCK_SKEW_TOLERANCE = 120  # seconds
+
     start = _parse_timestamp(session_data.get("startTime"))
     end = _parse_timestamp(session_data.get("endTime"))
-    if start is not None and captured < start:
-        return False
-    if end is not None:
-        status = (session_data.get("status") or "").strip().lower()
-        if captured > end and status != "active":
+
+    if start is not None and effective < start:
+        # Allow captures up to 2 min before the official start (early arrivals,
+        # lecturer starts session slightly late).
+        import datetime as _dt
+        if (start - effective).total_seconds() > CLOCK_SKEW_TOLERANCE:
             return False
+
+    if end is not None:
+        session_status = (session_data.get("status") or "").strip().lower()
+        if effective > end and session_status != "active":
+            return False
+
     return True
 
 

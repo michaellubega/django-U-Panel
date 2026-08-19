@@ -15,6 +15,7 @@ import '../../features/dashboard/lecturer_dashboard_screen.dart';
 import '../../features/attendance/attendance_list_hierarchy.dart';
 import '../../features/attendance/attendance_screen.dart';
 import '../../features/attendance/data/attendance_offline_sync.dart';
+import '../../features/attendance/data/pending_session_code_sync.dart';
 import '../../features/attendance/data/attendance_repository.dart';
 import '../../features/attendance/data/attendance_remote_list_watch.dart';
 import '../../features/attendance/data/attendance_remote_record_watch.dart';
@@ -139,6 +140,12 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
       unawaited(_bootstrapAttendanceStore());
       unawaited(_refreshStaffAttendanceIfNeeded(force: true));
       unawaited(StudentLocationPriming.instance.primeOnAppOpen());
+      // Re-subscribe session-publish watches so pending awaitingSession claims
+      // get linked even after the app was killed and relaunched.
+      PendingSessionCodeSync.refreshSessionPublishWatchesFromQueue();
+      // Drain immediately so any claims queued while app was in background
+      // upload without waiting for the next connectivity-change event.
+      unawaited(AttendanceOfflineSync.drainAllInOrder());
     }
   }
 

@@ -51,7 +51,13 @@ class AttendanceOfflineSync {
   AttendanceOfflineSync._();
 
   static bool _drainAgain = false;
+
+  /// Full-chain drain lock: drainAllInOrder, drainSessionValidationFirst.
   static Future<void>? _drainTail;
+
+  /// Urgent drain lock: drainUrgentUploadsOnly, drainCheckInUploadsOnly.
+  /// Kept separate so urgent uploads are never blocked by a running full drain.
+  static Future<void>? _urgentDrainTail;
 
   static const Duration _drainReachabilityTimeout = Duration(seconds: 3);
 
@@ -92,10 +98,11 @@ class AttendanceOfflineSync {
   }
 
   /// Bounded upload pass for background / tab blur — skips sign-in sweeps and loadAll.
+  /// Uses the urgent lock so it is not blocked by a running full drain.
   static Future<void> drainUrgentUploadsOnly({
     Duration timeBudget = const Duration(seconds: 45),
   }) async {
-    await _withDrainLock(() => _drainUrgentUploadsOnlyBody(timeBudget));
+    await _withUrgentDrainLock(() => _drainUrgentUploadsOnlyBody(timeBudget));
   }
 
   static Future<void> _drainUrgentUploadsOnlyBody(Duration timeBudget) async {
@@ -135,8 +142,9 @@ class AttendanceOfflineSync {
   }
 
   /// Upload-only pass for the active check-in hot path — skips list/session drains.
+  /// Uses the urgent lock so it is never blocked by a running full drain.
   static Future<void> drainCheckInUploadsOnly() async {
-    await _withDrainLock(() async {
+    await _withUrgentDrainLock(() async {
       if (!AppConnectivity.instance.hasNetworkInterface) return;
       await _runStep(
         'AttendanceRepository.syncUnuploadedSignIns',
@@ -153,16 +161,31 @@ class AttendanceOfflineSync {
     final previous = _drainTail;
     final gate = Completer<void>();
     _drainTail = gate.future;
-
     if (previous != null) {
       await previous;
     }
-
     try {
       do {
         _drainAgain = false;
         await body();
       } while (_drainAgain);
+    } finally {
+      gate.complete();
+    }
+  }
+
+  /// Separate lock for urgent check-in uploads — never queues behind a full drain.
+  static Future<void> _withUrgentDrainLock(
+    Future<void> Function() body,
+  ) async {
+    final previous = _urgentDrainTail;
+    final gate = Completer<void>();
+    _urgentDrainTail = gate.future;
+    if (previous != null) {
+      await previous;
+    }
+    try {
+      await body();
     } finally {
       gate.complete();
     }
@@ -621,8 +644,11 @@ class AttendanceOfflineSync {
           '$droppedExpired+$droppedExpiredSession expired pending item(s).',
         );
       }
-    } catch (_) {
-      // Leave queue intact; next drain will retry.
+    } catch (e, st) {
+      // Leave queue intact so the next drain can retry.
+      if (kDebugMode) {
+        debugPrint('AttendanceOfflineSync._drainCheckInsWithoutReload failed: $e\n$st');
+      }
     }
   }
 
