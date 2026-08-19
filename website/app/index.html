@@ -31,7 +31,7 @@
 
       function defaultApiBase() {
         if (host === '169.58.135.136') return 'http://169.58.135.136';
-        if (host === 'api.orion13.us') return origin;
+        if (host === 'api.kiu.orion13.us' || host === 'api.orion13.us') return origin;
         if (host === 'kiu.orion13.us' || host === 'www.kiu.orion13.us') {
           return origin;
         }
@@ -43,7 +43,7 @@
           return [origin];
         }
         if (host === '169.58.135.136') return ['http://169.58.135.136'];
-        if (host === 'api.orion13.us') return [origin];
+        if (host === 'api.kiu.orion13.us' || host === 'api.orion13.us') return [origin];
         return ['http://169.58.135.136'];
       }
 
