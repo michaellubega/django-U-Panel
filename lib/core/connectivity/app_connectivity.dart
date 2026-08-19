@@ -17,9 +17,12 @@ class AppConnectivity extends ChangeNotifier {
   AppConnectivity._();
   static final AppConnectivity instance = AppConnectivity._();
 
-  static const Duration _probeTimeout = Duration(seconds: 12);
+  // Probe timeout reduced from 12 s → 6 s so a slow server is detected faster.
+  // Grace window extended from 8 s → 12 s so brief probe timeouts don't flip
+  // isOnline during a check-in in progress.
+  static const Duration _probeTimeout = Duration(seconds: 6);
   static const Duration _probeInterval = Duration(seconds: 5);
-  static const Duration _reachabilityGrace = Duration(seconds: 8);
+  static const Duration _reachabilityGrace = Duration(seconds: 12);
   static const Duration _minProbeGap = Duration(seconds: 2);
   static const int _failuresBeforeOffline = 2;
 

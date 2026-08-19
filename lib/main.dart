@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'core/connectivity/app_connectivity.dart';
 import 'core/platform/web_fast_boot.dart';

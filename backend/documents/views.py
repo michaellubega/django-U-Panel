@@ -8,8 +8,23 @@ from rest_framework.views import APIView
 from .filters import apply_document_filters, apply_limit, serialize_document
 from .models import ApiDocument
 from .routing import split_resource_path
-from .services.check_in import maybe_process_check_in
+from .services.check_in import CHECK_IN_COLLECTION, maybe_process_check_in
 from .services.missed_session_notice import maybe_enqueue_missed_session_notice
+
+
+def _dispatch_check_in(doc: ApiDocument) -> None:
+    """
+    Dispatch check-in processing.  When Celery is available the work runs
+    asynchronously so the HTTP response is returned immediately; otherwise
+    fall back to synchronous processing in the request cycle.
+    """
+    try:
+        from attendance.tasks import process_check_in_doc
+
+        process_check_in_doc.delay(doc.doc_id)
+    except Exception:
+        # Celery broker unavailable (e.g. local dev without Redis): run inline.
+        maybe_process_check_in(doc)
 
 
 class DocumentRouterView(APIView):
@@ -68,7 +83,10 @@ def _create_document(request, collection: str) -> Response:
         doc_id=doc_id,
         defaults={"data": payload},
     )
-    maybe_process_check_in(doc)
+    if collection == CHECK_IN_COLLECTION:
+        _dispatch_check_in(doc)
+    else:
+        maybe_process_check_in(doc)
     maybe_enqueue_missed_session_notice(doc)
     if collection == "notices":
         from notices.push_from_document import maybe_enqueue_notice_push
@@ -88,7 +106,10 @@ def _replace_document(request, collection: str, doc_id: str) -> Response:
         doc_id=doc_id,
         defaults={"data": payload},
     )
-    maybe_process_check_in(doc)
+    if collection == CHECK_IN_COLLECTION:
+        _dispatch_check_in(doc)
+    else:
+        maybe_process_check_in(doc)
     maybe_enqueue_missed_session_notice(doc, previous_data=previous_data)
     if collection == "notices":
         from notices.push_from_document import maybe_enqueue_notice_push
@@ -113,7 +134,10 @@ def _patch_document(request, collection: str, doc_id: str) -> Response:
             merged[key] = value
     doc.data = merged
     doc.save()
-    maybe_process_check_in(doc)
+    if doc.collection == CHECK_IN_COLLECTION:
+        _dispatch_check_in(doc)
+    else:
+        maybe_process_check_in(doc)
     maybe_enqueue_missed_session_notice(doc, previous_data=previous_data)
     if collection == "notices":
         from notices.push_from_document import maybe_enqueue_notice_push
