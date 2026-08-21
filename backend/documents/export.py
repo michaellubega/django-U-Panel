@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import datetime
 
 from django.utils.dateparse import parse_date, parse_datetime
-from rest_framework import status
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
