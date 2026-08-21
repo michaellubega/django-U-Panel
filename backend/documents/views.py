@@ -5,6 +5,12 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from .attendance_scope import (
+    apply_attendance_get_scope,
+    document_allowed_on_get,
+    is_attendance_api_service_user,
+    is_attendance_collection,
+)
 from .filters import apply_document_filters, apply_limit, serialize_document
 from .models import ApiDocument
 from .routing import split_resource_path
@@ -27,6 +33,18 @@ def _dispatch_check_in(doc: ApiDocument) -> None:
         maybe_process_check_in(doc)
 
 
+def _reject_service_write(request, collection: str) -> Response | None:
+    """Attendance API service accounts are read-only."""
+    if not is_attendance_collection(collection):
+        return None
+    if is_attendance_api_service_user(request.user):
+        return Response(
+            {"detail": "Attendance API service tokens are read-only."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    return None
+
+
 class DocumentRouterView(APIView):
     """Routes `/api/{collection}/` and `/api/{collection}/{doc_id}/` requests."""
 
@@ -38,12 +56,15 @@ class DocumentRouterView(APIView):
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
         if doc_id is None:
             return _list_documents(request, collection)
-        return _get_document(collection, doc_id)
+        return _get_document(request, collection, doc_id)
 
     def post(self, request, resource_path: str = ""):
         collection, doc_id = split_resource_path(resource_path)
         if not collection:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        denied = _reject_service_write(request, collection)
+        if denied is not None:
+            return denied
         if doc_id is None:
             return _create_document(request, collection)
         return _replace_document(request, collection, doc_id)
@@ -52,25 +73,34 @@ class DocumentRouterView(APIView):
         collection, doc_id = split_resource_path(resource_path)
         if not collection or doc_id is None:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        denied = _reject_service_write(request, collection)
+        if denied is not None:
+            return denied
         return _patch_document(request, collection, doc_id)
 
     def delete(self, request, resource_path: str = ""):
         collection, doc_id = split_resource_path(resource_path)
         if not collection or doc_id is None:
             return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+        denied = _reject_service_write(request, collection)
+        if denied is not None:
+            return denied
         return _delete_document(collection, doc_id)
 
 
 def _list_documents(request, collection: str) -> Response:
     qs = ApiDocument.objects.filter(collection=collection)
+    qs = apply_attendance_get_scope(qs, request.user, collection, request.query_params)
     qs = apply_document_filters(qs, request.query_params)
     docs = apply_limit(qs, request.query_params)
     return Response([serialize_document(doc) for doc in docs])
 
 
-def _get_document(collection: str, doc_id: str) -> Response:
+def _get_document(request, collection: str, doc_id: str) -> Response:
     doc = _get_doc_or_none(collection, doc_id)
     if doc is None:
+        return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
+    if not document_allowed_on_get(doc, request.user):
         return Response({"detail": "Not found."}, status=status.HTTP_404_NOT_FOUND)
     return Response(serialize_document(doc))
 
