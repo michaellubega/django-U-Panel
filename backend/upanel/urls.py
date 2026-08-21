@@ -14,6 +14,7 @@ def api_root(_request):
                 "health": "/api/health/",
                 "auth_login": "/api/auth/login/",
                 "auth_me": "/api/auth/me/",
+                "attendance_export": "/api/attendance/export/",
                 "documents": "/api/{collection}/",
                 "admin": "/admin/",
             },
