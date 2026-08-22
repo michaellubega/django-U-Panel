@@ -1,0 +1,30 @@
+flowchart TD
+  A[Enter reg + session code] --> B[Resolve student + session]
+
+  B -->|session found| C[Enroll on list if needed]
+  C --> D[StudentCheckInProgressScreen]
+  D --> E[GPS + validation]
+  E --> F[submitStudentCheckInWithOfflineSupport]
+  F -->|online| G[check_in_attempts → server reconciles]
+  F -->|offline| H[PendingCheckInQueue]
+
+  B -->|session not found| I[Unknown code dialog]
+  I -->|code is wrong| A
+  I -->|code matches lecturer| J[OfflineQueueLocationScreen]
+  J --> K[Capture GPS + capturedAt intent time]
+  K --> L[PendingSessionCodeQueue]
+  L --> M[Saved on device · pending list]
+
+  M --> N[Sync when online / app resume]
+  N --> O[PendingSessionCodeSync]
+  O --> P{Resolve session at capturedAt?}
+  P -->|not yet| Q[Stay queued up to 7 days]
+  Q --> N
+  P -->|found| R{Roster + course OK?}
+  R -->|no| S[needsRegistration · student joins list]
+  S --> N
+  R -->|yes| T{Time + GPS valid at capture?}
+  T -->|fail| U[invalidOrExpired · dropped after retention]
+  T -->|pass| F
+
+  F -->|Path B success| V[Remove from queue · present on roll]

@@ -1,0 +1,59 @@
+name: u_panel
+description: U-Panel - University operations platform. Leadership, attendance, and communication.
+publish_to: 'none'
+version: 1.0.0+12
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  cupertino_icons: ^1.0.6
+  http: ^1.2.2
+  sentry_flutter: ^8.14.0
+  onesignal_flutter: 5.5.2
+  flutter_local_notifications: ^18.0.1
+  windows_notification: ^1.3.0
+  device_info_plus: ^11.2.0
+  geolocator: ^13.0.2
+  shared_preferences: ^2.3.3
+  path_provider: ^2.1.5
+  hive: ^2.2.3
+  hive_flutter: ^1.1.0
+  connectivity_plus: ^6.1.4
+  workmanager: ^0.9.0+3
+  timezone: ^0.10.1
+  flutter_timezone: ^5.1.0
+  pdf: ^3.12.0
+  printing: ^5.14.3
+  webview_flutter: ^4.14.1
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^3.0.0
+  flutter_launcher_icons: ^0.14.4
+
+flutter:
+  uses-material-design: true
+  assets:
+    - kiu/
+
+flutter_launcher_icons:
+  android: true
+  ios: true
+  web:
+    generate: true
+    image_path: "kiu/playstore.png"
+  windows:
+    generate: true
+    image_path: "kiu/playstore.png"
+  macos:
+    generate: true
+    image_path: "kiu/appstore.png"
+  image_path_android: "kiu/playstore.png"
+  image_path_ios: "kiu/appstore.png"
+  image_path: "kiu/playstore.png"
+  min_sdk_android: 21
+  remove_alpha_ios: true

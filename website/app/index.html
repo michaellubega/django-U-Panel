@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <base href="/app/">
+
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="description" content="U-Panel attendance and campus tools for KIU.">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+  <meta http-equiv="Pragma" content="no-cache">
+  <meta http-equiv="Expires" content="0">
+
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="U-Panel">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+  <link rel="icon" type="image/png" href="favicon.png"/>
+
+  <title>U-Panel</title>
+  <link rel="manifest" href="manifest.json">
+
+  <script>
+    (function upanelApiBaseUrlBootstrap() {
+      var host = location.hostname;
+      var origin = location.protocol + '//' + location.host;
+
+      function stripSlash(url) {
+        return url.replace(/\/$/, '');
+      }
+
+      function defaultApiBase() {
+        if (host === '169.58.135.136') return 'http://169.58.135.136';
+        if (host === 'api.kiu.orion13.us' || host === 'api.orion13.us') return origin;
+        if (host === 'kiu.orion13.us' || host === 'www.kiu.orion13.us') {
+          return origin;
+        }
+        return 'http://169.58.135.136';
+      }
+
+      function apiCandidates() {
+        if (host === 'kiu.orion13.us' || host === 'www.kiu.orion13.us') {
+          return [origin];
+        }
+        if (host === '169.58.135.136') return ['http://169.58.135.136'];
+        if (host === 'api.kiu.orion13.us' || host === 'api.orion13.us') return [origin];
+        return ['http://169.58.135.136'];
+      }
+
+      function probeApiBase(base) {
+        var url = stripSlash(base) + '/api/health/';
+        return fetch(url, {
+          method: 'GET',
+          mode: 'cors',
+          cache: 'no-store',
+          credentials: 'omit',
+        })
+          .then(function (res) {
+            return res.ok ? stripSlash(base) : null;
+          })
+          .catch(function () {
+            return null;
+          });
+      }
+
+      window.upanelApiBaseUrl = defaultApiBase();
+      window.upanelApiProbeFailed = false;
+
+      window.upanelResolveApiBaseUrl = function () {
+        var list = apiCandidates();
+        if (list.length <= 1) {
+          window.upanelApiBaseUrl = list[0] || defaultApiBase();
+          return Promise.resolve(window.upanelApiBaseUrl);
+        }
+
+        var index = 0;
+        function tryNext() {
+          if (index >= list.length) {
+            window.upanelApiProbeFailed = true;
+            window.upanelApiBaseUrl = defaultApiBase();
+            return Promise.resolve(null);
+          }
+          var candidate = list[index++];
+          return probeApiBase(candidate).then(function (ok) {
+            if (ok) {
+              window.upanelApiBaseUrl = ok;
+              window.upanelApiProbeFailed = false;
+              return ok;
+            }
+            return tryNext();
+          });
+        }
+
+        return Promise.race([
+          tryNext(),
+          new Promise(function (resolve) {
+            window.setTimeout(function () {
+              resolve(null);
+            }, 3500);
+          }),
+        ]).then(function () {
+          return window.upanelApiBaseUrl;
+        });
+      };
+    })();
+  </script>
+
+  <script>
+    // Force one hard reload when the server publishes a new web build.
+    (function upanelBuildReloadGuard() {
+      var KEY = 'upanel_web_build_v1';
+      fetch('version.json', { cache: 'no-store' })
+        .then(function (res) {
+          return res.ok ? res.json() : null;
+        })
+        .then(function (meta) {
+          if (!meta || meta.build_number == null) return;
+          var build = String(meta.build_number);
+          var prev = null;
+          try {
+            prev = localStorage.getItem(KEY);
+          } catch (_) {}
+          if (prev && prev !== build) {
+            try {
+              localStorage.setItem(KEY, build);
+            } catch (_) {}
+            var url = new URL(location.href);
+            url.searchParams.set('_b', build);
+            location.replace(url.toString());
+            return;
+          }
+          try {
+            localStorage.setItem(KEY, build);
+          } catch (_) {}
+        })
+        .catch(function () {});
+    })();
+  </script>
+
+  <script>
+    (function upanelPreloadCanvasKit() {
+      var conn = navigator.connection || navigator.mozConnection || navigator.webkitConnection;
+      if (conn && (conn.saveData || conn.effectiveType === 'slow-2g' || conn.effectiveType === '2g')) {
+        return;
+      }
+      var ua = navigator.userAgent || '';
+      var isChromium =
+        /Chrome|Chromium|Edg|OPR|SamsungBrowser/i.test(ua) &&
+        !/Firefox|FxiOS/i.test(ua);
+      var base = isChromium ? 'canvaskit/chromium/' : 'canvaskit/';
+      var wasm = document.createElement('link');
+      wasm.rel = 'preload';
+      wasm.href = base + 'canvaskit.wasm';
+      wasm.as = 'fetch';
+      wasm.crossOrigin = 'anonymous';
+      document.head.appendChild(wasm);
+      var ckJs = document.createElement('link');
+      ckJs.rel = 'preload';
+      ckJs.href = base + 'canvaskit.js';
+      ckJs.as = 'script';
+      ckJs.crossOrigin = 'anonymous';
+      document.head.appendChild(ckJs);
+    })();
+  </script>
+
+  <style>
+    #upanel-splash {
+      position: fixed;
+      inset: 0;
+      z-index: 99999;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 20px;
+      background: linear-gradient(165deg, #f4f8fc 0%, #e8f0f8 100%);
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      color: #102033;
+      transition: opacity 0.2s ease, visibility 0.2s ease;
+    }
+    #upanel-splash.upanel-splash-hide {
+      opacity: 0;
+      visibility: hidden;
+      pointer-events: none;
+    }
+    .upanel-splash-logo {
+      width: 72px;
+      height: 72px;
+      border-radius: 18px;
+      object-fit: cover;
+      display: block;
+      box-shadow: 0 8px 24px rgba(1, 117, 194, 0.28);
+      background: #fff;
+    }
+    .upanel-splash-spinner {
+      width: 36px;
+      height: 36px;
+      border: 3px solid rgba(1, 117, 194, 0.18);
+      border-top-color: #0175C2;
+      border-radius: 50%;
+      animation: upanel-spin 0.75s linear infinite;
+    }
+    @keyframes upanel-spin {
+      to { transform: rotate(360deg); }
+    }
+    #upanel-splash-status {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 500;
+      color: #425466;
+    }
+    #upanel-boot-retry {
+      display: none;
+      margin-top: 8px;
+      border: 0;
+      border-radius: 12px;
+      padding: 12px 20px;
+      font-size: 15px;
+      font-weight: 600;
+      background: #0175C2;
+      color: #fff;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <div id="upanel-splash" role="status" aria-live="polite" aria-busy="true">
+    <img
+      class="upanel-splash-logo"
+      src="icons/Icon-192.png"
+      alt="U-Panel"
+      width="72"
+      height="72"
+      onerror="this.onerror=null;this.src='favicon.png';"
+    />
+    <div class="upanel-splash-spinner" aria-hidden="true"></div>
+    <p id="upanel-splash-status">Loading U-Panel…</p>
+    <button id="upanel-boot-retry" type="button" onclick="window.upanelRetryBoot()">Retry</button>
+  </div>
+
+  <script>
+    (function upanelSessionHint() {
+      try {
+        var raw = localStorage.getItem('flutter.auth_session_cache_v1');
+        window.upanelCachedSessionHint =
+          raw != null && String(raw).trim().length > 0;
+      } catch (_) {
+        window.upanelCachedSessionHint = false;
+      }
+    })();
+
+    window.upanelSetBootStatus = function (message) {
+      var el = document.getElementById('upanel-splash-status');
+      if (el && message) el.textContent = message;
+    };
+
+    window.upanelHideSplash = function () {
+      if (window.__upanelSplashHidden) return;
+      window.__upanelSplashHidden = true;
+      var splash = document.getElementById('upanel-splash');
+      if (!splash) return;
+      splash.classList.add('upanel-splash-hide');
+      splash.setAttribute('aria-busy', 'false');
+      window.setTimeout(function () {
+        if (splash.parentNode) splash.parentNode.removeChild(splash);
+      }, 220);
+    };
+
+    window.upanelShowBootRetry = function (message) {
+      window.upanelSetBootStatus(message || 'Still loading U-Panel…');
+      var retry = document.getElementById('upanel-boot-retry');
+      if (retry) retry.style.display = 'inline-block';
+    };
+
+    window.upanelClearBootTimeout = function () {
+      if (window.__upanelBootTimeoutId) {
+        window.clearTimeout(window.__upanelBootTimeoutId);
+        window.__upanelBootTimeoutId = null;
+      }
+    };
+
+    window.upanelMarkBootOk = function () {
+      window.__upanelBootOk = true;
+      window.upanelClearBootTimeout();
+      var retry = document.getElementById('upanel-boot-retry');
+      if (retry) retry.style.display = 'none';
+    };
+
+    window.upanelShowApiSetupHelp = function () {
+      var msg =
+        'Server not reachable over HTTPS yet. Use the VPS app now, or finish Cloudflare DNS setup.';
+      window.upanelShowBootRetry(msg);
+      var retry = document.getElementById('upanel-boot-retry');
+      if (retry) {
+        retry.textContent = 'Open working app (VPS)';
+        retry.onclick = function () {
+          location.href = 'http://169.58.135.136/app/';
+        };
+      }
+      var splash = document.getElementById('upanel-splash-status');
+      if (splash) {
+        splash.innerHTML =
+          'HTTPS API not configured.<br><br>' +
+          '<strong>Works now:</strong> <a href="http://169.58.135.136/app/" style="color:#0175C2">http://169.58.135.136/app/</a><br><br>' +
+          '<strong>Permanent fix:</strong> Cloudflare → A record <code>kiu</code> → 169.58.135.136 (proxied), ' +
+          'then run <code>bash scripts/contabo/fix-production-env.sh</code> on the server.';
+      }
+    };
+
+    window.upanelRetryBoot = function () {
+      var retry = document.getElementById('upanel-boot-retry');
+      if (retry) retry.style.display = 'none';
+      window.upanelSetBootStatus('Loading U-Panel…');
+      window.__upanelBootstrapStarted = false;
+      window.__upanelBootRetries = 0;
+      window.upanelBootFlutter();
+      window.upanelScheduleBootTimeout();
+    };
+
+    window.addEventListener('flutter-first-frame', function () {
+      window.upanelMarkBootOk();
+      window.upanelHideSplash();
+      window.upanelLoadScriptOnce('upanel-brand', 'upanel_brand.js').catch(function () {});
+      window.upanelLoadScriptOnce('android-web-gate', 'android_web_gate.js').catch(function () {});
+    });
+
+    window.upanelLoadScriptOnce = function (id, src) {
+      return new Promise(function (resolve, reject) {
+        var existing = document.getElementById(id);
+        if (existing) {
+          if (existing.getAttribute('data-upanel-loaded') === '1') {
+            resolve();
+            return;
+          }
+          existing.addEventListener('load', function () { resolve(); });
+          existing.addEventListener('error', reject);
+          return;
+        }
+        var s = document.createElement('script');
+        s.id = id;
+        s.src = src;
+        s.defer = true;
+        s.onload = function () {
+          s.setAttribute('data-upanel-loaded', '1');
+          resolve();
+        };
+        s.onerror = reject;
+        document.head.appendChild(s);
+      });
+    };
+
+    window.upanelEnsurePushScript = function () {
+      return Promise.resolve();
+    };
+
+    window.upanelClearLegacyServiceWorkers = function () {
+      if (!('serviceWorker' in navigator)) return Promise.resolve();
+      return navigator.serviceWorker.getRegistrations().then(function (regs) {
+        return Promise.all(
+          regs.map(function (reg) {
+            return reg.unregister().catch(function () {});
+          })
+        );
+      });
+    };
+
+    window.upanelBootFlutter = function () {
+      if (window.__upanelBootstrapStarted) return;
+      window.__upanelBootstrapStarted = true;
+      window.__upanelBootRetries = window.__upanelBootRetries || 0;
+
+      function loadBootstrap(cacheBust) {
+        var s = document.createElement('script');
+        s.src = 'flutter_bootstrap.js' + (cacheBust ? '?v=' + cacheBust : '');
+        s.async = true;
+        s.onerror = function () {
+          window.__upanelBootstrapStarted = false;
+          window.__upanelBootRetries += 1;
+          if (window.__upanelBootRetries < 4) {
+            window.upanelSetBootStatus('Loading U-Panel…');
+            window.setTimeout(window.upanelBootFlutter, 600 * window.__upanelBootRetries);
+            return;
+          }
+          window.upanelShowBootRetry(
+            'Connection is slow. The app is still trying — tap Retry if needed.'
+          );
+        };
+        document.body.appendChild(s);
+      }
+
+      fetch('version.json', { cache: 'no-store' })
+        .then(function (res) {
+          return res.ok ? res.json() : null;
+        })
+        .then(function (meta) {
+          var bust =
+            meta && meta.build_number
+              ? meta.build_number
+              : String(Date.now());
+          loadBootstrap(bust);
+        })
+        .catch(function () {
+          loadBootstrap(String(Date.now()));
+        });
+    };
+
+    window.upanelScheduleBootTimeout = function () {
+      window.upanelClearBootTimeout();
+      window.__upanelBootTimeoutId = window.setTimeout(function () {
+        if (window.__upanelBootOk || window.__upanelSplashHidden) return;
+        if (window.__upanelNativeGateShown) return;
+        window.upanelShowBootRetry(
+          'Still loading U-Panel… Check your connection, then tap Retry. ' +
+            'If this keeps happening, clear site data for this page and reload.'
+        );
+      }, 45000);
+    };
+
+    window.upanelIsCriticalBootAsset = function (filename) {
+      if (!filename) return false;
+      return /flutter_bootstrap|main\.dart\.js|canvaskit|flutter\.js/i.test(
+        filename
+      );
+    };
+
+    window.addEventListener(
+      'error',
+      function (event) {
+        if (window.__upanelBootOk) return;
+        if (!window.upanelIsCriticalBootAsset(event.filename)) return;
+        var msg = event.message || 'U-Panel could not start.';
+        if (event.filename) {
+          msg += ' (' + event.filename.split('/').pop() + ')';
+        }
+        window.upanelShowBootRetry(msg);
+      },
+      true
+    );
+
+    window.addEventListener('unhandledrejection', function (event) {
+      if (window.__upanelBootOk) return;
+      var reason = event.reason;
+      var text = String(
+        reason && reason.message ? reason.message : reason || ''
+      );
+      if (
+        text.indexOf('canvaskit') < 0 &&
+        text.indexOf('FlutterLoader') < 0 &&
+        text.indexOf('main.dart') < 0
+      ) {
+        return;
+      }
+      window.upanelShowBootRetry(
+        text || 'U-Panel failed to start. Tap Retry or clear site data.'
+      );
+    });
+
+    (function upanelEarlyBoot() {
+      var host = location.hostname;
+      var needsProbe =
+        host === 'kiu.orion13.us' || host === 'www.kiu.orion13.us';
+
+      function startBoot() {
+        if (window.upanelApiProbeFailed) {
+          window.upanelShowApiSetupHelp();
+          return;
+        }
+        window.upanelClearLegacyServiceWorkers().finally(function () {
+          window.upanelBootFlutter();
+          window.upanelScheduleBootTimeout();
+        });
+      }
+
+      if (!needsProbe || !window.upanelResolveApiBaseUrl) {
+        startBoot();
+        return;
+      }
+
+      window.upanelSetBootStatus('Connecting to server…');
+      window.upanelResolveApiBaseUrl().then(function () {
+        startBoot();
+      });
+    })();
+  </script>
+
+</body>
+</html>

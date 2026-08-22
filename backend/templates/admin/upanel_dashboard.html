@@ -1,0 +1,212 @@
+{% load i18n %}
+<section class="upanel-dashboard">
+  <header class="upanel-hero">
+    <div class="upanel-hero-copy">
+      <p class="upanel-hero-eyebrow">KIU-QA · Operations center</p>
+      <h1 class="upanel-hero-title">Welcome back{% if user.get_full_name or user.username %}, {{ user.get_full_name|default:user.username }}{% endif %}</h1>
+      <p class="upanel-hero-sub">
+        Monitor students, staff, attendance pipelines, and email verification from one place.
+      </p>
+    </div>
+    <div class="upanel-hero-status">
+      <div class="upanel-status-pill{% if system.debug %} is-warn{% else %} is-ok{% endif %}">
+        <span class="dot"></span> {% if system.debug %}Debug{% else %}Production-ready{% endif %}
+      </div>
+      <div class="upanel-status-pill is-ok"><span class="dot"></span> {{ system.database|title }} DB</div>
+      <div class="upanel-status-pill{% if system.redis %} is-ok{% endif %}">
+        <span class="dot"></span> {% if system.redis %}Redis cache{% else %}Local cache{% endif %}
+      </div>
+      {% if stats.pending_email %}
+      <div class="upanel-status-pill is-alert">
+        <span class="dot"></span> {{ stats.pending_email }} unverified student{{ stats.pending_email|pluralize }}
+      </div>
+      {% endif %}
+    </div>
+  </header>
+
+  {% if stats.pending_email or stats.expired_verification_tokens %}
+  <div class="upanel-alert-banner">
+    <strong>Action needed:</strong>
+    {% if stats.pending_email %}
+      <a href="{% url 'admin:accounts_user_changelist' %}?email_verified__exact=0&role__exact=student">{{ stats.pending_email }} student{{ stats.pending_email|pluralize }} awaiting email verification</a>{% if stats.expired_verification_tokens %} · {% endif %}
+    {% endif %}
+    {% if stats.expired_verification_tokens %}
+      <a href="{% url 'admin:accounts_emailverificationtoken_changelist' %}">{{ stats.expired_verification_tokens }} expired verification token{{ stats.expired_verification_tokens|pluralize }}</a>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  <div class="upanel-section">
+    <h2 class="upanel-section-title">People &amp; access</h2>
+    <div class="upanel-stat-grid">
+      <div class="upanel-stat-card">
+        <a href="{% url 'admin:accounts_user_changelist' %}">
+          <div class="upanel-stat-icon">👥</div>
+          <div class="upanel-stat-label">Total users</div>
+          <div class="upanel-stat-value">{{ stats.total_users }}</div>
+          <div class="upanel-stat-meta">+{{ stats.new_users_week }} this week</div>
+        </a>
+      </div>
+      <div class="upanel-stat-card">
+        <a href="{% url 'admin:accounts_user_changelist' %}?role__exact=student">
+          <div class="upanel-stat-icon">🎓</div>
+          <div class="upanel-stat-label">Students</div>
+          <div class="upanel-stat-value">{{ stats.students }}</div>
+          <div class="upanel-stat-meta">{{ stats.verify_pct }}% verified</div>
+        </a>
+      </div>
+      <div class="upanel-stat-card is-success">
+        <a href="{% url 'admin:accounts_user_changelist' %}?email_verified__exact=1&role__exact=student">
+          <div class="upanel-stat-icon">✓</div>
+          <div class="upanel-stat-label">Verified</div>
+          <div class="upanel-stat-value">{{ stats.verified_students }}</div>
+        </a>
+      </div>
+      <div class="upanel-stat-card{% if stats.pending_email %} is-warning{% endif %}">
+        <a href="{% url 'admin:accounts_user_changelist' %}?email_verified__exact=0&role__exact=student">
+          <div class="upanel-stat-icon">⏳</div>
+          <div class="upanel-stat-label">Pending email</div>
+          <div class="upanel-stat-value">{{ stats.pending_email }}</div>
+        </a>
+      </div>
+      <div class="upanel-stat-card">
+        <a href="{% url 'admin:accounts_studentregistration_changelist' %}">
+          <div class="upanel-stat-icon">#</div>
+          <div class="upanel-stat-label">Reg. numbers</div>
+          <div class="upanel-stat-value">{{ stats.registrations_claimed }}</div>
+        </a>
+      </div>
+      <div class="upanel-stat-card">
+        <a href="{% url 'admin:accounts_user_changelist' %}?role__exact=lecturer">
+          <div class="upanel-stat-label">Lecturers</div>
+          <div class="upanel-stat-value">{{ stats.lecturers }}</div>
+        </a>
+      </div>
+      <div class="upanel-stat-card">
+        <a href="{% url 'admin:accounts_user_changelist' %}?role__exact=qa_staff">
+          <div class="upanel-stat-label">QA staff</div>
+          <div class="upanel-stat-value">{{ stats.qa_staff }}</div>
+        </a>
+      </div>
+      <div class="upanel-stat-card">
+        <a href="{% url 'admin:accounts_user_changelist' %}?is_active__exact=0">
+          <div class="upanel-stat-label">Inactive</div>
+          <div class="upanel-stat-value">{{ stats.inactive_users }}</div>
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <div class="upanel-section">
+    <h2 class="upanel-section-title">Attendance &amp; content</h2>
+    <div class="upanel-stat-grid upanel-stat-grid-compact">
+      <div class="upanel-stat-card">
+        <a href="{% url 'admin:documents_apidocument_changelist' %}?collection__exact=attendance%2Fsessions">
+          <div class="upanel-stat-label">Sessions</div>
+          <div class="upanel-stat-value">{{ stats.attendance_sessions }}</div>
+        </a>
+      </div>
+      <div class="upanel-stat-card">
+        <a href="{% url 'admin:documents_apidocument_changelist' %}?collection__exact=attendance%2Flists">
+          <div class="upanel-stat-label">Lists</div>
+          <div class="upanel-stat-value">{{ stats.attendance_lists }}</div>
+        </a>
+      </div>
+      <div class="upanel-stat-card">
+        <a href="{% url 'admin:documents_apidocument_changelist' %}?collection__exact=attendance%2Frecords">
+          <div class="upanel-stat-label">Check-ins</div>
+          <div class="upanel-stat-value">{{ stats.attendance_records }}</div>
+        </a>
+      </div>
+      <div class="upanel-stat-card">
+        <a href="{% url 'admin:documents_apidocument_changelist' %}?collection__exact=notices">
+          <div class="upanel-stat-label">Notices</div>
+          <div class="upanel-stat-value">{{ stats.notices }}</div>
+        </a>
+      </div>
+      <div class="upanel-stat-card">
+        <a href="{% url 'admin:accounts_pushdevice_changelist' %}">
+          <div class="upanel-stat-label">Push devices</div>
+          <div class="upanel-stat-value">{{ stats.push_devices }}</div>
+        </a>
+      </div>
+    </div>
+  </div>
+
+  <div class="upanel-panels upanel-panels-3">
+    <div class="upanel-panel upanel-panel-span-2">
+      <div class="upanel-panel-header">Recent sign-ups</div>
+      <div class="upanel-panel-body">
+        {% if recent_users %}
+        <div class="upanel-table-wrap">
+          <table class="upanel-recent-table">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Role</th>
+                <th>Reg / Staff #</th>
+                <th>Email</th>
+                <th>Status</th>
+                <th>Joined</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for u in recent_users %}
+              <tr>
+                <td><a href="{% url 'admin:accounts_user_change' u.pk %}">{{ u.full_name|default:u.username }}</a></td>
+                <td><span class="upanel-badge role-{{ u.role }}">{{ u.get_role_display }}</span></td>
+                <td class="mono">{{ u.registration_number|default:u.staff_number|default:"—" }}</td>
+                <td class="truncate">{{ u.email }}</td>
+                <td>
+                  {% if u.role == "student" %}
+                    {% if u.email_verified %}<span class="upanel-badge verified">Verified</span>
+                    {% else %}<span class="upanel-badge pending">Pending</span>{% endif %}
+                  {% elif u.is_active %}<span class="upanel-badge">Active</span>
+                  {% else %}<span class="upanel-badge inactive">Inactive</span>{% endif %}
+                </td>
+                <td class="muted">{{ u.date_joined|date:"M j, H:i" }}</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <p class="upanel-empty">No users yet.</p>
+        {% endif %}
+      </div>
+    </div>
+
+    <div class="upanel-panel">
+      <div class="upanel-panel-header">Document collections</div>
+      <div class="upanel-panel-body">
+        {% if top_collections %}
+        <ul class="upanel-collection-list">
+          {% for row in top_collections %}
+          <li>
+            <a href="{% url 'admin:documents_apidocument_changelist' %}?collection__exact={{ row.name|urlencode }}">
+              <span class="name">{{ row.name }}</span>
+              <span class="count">{{ row.count }}</span>
+            </a>
+          </li>
+          {% endfor %}
+        </ul>
+        {% else %}
+        <p class="upanel-empty">No API documents stored yet.</p>
+        {% endif %}
+      </div>
+      <div class="upanel-panel-header">System</div>
+      <ul class="upanel-system-list">
+        <li><span>API base</span><code>{{ system.public_api_url|default:"—" }}</code></li>
+        <li><span>Email</span><code>{{ system.email }}</code></li>
+        <li><span>Open tokens</span><strong>{{ stats.pending_verification_tokens }}</strong></li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="upanel-quick-actions">
+    <a class="upanel-action-btn primary" href="{% url 'admin:accounts_user_add' %}">+ Add user</a>
+    <a class="upanel-action-btn" href="{% url 'admin:accounts_user_changelist' %}?email_verified__exact=0">Review unverified</a>
+    <a class="upanel-action-btn" href="{% url 'admin:documents_apidocument_changelist' %}">Browse documents</a>
+    <a class="upanel-action-btn" href="/api/health/" target="_blank" rel="noopener">API health ↗</a>
+  </div>
+</section>

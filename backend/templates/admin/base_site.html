@@ -1,0 +1,44 @@
+{% extends "admin/base.html" %}
+{% load i18n static %}
+
+{% block title %}{% if subtitle %}{{ subtitle }} | {% endif %}{{ title }} | U-Panel Admin{% endblock %}
+
+{% block extrastyle %}
+{{ block.super }}
+<link rel="stylesheet" type="text/css" href="{% static 'admin/css/upanel_admin.css' %}">
+{% endblock %}
+
+{% block bodyclass %}{{ block.super }} upanel-admin{% endblock %}
+
+{% block branding %}
+<div id="branding">
+  <div id="site-name">
+    <a href="{% url 'admin:index' %}" class="upanel-brand-link">
+      <img src="{% static 'admin/img/logo.png' %}" alt="" class="upanel-brand-logo" width="36" height="36">
+      <span class="upanel-brand-text">
+        <strong>U-Panel</strong>
+        <small>System Administration</small>
+      </span>
+    </a>
+  </div>
+</div>
+{% endblock %}
+
+{% block nav-global %}
+{% if user.is_authenticated and user.is_staff %}
+{% include "admin/includes/sysadmin_nav.html" %}
+{% endif %}
+{% endblock %}
+
+{% block footer %}
+<div class="upanel-admin-footer">
+  <div class="upanel-footer-grid">
+    <span><strong>DB</strong> {{ upanel_system.database|default:"—" }}</span>
+    <span><strong>Cache</strong> {% if upanel_system.redis %}Redis{% else %}Local{% endif %}</span>
+    <span><strong>Email</strong> {{ upanel_system.email|default:"—" }}</span>
+    <span><strong>TZ</strong> {{ upanel_system.timezone|default:"UTC" }}</span>
+    {% if upanel_system.debug %}<span class="upanel-footer-warn">Debug mode ON</span>{% endif %}
+  </div>
+  <div class="upanel-footer-copy">KIU-QA · U-Panel backend · {% now "Y" %}</div>
+</div>
+{% endblock %}
