@@ -67,6 +67,8 @@ Targets: **Windows**, **macOS**, **Web**, **Android**, **iOS** (configure as nee
 
 **System requirements** (Windows, Android, Web, iOS): [docs/SYSTEM_REQUIREMENTS.md](docs/SYSTEM_REQUIREMENTS.md).
 
+**Attendance read API** (KIU-QAAT tokens / export): [docs/ATTENDANCE_API.md](docs/ATTENDANCE_API.md).
+
 ## Project structure
 
 ```
