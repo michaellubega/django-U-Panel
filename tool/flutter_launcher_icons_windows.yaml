@@ -1,0 +1,5 @@
+# Windows-only launcher icon generation (used by scripts/sync-kiu-branding.ps1).
+flutter_launcher_icons:
+  windows:
+    generate: true
+    image_path: "kiu/playstore.png"

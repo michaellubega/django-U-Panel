@@ -1,0 +1,5 @@
+#!/bin/sh
+# Strip Cursor co-author trailers so Cursor never appears in commit metadata.
+ROOT="$(git rev-parse --show-toplevel)"
+MSG_FILE="$1"
+python3 "$ROOT/scripts/strip-cursor-coauthor.py" < "$MSG_FILE" > "${MSG_FILE}.tmp" && mv "${MSG_FILE}.tmp" "$MSG_FILE"
