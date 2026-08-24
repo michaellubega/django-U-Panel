@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
 
-/// In-app KIU student portal with platform WebView password autofill support.
+/// In-app KIU student portal
 class StudentPortalScreen extends StatefulWidget {
   const StudentPortalScreen({super.key});
 
