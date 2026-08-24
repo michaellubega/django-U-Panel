@@ -940,6 +940,14 @@ class PendingSessionCodeSync {
         await repo.fetchCheckInAttemptRejectionReason(claimId);
     if (rejection != null) {
       discardLocalAttendanceSideEffects(entry);
+      final category = categorizeCheckInRejectionReason(rejection);
+      if (category == CheckInRejectionCategory.deviceAlreadyUsed) {
+        return entry.copyWith(
+          status: PendingSessionCodeStatus.deviceBlocked,
+          note: deviceAlreadyUsedUserMessage,
+          invalidMarkedAt: now,
+        );
+      }
       return entry.copyWith(
         status: PendingSessionCodeStatus.invalidOrExpired,
         note: rejection,

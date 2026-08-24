@@ -2,11 +2,24 @@ import 'dart:io' show Platform;
 import 'dart:math';
 
 import 'package:device_info_plus/device_info_plus.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:flutter/foundation.dart' show kIsWeb, visibleForTesting;
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 const _prefsKey = 'u_panel_install_device_id';
+
+/// Hardware ids that are reused across unrelated phones / emulators.
+/// Using them as the check-in device id falsely blocks other students
+/// on a session code that works on unique devices.
+const _genericHardwareIds = {
+  'unknown',
+  '0',
+  '9774d56d682e549c',
+  '0000000000000000',
+  'android',
+  'null',
+  'undefined',
+};
 
 /// Stable-ish id for this install/device, used to limit one present check-in
 /// per session per physical device.
@@ -18,54 +31,50 @@ class DeviceIdentity {
   /// Clears in-memory cache (e.g. tests).
   static void clearMemoryCacheForTest() => _cached = null;
 
+  static void resetMemoryCacheForTests() => clearMemoryCacheForTest();
+
+  @visibleForTesting
+  static bool isGenericHardwareId(String raw) {
+    final v = raw.trim().toLowerCase();
+    return v.isEmpty || _genericHardwareIds.contains(v);
+  }
+
   static Future<String> resolve() async {
     final existing = _cached;
     if (existing != null && existing.isNotEmpty) {
       return existing;
     }
 
-    late final String id;
-    if (kIsWeb) {
-      id = await _persistedFallback('web');
-    } else if (Platform.isAndroid) {
-      id = await _nativeAndroidId();
-    } else if (Platform.isIOS) {
-      id = await _nativeIosId();
-    } else {
-      id = await _persistedFallback(Platform.operatingSystem);
-    }
+    // Per-install id is always unique. Raw ANDROID_ID is reused on emulators
+    // and some handsets, which made a working session code fail on those phones.
+    final installId = await _persistedFallback('install');
+    final hardware = await _hardwareId();
+    final id = isGenericHardwareId(hardware)
+        ? installId
+        : '${hardware}_$installId';
 
     final trimmed = id.trim();
-    _cached = trimmed.isNotEmpty ? trimmed : await _persistedFallback('fallback');
+    _cached = trimmed.isNotEmpty ? trimmed : installId;
     return _cached!;
   }
 
-  /// [device_info_plus] is not registered after hot reload / some embeds;
-  /// fall back to a stable per-install id so check-in still works.
-  static Future<String> _nativeAndroidId() async {
+  static Future<String> _hardwareId() async {
+    if (kIsWeb) return '';
     try {
-      final android = await DeviceInfoPlugin().androidInfo;
-      final raw = android.id.trim();
-      if (raw.isNotEmpty) return raw;
+      if (Platform.isAndroid) {
+        final android = await DeviceInfoPlugin().androidInfo;
+        return android.id.trim();
+      }
+      if (Platform.isIOS) {
+        return (await DeviceInfoPlugin().iosInfo).identifierForVendor?.trim() ??
+            '';
+      }
     } on MissingPluginException {
-      // ignore
+      return '';
     } catch (_) {
-      // ignore
+      return '';
     }
-    return _persistedFallback('android');
-  }
-
-  static Future<String> _nativeIosId() async {
-    try {
-      final ios = await DeviceInfoPlugin().iosInfo;
-      final raw = ios.identifierForVendor?.trim() ?? '';
-      if (raw.isNotEmpty) return raw;
-    } on MissingPluginException {
-      // ignore
-    } catch (_) {
-      // ignore
-    }
-    return _persistedFallback('ios');
+    return '';
   }
 
   static Future<String> _persistedFallback(String prefix) async {
