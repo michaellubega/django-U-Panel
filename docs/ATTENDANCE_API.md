@@ -29,7 +29,7 @@ Tokens are created with `create_attendance_api_token` (below). Flutter login tok
 | CLI `--role` | User roles that match | What GET returns |
 |--------------|----------------------|------------------|
 | `student` | `student` | Own records / check-in attempts only (`studentId` ∈ registration number, user pk, username). Lists & sessions only when referenced by those records. |
-| `lecturer` | `lecturer` | Lists where `lecturerUid` = user pk (or legacy `whoTaught` = full name with empty uid). Sessions for those lists. Records / attempts for those lists or sessions. |
+| `lecturer` | `lecturer` | Lists they teach (`lecturerUid` or `createdBy` = user pk, or legacy `whoTaught`). Sessions, records, check-in attempts, **sign-ins**, and **student docs** for those lists. |
 | `admin` | `administrator`, `qa_staff` (and existing `kiu_admin` users for reads) | All attendance collections: lists, sessions, records, check-in-attempts, students, sign-ins. |
 
 `kiu_admin` is treated as **admin-wide** for attendance GET because the Flutter client already loads attendance on the staff bulk path for that role.

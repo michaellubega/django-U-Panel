@@ -38,12 +38,17 @@ def apply_document_filters(qs: QuerySet, params) -> QuerySet:
     return qs
 
 
-def apply_limit(qs: QuerySet, params, default: int = 100) -> QuerySet:
+def apply_limit(
+    qs: QuerySet,
+    params,
+    default: int = 100,
+    max_limit: int = 500,
+) -> QuerySet:
     try:
         limit = int(params.get(LIMIT_PARAM, default))
     except (TypeError, ValueError):
         limit = default
-    limit = max(1, min(limit, 500))
+    limit = max(1, min(limit, max_limit))
     return qs[:limit]
 
 

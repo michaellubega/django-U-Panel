@@ -271,12 +271,27 @@ class _AttendanceScreenState extends State<AttendanceScreen> {
     try {
       await _waitForAuthRoleHydration();
       final timeout = force ? _refreshTimeout : _loadTimeout;
-      await repo.syncFromRemoteIfNeeded(force: force).timeout(
-        timeout,
-        onTimeout: () {
-          throw TimeoutException('Load timed out', timeout);
-        },
-      );
+      final auth = AuthRepository.instance;
+      final student = auth.roleCheckDone && auth.resolvedRole == UserRole.student;
+      // Lecturer/QA hub must get list metadata first — full roll sync can
+      // exceed the timeout and previously left the attendance screen empty.
+      if ((!student && auth.showsStaffAttendanceUi) || listsOnly) {
+        await repo.refreshAttendanceLists(force: force || listsOnly).timeout(
+          timeout,
+          onTimeout: () {
+            throw TimeoutException('Load timed out', timeout);
+          },
+        );
+        repo.prefetchActiveListDetails();
+        unawaited(repo.syncFromRemoteIfNeeded(force: force).catchError((_) {}));
+      } else {
+        await repo.syncFromRemoteIfNeeded(force: force).timeout(
+          timeout,
+          onTimeout: () {
+            throw TimeoutException('Load timed out', timeout);
+          },
+        );
+      }
       if (mounted) {
         setState(() {
           _loading = false;

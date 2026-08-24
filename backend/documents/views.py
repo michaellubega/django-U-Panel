@@ -92,7 +92,12 @@ def _list_documents(request, collection: str) -> Response:
     qs = ApiDocument.objects.filter(collection=collection)
     qs = apply_attendance_get_scope(qs, request.user, collection, request.query_params)
     qs = apply_document_filters(qs, request.query_params)
-    docs = apply_limit(qs, request.query_params)
+    # Lecturer attendance screens query lists/sign-ins/students without an
+    # explicit limit; 100 truncated class catalogs and rosters.
+    if is_attendance_collection(collection):
+        docs = apply_limit(qs, request.query_params, default=500, max_limit=5000)
+    else:
+        docs = apply_limit(qs, request.query_params)
     return Response([serialize_document(doc) for doc in docs])
 
 

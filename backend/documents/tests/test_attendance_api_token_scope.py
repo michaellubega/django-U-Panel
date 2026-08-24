@@ -149,6 +149,54 @@ class AttendanceApiTokenScopeTests(APITestCase):
                 "status": "accepted",
             },
         )
+        ApiDocument.objects.create(
+            collection="attendance/lists",
+            doc_id="list-created-a",
+            data={
+                "createdBy": str(self.lecturer_a.pk),
+                "whoTaught": "Lecturer A",
+                "courseUnitName": "Chemistry",
+                "room": "R3",
+            },
+        )
+        ApiDocument.objects.create(
+            collection="attendance/sign-ins",
+            doc_id="signin-a",
+            data={
+                "listId": "list-a",
+                "studentId": "REG-A",
+                "registrationNumber": "REG-A",
+                "studentName": "Student A",
+            },
+        )
+        ApiDocument.objects.create(
+            collection="attendance/sign-ins",
+            doc_id="signin-b",
+            data={
+                "listId": "list-b",
+                "studentId": "REG-B",
+                "registrationNumber": "REG-B",
+                "studentName": "Student B",
+            },
+        )
+        ApiDocument.objects.create(
+            collection="attendance/students",
+            doc_id="REG-A",
+            data={
+                "studentId": "REG-A",
+                "name": "Student A",
+                "registrationNumber": "REG-A",
+            },
+        )
+        ApiDocument.objects.create(
+            collection="attendance/students",
+            doc_id="REG-B",
+            data={
+                "studentId": "REG-B",
+                "name": "Student B",
+                "registrationNumber": "REG-B",
+            },
+        )
 
     def _auth(self, token: Token):
         self.client.credentials(HTTP_AUTHORIZATION=f"Token {token.key}")
@@ -179,16 +227,60 @@ class AttendanceApiTokenScopeTests(APITestCase):
         response = self.client.get("/api/attendance/lists/")
         self.assertEqual(response.status_code, 200)
         ids = {row["id"] for row in response.json()}
-        self.assertEqual(ids, {"list-a"})
+        self.assertEqual(ids, {"list-a", "list-created-a"})
 
         other = self.client.get("/api/attendance/lists/list-b/")
         self.assertEqual(other.status_code, 404)
+
+    def test_lecturer_sees_created_by_lists_without_lecturer_uid(self):
+        self._auth(self.token_lecturer_a)
+        response = self.client.get(
+            "/api/attendance/lists/",
+            {"createdBy": str(self.lecturer_a.pk), "limit": "500"},
+        )
+        self.assertEqual(response.status_code, 200)
+        ids = {row["id"] for row in response.json()}
+        self.assertIn("list-created-a", ids)
+        self.assertNotIn("list-b", ids)
+
+    def test_lecturer_can_fetch_own_sign_ins_and_students(self):
+        self._auth(self.token_lecturer_a)
+        sign_ins = self.client.get(
+            "/api/attendance/sign-ins/",
+            {"listId": "list-a", "limit": "500"},
+        )
+        self.assertEqual(sign_ins.status_code, 200)
+        self.assertEqual({row["id"] for row in sign_ins.json()}, {"signin-a"})
+
+        other_sign_ins = self.client.get(
+            "/api/attendance/sign-ins/",
+            {"listId": "list-b"},
+        )
+        self.assertEqual(other_sign_ins.status_code, 200)
+        self.assertEqual(other_sign_ins.json(), [])
+
+        own_student = self.client.get("/api/attendance/students/REG-A/")
+        self.assertEqual(own_student.status_code, 200)
+        self.assertEqual(own_student.json()["id"], "REG-A")
+
+        other_student = self.client.get("/api/attendance/students/REG-B/")
+        self.assertEqual(other_student.status_code, 404)
+
+    def test_lecturer_cannot_see_another_lecturers_sign_ins_unfiltered(self):
+        self._auth(self.token_lecturer_a)
+        response = self.client.get("/api/attendance/sign-ins/")
+        self.assertEqual(response.status_code, 200)
+        ids = {row["id"] for row in response.json()}
+        self.assertEqual(ids, {"signin-a"})
 
     def test_admin_sees_both_lists_and_records(self):
         self._auth(self.token_admin)
         lists = self.client.get("/api/attendance/lists/")
         self.assertEqual(lists.status_code, 200)
-        self.assertEqual({row["id"] for row in lists.json()}, {"list-a", "list-b"})
+        self.assertEqual(
+            {row["id"] for row in lists.json()},
+            {"list-a", "list-b", "list-created-a"},
+        )
 
         records = self.client.get("/api/attendance/records/")
         self.assertEqual(records.status_code, 200)
