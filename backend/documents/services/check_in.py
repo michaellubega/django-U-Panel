@@ -54,6 +54,9 @@ def maybe_process_check_in(doc: ApiDocument) -> None:
         return
 
     session_data = session.data or {}
+    list_id = (data.get("listId") or session_data.get("listId") or "").strip()
+    if list_id:
+        data["listId"] = list_id
     if not _within_session_time(session_data, data):
         _reject(doc, data, "outside session time")
         return
@@ -116,10 +119,34 @@ def _record_exists(record_id: str) -> bool:
     ).exists()
 
 
+# ANDROID_ID / emulator values reused across unrelated phones. Treating them as
+# unique falsely rejects students whose session code works on other devices.
+_GENERIC_DEVICE_IDS = frozenset(
+    {
+        "unknown",
+        "0",
+        "9774d56d682e549c",
+        "0000000000000000",
+        "android",
+        "null",
+        "undefined",
+    }
+)
+
+
+def _usable_device_id(raw) -> str:
+    device_id = (raw or "").strip()
+    if not device_id:
+        return ""
+    if device_id.lower() in _GENERIC_DEVICE_IDS:
+        return ""
+    return device_id
+
+
 def _device_used_by_other_student(
     session_id: str, student_id: str, attempt_data: dict
 ) -> bool:
-    device_id = (attempt_data.get("deviceId") or "").strip()
+    device_id = _usable_device_id(attempt_data.get("deviceId"))
     if not device_id:
         return False
     sid = session_id.strip()

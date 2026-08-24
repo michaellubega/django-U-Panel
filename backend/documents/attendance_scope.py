@@ -157,25 +157,44 @@ def lecturer_session_ids(list_ids: set[str]) -> set[str]:
 
 
 def student_record_refs(user) -> tuple[set[str], set[str]]:
-    """Return (list_ids, session_ids) referenced by the student's own records."""
+    """Return (list_ids, session_ids) for this student's attendance.
+
+    Includes records, check-in attempts, and sign-ins so a rejected or
+    pending check-in can still load class title / lecturer / room.
+    """
     identities = student_identity_values(user)
     if not identities:
         return set(), set()
-    records = ApiDocument.objects.filter(
-        collection="attendance/records",
-        data__studentId__in=list(identities),
-    )
     list_ids: set[str] = set()
     session_ids: set[str] = set()
-    for data in records.values_list("data", flat=True):
-        if not isinstance(data, dict):
-            continue
-        lid = data.get("listId")
-        sid = data.get("sessionId")
-        if lid is not None and str(lid).strip():
-            list_ids.add(str(lid).strip())
-        if sid is not None and str(sid).strip():
-            session_ids.add(str(sid).strip())
+    for collection in (
+        "attendance/records",
+        "attendance/check-in-attempts",
+        "attendance/sign-ins",
+    ):
+        rows = ApiDocument.objects.filter(
+            collection=collection,
+            data__studentId__in=list(identities),
+        ).values_list("data", flat=True)
+        for data in rows:
+            if not isinstance(data, dict):
+                continue
+            lid = data.get("listId")
+            sid = data.get("sessionId")
+            if lid is not None and str(lid).strip():
+                list_ids.add(str(lid).strip())
+            if sid is not None and str(sid).strip():
+                session_ids.add(str(sid).strip())
+    if session_ids:
+        for data in ApiDocument.objects.filter(
+            collection="attendance/sessions",
+            doc_id__in=list(session_ids),
+        ).values_list("data", flat=True):
+            if not isinstance(data, dict):
+                continue
+            lid = data.get("listId")
+            if lid is not None and str(lid).strip():
+                list_ids.add(str(lid).strip())
     return list_ids, session_ids
 
 

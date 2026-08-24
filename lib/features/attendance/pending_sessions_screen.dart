@@ -236,6 +236,12 @@ class _PendingSessionsScreenState extends State<PendingSessionsScreen> {
   }
 
   String _statusText(PendingSessionCodeEntry e) {
+    final note = (e.note ?? '').toLowerCase();
+    if (e.status == PendingSessionCodeStatus.deviceBlocked ||
+        note.contains('device already used') ||
+        (note.contains('device') && note.contains('another student'))) {
+      return 'Device already used';
+    }
     switch (e.status) {
       case PendingSessionCodeStatus.queued:
         return e.hasLocalUploadEvidence
@@ -246,9 +252,9 @@ class _PendingSessionsScreenState extends State<PendingSessionsScreen> {
       case PendingSessionCodeStatus.needsRegistration:
         return 'Reg. number not found — check your profile';
       case PendingSessionCodeStatus.invalidOrExpired:
-        return 'Outside session bounds';
+        return 'Session mismatch';
       case PendingSessionCodeStatus.deviceBlocked:
-        return 'Device already used by another student';
+        return 'Device already used';
       case PendingSessionCodeStatus.uploadFailed:
         return 'Upload failed — will retry automatically';
     }

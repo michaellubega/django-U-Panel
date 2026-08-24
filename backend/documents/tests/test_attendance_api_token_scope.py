@@ -420,6 +420,66 @@ class AttendanceApiTokenScopeTests(APITestCase):
             {"sess-b_REG-B"},
         )
 
+    def test_student_can_fetch_list_from_rejected_check_in_attempt(self):
+        ApiDocument.objects.create(
+            collection="attendance/check-in-attempts",
+            doc_id="sess-b_REG-A",
+            data={
+                "sessionId": "sess-b",
+                "studentId": "REG-A",
+                "listId": "list-b",
+                "status": "rejected",
+                "rejectionReason": "device already used for another student",
+            },
+        )
+        self._auth(self.token_student_a)
+        response = self.client.get("/api/attendance/lists/list-b/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["id"], "list-b")
+        self.assertEqual(response.json()["whoTaught"], "Lecturer B")
+
+        other_record = self.client.get("/api/attendance/records/sess-b_REG-B/")
+        self.assertEqual(other_record.status_code, 404)
+
+    def test_student_can_fetch_list_from_attempt_session_without_list_id(self):
+        ApiDocument.objects.create(
+            collection="attendance/lists",
+            doc_id="list-c",
+            data={
+                "lecturerUid": str(self.lecturer_a.pk),
+                "whoTaught": "Lecturer A",
+                "courseUnitName": "Biology",
+                "room": "R4",
+            },
+        )
+        ApiDocument.objects.create(
+            collection="attendance/sessions",
+            doc_id="sess-c",
+            data={
+                "listId": "list-c",
+                "sessionCode": "JOINCC",
+                "status": "active",
+            },
+        )
+        ApiDocument.objects.create(
+            collection="attendance/check-in-attempts",
+            doc_id="sess-c_REG-A",
+            data={
+                "sessionId": "sess-c",
+                "studentId": "REG-A",
+                "status": "rejected",
+                "rejectionReason": "device already used for another student",
+            },
+        )
+        self._auth(self.token_student_a)
+        response = self.client.get("/api/attendance/lists/list-c/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["id"], "list-c")
+
+        self._auth(self.token_student_b)
+        denied = self.client.get("/api/attendance/lists/list-c/")
+        self.assertEqual(denied.status_code, 404)
+
     def test_non_attendance_collections_unchanged(self):
         ApiDocument.objects.create(
             collection="notices",
