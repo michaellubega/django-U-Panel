@@ -4155,6 +4155,13 @@ class _SignInContentState extends State<_SignInContent> {
 
   StudentRecord? _currentStudent;
 
+  /// Live server lookup started as soon as a valid join code is typed.
+  String? _liveLookupCode;
+  Future<({AttendanceSession? session, AttendanceList? list})>?
+      _liveLookupFuture;
+  ({AttendanceSession? session, AttendanceList? list})? _liveLookupResult;
+  bool _liveLookupInProgress = false;
+
   /// When true, registration came from the signed-in profile and cannot be edited.
   bool _regFromProfile = false;
 
@@ -4281,13 +4288,93 @@ class _SignInContentState extends State<_SignInContent> {
   }
 
   void _clearSessionCodeAfterUse() {
-    if (_sessionCodeC.text.isEmpty) return;
+    if (_sessionCodeC.text.isEmpty && _liveLookupCode == null) return;
     _sessionCodeC.clear();
+    _resetLiveSessionLookup();
     if (mounted) setState(() {});
+  }
+
+  void _resetLiveSessionLookup() {
+    _liveLookupCode = null;
+    _liveLookupFuture = null;
+    _liveLookupResult = null;
+    _liveLookupInProgress = false;
   }
 
   void _onStudentSessionCodeChanged(String _) {
     setState(() {});
+    _startLiveSessionLookup();
+  }
+
+  void _startLiveSessionLookup() {
+    final code = normalizeSessionCodeInput(_sessionCodeC.text);
+    if (!isValidJoinCodeFormat(code)) {
+      if (_liveLookupCode != null || _liveLookupInProgress) {
+        setState(_resetLiveSessionLookup);
+      } else {
+        _resetLiveSessionLookup();
+      }
+      return;
+    }
+    if (_liveLookupCode == code &&
+        (_liveLookupFuture != null || _liveLookupResult != null)) {
+      return;
+    }
+    _liveLookupCode = code;
+    _liveLookupResult = null;
+    _liveLookupInProgress = true;
+    final future = AttendanceRepository.instance
+        .resolveSessionAndListForStudentCode(code);
+    _liveLookupFuture = future;
+    unawaited(
+      future.then((result) {
+        if (!mounted || _liveLookupCode != code) return;
+        setState(() {
+          _liveLookupInProgress = false;
+          _liveLookupResult = result;
+        });
+      }).catchError((Object _) {
+        if (!mounted || _liveLookupCode != code) return;
+        setState(() {
+          _liveLookupInProgress = false;
+          _liveLookupResult = (session: null, list: null);
+        });
+      }),
+    );
+    setState(() {});
+    if (StudentLocationPriming.instance.lastPosition == null &&
+        !StudentLocationPriming.instance.resolving) {
+      unawaited(StudentLocationPriming.instance.acquireFreshForCheckIn());
+    }
+  }
+
+  Future<({AttendanceSession? session, AttendanceList? list})>
+      _resolvedSessionForEnteredCode(String rawCode) {
+    final code = normalizeSessionCodeInput(rawCode);
+    if (_liveLookupCode == code) {
+      final done = _liveLookupResult;
+      if (done != null) return Future.value(done);
+      final inFlight = _liveLookupFuture;
+      if (inFlight != null) return inFlight;
+    }
+    return AttendanceRepository.instance
+        .resolveSessionAndListForStudentCode(rawCode);
+  }
+
+  String get _sessionCodeHelperText {
+    if (_liveLookupInProgress) return 'Looking up this session…';
+    final found = _liveLookupResult;
+    if (found?.session != null) {
+      final list = found!.list;
+      final lecturer = list?.whoTaught.trim() ?? '';
+      final room = list?.room.trim() ?? '';
+      if (lecturer.isNotEmpty && room.isNotEmpty) {
+        return '$lecturer · $room';
+      }
+      if (lecturer.isNotEmpty) return lecturer;
+      return 'Session found. Tap the arrow to check in.';
+    }
+    return kSessionJoinCodeFormatHint;
   }
 
   bool get _canSubmitSessionCode =>
@@ -4542,16 +4629,13 @@ class _SignInContentState extends State<_SignInContent> {
       }
       unawaited(_loadAttendanceStoreForSignIn(onlineHint: prefetchOnline));
 
-      final localSession =
-          AttendanceRepository.instance.validateSessionCode(rawCode);
       final reachFuture = AppConnectivity.instance.ensureReachable(
         timeout: _studentSignInReachTimeout,
       );
       final networkBudget = _studentSignInNetworkBudget;
       final studentFuture = AttendanceRepository.instance
           .resolveStudentForRegistration(reg, fast: true);
-      final resolveFuture = AttendanceRepository.instance
-          .resolveSessionAndListForStudentCode(rawCode);
+      final resolveFuture = _resolvedSessionForEnteredCode(rawCode);
 
       final isOnline = await reachFuture;
       if (!mounted) return;
@@ -4583,16 +4667,14 @@ class _SignInContentState extends State<_SignInContent> {
       try {
         resolved = await resolveFuture.timeout(networkBudget);
       } catch (_) {
-        final fallbackSession =
-            localSession ?? AttendanceRepository.instance.validateSessionCode(rawCode);
-        AttendanceList? fallbackList;
-        if (fallbackSession != null) {
-          fallbackList = await _resolveListForKnownSession(fallbackSession);
-        }
-        resolved = (
-          session: fallbackSession,
-          list: fallbackList,
-        );
+        resolved = (session: null, list: null);
+      }
+      if (resolved.session == null) {
+        try {
+          resolved = await AttendanceRepository.instance
+              .resolveSessionAndListForStudentCode(rawCode)
+              .timeout(networkBudget);
+        } catch (_) {}
       }
       var session = resolved.session;
       var list = resolved.list;
@@ -5012,7 +5094,7 @@ class _SignInContentState extends State<_SignInContent> {
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
                       Text(
-                        'Enter the join code from class ($kSessionJoinCodeFormatHint), then tap the arrow to submit. Location is prepared in the background.',
+                        'Enter the join code from class ($kSessionJoinCodeFormatHint). Matching starts as soon as the code is complete.',
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
                               color: AppTheme.textSecondary,
                               height: 1.35,
@@ -5056,7 +5138,8 @@ class _SignInContentState extends State<_SignInContent> {
                         decoration: InputDecoration(
                           labelText: 'Session code',
                           hintText: kSessionJoinCodeExample,
-                          helperText: kSessionJoinCodeFormatHint,
+                          helperText: _sessionCodeHelperText,
+                          helperMaxLines: 2,
                           counterText: '',
                           suffixIcon: _sessionCodeSubmitSuffix(),
                         ),
