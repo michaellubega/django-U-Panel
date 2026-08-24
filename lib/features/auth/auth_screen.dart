@@ -40,6 +40,9 @@ class _AuthScreenState extends State<AuthScreen> {
   /// When true, password fields show plain text (single toggle for both).
   bool _passwordVisible = false;
   bool _offlineBannerDismissed = false;
+  /// Required when create-account details look like @kiu.ac.ug + KIU staff ID.
+  /// `true` = student, `false` = lecturer, `null` = not chosen yet.
+  bool? _signupAsStudent;
 
   @override
   void initState() {
@@ -115,10 +118,43 @@ class _AuthScreenState extends State<AuthScreen> {
   bool get _studentEmailOk =>
       StudentAuthEmail.validateFormat(_emailC.text) == null;
 
+  bool get _staffEmailOk =>
+      KiuStaffAuthEmail.validateFormat(_emailC.text) == null;
+
+  bool get _staffRegOk =>
+      KiuAdminRegistrationNumber.validateFormat(_regC.text) == null;
+
+  /// @kiu.ac.ug + KIU####S — ambiguous until the user picks student or lecturer.
+  bool get _staffShapedSignupCredentials {
+    if (!_register) return false;
+    final email = _emailC.text.trim();
+    final reg = _regC.text.trim();
+    if (email.isEmpty && reg.isEmpty) return false;
+    final staffEmail = email.isNotEmpty && KiuStaffAuthEmail.isStaffMailbox(email);
+    final staffReg = reg.isNotEmpty &&
+        KiuAdminRegistrationNumber.validateFormat(reg) == null;
+    return staffEmail || staffReg;
+  }
+
+  bool get _needsSignupRoleChoice => _staffShapedSignupCredentials;
+
   String? get _studentEmailError {
     if (!_register) return null;
     final raw = _emailC.text.trim();
     if (raw.isEmpty) return null;
+    if (_needsSignupRoleChoice) {
+      if (_signupAsStudent == true) {
+        return StudentAuthEmail.validateFormat(_emailC.text);
+      }
+      if (_signupAsStudent == false) {
+        return KiuStaffAuthEmail.validateFormat(_emailC.text);
+      }
+      // Wait for role choice before flagging email format.
+      if (KiuStaffAuthEmail.isStaffMailbox(raw) ||
+          StudentAuthEmail.isStudentMailbox(raw)) {
+        return null;
+      }
+    }
     return StudentAuthEmail.validateFormat(_emailC.text);
   }
 
@@ -143,18 +179,36 @@ class _AuthScreenState extends State<AuthScreen> {
     return StudentAuthEmail.validateLoginFormat(raw) == null;
   }
 
-  bool get _regOk =>
-      StudentRegistrationNumber.validateFormat(_regC.text) == null;
+  bool get _regOk {
+    if (_needsSignupRoleChoice) {
+      if (_signupAsStudent == false) return _staffRegOk;
+      if (_signupAsStudent == true) {
+        return StudentRegistrationNumber.validateFormat(_regC.text) == null;
+      }
+      return false;
+    }
+    return StudentRegistrationNumber.validateFormat(_regC.text) == null;
+  }
 
   bool get _fullNameOk => _fullNameC.text.trim().isNotEmpty;
 
   bool get _canSubmitLogin =>
       _loginIdOk && _passwordC.text.isNotEmpty && !_busy;
 
+  bool get _emailOkForRegister {
+    if (_needsSignupRoleChoice) {
+      if (_signupAsStudent == true) return _studentEmailOk;
+      if (_signupAsStudent == false) return _staffEmailOk;
+      return false;
+    }
+    return _studentEmailOk;
+  }
+
   bool get _canSubmitRegister =>
-      _studentEmailOk &&
+      _emailOkForRegister &&
       _fullNameOk &&
       _regOk &&
+      (!_needsSignupRoleChoice || _signupAsStudent != null) &&
       _passwordC.text.length >= 6 &&
       _passwordC.text == _confirmC.text &&
       !_busy;
@@ -166,6 +220,26 @@ class _AuthScreenState extends State<AuthScreen> {
   Future<void> _submit() async {
     FocusScope.of(context).unfocus();
     _persistDraft();
+    if (_register && _needsSignupRoleChoice && _signupAsStudent == null) {
+      AuthRepository.instance.presentAuthFormError(
+        'These details look like a KIU staff account. '
+        'Choose Student or Lecturer before creating the account.',
+      );
+      return;
+    }
+    if (_register &&
+        _needsSignupRoleChoice &&
+        _signupAsStudent == true &&
+        (KiuStaffAuthEmail.isStaffMailbox(_emailC.text) &&
+            KiuAdminRegistrationNumber.validateFormat(_regC.text) == null)) {
+      AuthRepository.instance.presentAuthFormError(
+        'A @kiu.ac.ug email with a KIU staff ID cannot be registered as a student. '
+        'Choose Lecturer, or use your student email '
+        '(${StudentAuthEmail.studentDomainsLabel()}) and registration number '
+        '(${StudentRegistrationNumber.example}).',
+      );
+      return;
+    }
     setState(() => _busy = true);
     AuthRepository.instance.clearAuthFormError();
     try {
@@ -177,6 +251,11 @@ class _AuthScreenState extends State<AuthScreen> {
           fullName: _fullNameC.text.trim(),
           password: _passwordC.text,
           registrationNumber: _regC.text.trim(),
+          signupRole: !_register
+              ? null
+              : (_needsSignupRoleChoice
+                  ? (_signupAsStudent == true ? 'student' : 'lecturer')
+                  : 'student'),
         ),
         fullscreenDialog: true,
       );
@@ -257,18 +336,75 @@ class _AuthScreenState extends State<AuthScreen> {
                     ],
                     selected: {_register},
                     onSelectionChanged: (s) {
-                      setState(() => _register = s.first);
+                      setState(() {
+                        _register = s.first;
+                        if (!_register) _signupAsStudent = null;
+                      });
                       _persistDraft();
                     },
                   ),
                   const SizedBox(height: 20),
                   Text(
                     _register
-                        ? 'Use your official KIU student email (${StudentAuthEmail.studentDomainsLabel()}), full name, registration number, and password.'
+                        ? (_needsSignupRoleChoice
+                            ? 'These details look like a KIU staff ID / @kiu.ac.ug email. Choose Student or Lecturer before the account is created.'
+                            : 'Use your official KIU student email (${StudentAuthEmail.studentDomainsLabel()}), full name, registration number, and password.')
                         : 'Sign in with your ${StudentAuthEmail.studentDomainsLabel()} email, @kiu.ac.ug (lecturers), or KIU-#### (QA staff / lecturers).',
                     textAlign: TextAlign.center,
                     style: Theme.of(context).textTheme.bodyMedium,
                   ),
+                  if (_register && _needsSignupRoleChoice) ...[
+                    const SizedBox(height: 16),
+                    Text(
+                      'I am a…',
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
+                    ),
+                    const SizedBox(height: 8),
+                    SegmentedButton<bool>(
+                      emptySelectionAllowed: true,
+                      segments: const [
+                        ButtonSegment(
+                          value: true,
+                          label: Text('Student'),
+                          icon: Icon(Icons.school_outlined),
+                        ),
+                        ButtonSegment(
+                          value: false,
+                          label: Text('Lecturer'),
+                          icon: Icon(Icons.person_outline_rounded),
+                        ),
+                      ],
+                      selected: _signupAsStudent == null
+                          ? const <bool>{}
+                          : {_signupAsStudent!},
+                      onSelectionChanged: _busy
+                          ? null
+                          : (selection) {
+                              setState(() {
+                                _signupAsStudent = selection.isEmpty
+                                    ? null
+                                    : selection.first;
+                              });
+                              _clearAuthErrors();
+                            },
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      _signupAsStudent == null
+                          ? 'Required before create account — staff-shaped details are not assigned a role automatically.'
+                          : _signupAsStudent == true
+                              ? 'Students must use ${StudentAuthEmail.studentDomainsLabel()} and registration ${StudentRegistrationNumber.example}.'
+                              : 'Lecturer accounts use @${KiuStaffAuthEmail.staffEmailDomain} and staff ID ${KiuAdminRegistrationNumber.example}.',
+                      textAlign: TextAlign.center,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                            color: AppTheme.textSecondary,
+                            height: 1.35,
+                          ),
+                    ),
+                  ],
                   const SizedBox(height: 20),
                   Container(
                     padding: const EdgeInsets.all(20),
@@ -283,9 +419,17 @@ class _AuthScreenState extends State<AuthScreen> {
                         TextFormField(
                           controller: _emailC,
                           decoration: InputDecoration(
-                            labelText: _register ? 'KIU school email' : 'Email or staff ID',
+                            labelText: _register
+                                ? (_needsSignupRoleChoice &&
+                                        _signupAsStudent == false
+                                    ? 'KIU staff email'
+                                    : 'KIU school email')
+                                : 'Email or staff ID',
                             hintText: _register
-                                ? StudentAuthEmail.exampleEmail
+                                ? (_needsSignupRoleChoice &&
+                                        _signupAsStudent == false
+                                    ? KiuStaffAuthEmail.exampleEmail
+                                    : StudentAuthEmail.exampleEmail)
                                 : 'e.g. ${KiuStaffAuthEmail.exampleEmail} or KIU-0001',
                             errorText: _studentEmailError,
                             errorMaxLines: 4,
@@ -295,7 +439,11 @@ class _AuthScreenState extends State<AuthScreen> {
                           textInputAction: TextInputAction.next,
                           onChanged: (_) {
                             _clearAuthErrors();
-                            setState(() {});
+                            setState(() {
+                              if (!_needsSignupRoleChoice) {
+                                _signupAsStudent = null;
+                              }
+                            });
                           },
                         ),
                         if (_register &&
@@ -346,12 +494,19 @@ class _AuthScreenState extends State<AuthScreen> {
                           const SizedBox(height: 10),
                           TextFormField(
                             controller: _regC,
-                            decoration: const InputDecoration(
-                              labelText: 'Registration number',
-                              hintText: StudentRegistrationNumber.example,
+                            decoration: InputDecoration(
+                              labelText: _needsSignupRoleChoice &&
+                                      _signupAsStudent == false
+                                  ? 'Staff ID'
+                                  : 'Registration number',
+                              hintText: _needsSignupRoleChoice &&
+                                      _signupAsStudent == false
+                                  ? KiuAdminRegistrationNumber.example
+                                  : StudentRegistrationNumber.example,
                             ),
                             keyboardType: TextInputType.text,
                             autocorrect: false,
+                            textCapitalization: TextCapitalization.characters,
                             textInputAction: TextInputAction.next,
                             onChanged: (_) {
                               _clearAuthErrors();
@@ -512,6 +667,7 @@ class _LoginVerificationScreen extends StatefulWidget {
     required this.fullName,
     required this.password,
     required this.registrationNumber,
+    this.signupRole,
   });
 
   final bool registering;
@@ -519,6 +675,8 @@ class _LoginVerificationScreen extends StatefulWidget {
   final String fullName;
   final String password;
   final String registrationNumber;
+  /// `student`, `lecturer`, or null when signing in.
+  final String? signupRole;
 
   @override
   State<_LoginVerificationScreen> createState() =>
@@ -588,6 +746,7 @@ class _LoginVerificationScreenState extends State<_LoginVerificationScreen>
             fullName: widget.fullName,
             password: widget.password,
             registrationNumber: widget.registrationNumber,
+            role: widget.signupRole ?? 'student',
           )
         : await auth.signInWithEmail(
             email: widget.email,

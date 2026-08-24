@@ -156,6 +156,7 @@ class ApiAuth {
     required String password,
     String? fullName,
     String? registrationNumber,
+    String? role,
   }) async {
     final body = <String, dynamic>{
       'email': email.trim().toLowerCase(),
@@ -168,6 +169,10 @@ class ApiAuth {
     final reg = registrationNumber?.trim();
     if (reg != null && reg.isNotEmpty) {
       body['registration_number'] = reg;
+    }
+    final accountRole = role?.trim().toLowerCase();
+    if (accountRole != null && accountRole.isNotEmpty) {
+      body['role'] = accountRole;
     }
     final json = await ApiClient.instance.postJson('/api/auth/register/', body);
     if (json == null) {

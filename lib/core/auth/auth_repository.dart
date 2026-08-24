@@ -2870,9 +2870,20 @@ class AuthRepository extends ChangeNotifier {
     required String fullName,
     required String password,
     required String registrationNumber,
+    String role = 'student',
   }) async {
     if (!_apiReady) {
       return _authActionError(_apiNotReadyMessage());
+    }
+    final accountRole = role.trim().toLowerCase();
+    if (accountRole == 'lecturer' || accountRole == 'kiu_admin') {
+      return registerKiuStaffWithEmail(
+        email: email,
+        fullName: fullName,
+        password: password,
+        registrationNumber: registrationNumber,
+        isKiuAdministrator: accountRole == 'kiu_admin',
+      );
     }
     final formatErr = StudentAuthEmail.validateFormat(email);
     if (formatErr != null) {
@@ -2905,6 +2916,7 @@ class AuthRepository extends ChangeNotifier {
         password: password,
         fullName: name,
         registrationNumber: reg,
+        role: 'student',
       );
       final user = cred.user;
       if (user == null) {
@@ -4003,6 +4015,7 @@ class AuthRepository extends ChangeNotifier {
         password: password,
         fullName: name,
         registrationNumber: reg,
+        role: isKiuAdministrator ? 'kiu_admin' : 'lecturer',
       );
       final user = cred.user;
       if (user == null) {
@@ -4171,6 +4184,7 @@ class AuthRepository extends ChangeNotifier {
         password: password,
         fullName: name,
         registrationNumber: reg,
+        role: isKiuAdministrator ? 'kiu_admin' : 'lecturer',
       );
       final user = cred.user;
       if (user == null) {
