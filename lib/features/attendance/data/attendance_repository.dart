@@ -3400,7 +3400,7 @@ class AttendanceRepository extends ChangeNotifier {
       final chunk = trimmed.skip(i).take(chunkSize).toList();
       var usedFallback = false;
       try {
-        final query = collection.where(field, whereIn: chunk);
+        final query = collection.where(field, whereIn: chunk).limit(500);
         final snap = options == null
             ? await query.get().timeout(_onlineFirestoreTimeout)
             : await query.get(options).timeout(_onlineFirestoreTimeout);
@@ -3444,7 +3444,7 @@ class AttendanceRepository extends ChangeNotifier {
       final snaps = await Future.wait(
         chunk.map((v) async {
           try {
-            final query = collection.where(field, isEqualTo: v);
+            final query = collection.where(field, isEqualTo: v).limit(500);
             final snap = options == null
                 ? await query.get().timeout(_onlineFirestoreTimeout)
                 : await query.get(options).timeout(_onlineFirestoreTimeout);
@@ -3659,6 +3659,7 @@ class AttendanceRepository extends ChangeNotifier {
         final assignedSnap = await _firestore
             .collection(ApiCollections.attendanceLists)
             .where('lecturerUid', isEqualTo: uid)
+            .limit(500)
             .get(queryOptions);
         for (final d in assignedSnap.docs) {
           listsById[d.id] = _listFromDoc(d);
@@ -3679,6 +3680,7 @@ class AttendanceRepository extends ChangeNotifier {
         final createdSnap = await _firestore
             .collection(ApiCollections.attendanceLists)
             .where('createdBy', isEqualTo: uid)
+            .limit(500)
             .get(queryOptions);
         for (final d in createdSnap.docs) {
           listsById.putIfAbsent(d.id, () => _listFromDoc(d));

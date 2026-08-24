@@ -46,9 +46,11 @@ SCOPE_BLURBS = {
         "attendance/lists + attendance/sessions referenced by those records"
     ),
     "lecturer": (
-        "attendance/lists (lecturerUid=pk or legacy whoTaught); "
+        "attendance/lists (lecturerUid=pk, createdBy=pk, or legacy whoTaught); "
         "attendance/sessions for those lists; "
-        "attendance/records + check-in-attempts for those lists/sessions"
+        "attendance/records + check-in-attempts for those lists/sessions; "
+        "attendance/sign-ins for those lists; "
+        "attendance/students referenced by those sign-ins/records"
     ),
     "admin": (
         "all attendance/lists, sessions, records, check-in-attempts, "

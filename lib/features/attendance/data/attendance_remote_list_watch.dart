@@ -62,14 +62,16 @@ class AttendanceRemoteListWatch {
           source: 'lecturerAssigned',
           query: db
               .collection(ApiCollections.attendanceLists)
-              .where('lecturerUid', isEqualTo: uid),
+              .where('lecturerUid', isEqualTo: uid)
+              .limit(500),
         );
         _attachCollectionWatch(
           db,
           source: 'lecturerCreated',
           query: db
               .collection(ApiCollections.attendanceLists)
-              .where('createdBy', isEqualTo: uid),
+              .where('createdBy', isEqualTo: uid)
+              .limit(500),
         );
       }
     }

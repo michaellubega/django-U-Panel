@@ -90,13 +90,16 @@ def student_identity_values(user) -> set[str]:
 
 
 def lecturer_owned_list_ids(user) -> set[str]:
-    """List doc_ids owned by this lecturer (uid match or legacy whoTaught)."""
+    """List doc_ids this lecturer may manage on the Flutter attendance screens.
+
+    Matches the client filter in attendanceListAccessibleToLecturer:
+    lecturerUid == pk, createdBy == pk, or legacy whoTaught with no uid.
+    """
     uid = str(user.pk)
     owned = set(
-        ApiDocument.objects.filter(
-            collection="attendance/lists",
-            data__lecturerUid=uid,
-        ).values_list("doc_id", flat=True)
+        ApiDocument.objects.filter(collection="attendance/lists")
+        .filter(Q(data__lecturerUid=uid) | Q(data__createdBy=uid))
+        .values_list("doc_id", flat=True)
     )
     full_name = (getattr(user, "full_name", None) or "").strip()
     if full_name:
@@ -109,6 +112,38 @@ def lecturer_owned_list_ids(user) -> set[str]:
             if raw_uid is None or str(raw_uid).strip() == "":
                 owned.add(doc.doc_id)
     return owned
+
+def lecturer_roster_student_ids(list_ids: set[str]) -> set[str]:
+    """Student ids / regs that appear on this lecturer's lists (sign-ins + records)."""
+    ids: set[str] = set()
+    if not list_ids:
+        return ids
+    lids = list(list_ids)
+    sign_ins = ApiDocument.objects.filter(
+        collection="attendance/sign-ins",
+        data__listId__in=lids,
+    ).values_list("doc_id", "data")
+    for doc_id, data in sign_ins:
+        if doc_id:
+            ids.add(str(doc_id).strip())
+        if not isinstance(data, dict):
+            continue
+        for key in ("studentId", "registrationNumber", "registration_number"):
+            raw = data.get(key)
+            if raw is not None and str(raw).strip():
+                ids.add(str(raw).strip())
+    records = ApiDocument.objects.filter(
+        collection="attendance/records",
+        data__listId__in=lids,
+    ).values_list("data", flat=True)
+    for data in records:
+        if not isinstance(data, dict):
+            continue
+        raw = data.get("studentId")
+        if raw is not None and str(raw).strip():
+            ids.add(str(raw).strip())
+    return {v for v in ids if v}
+
 
 def lecturer_session_ids(list_ids: set[str]) -> set[str]:
     if not list_ids:
@@ -205,9 +240,20 @@ def _scope_lecturer_qs(qs: QuerySet, user, collection: str) -> QuerySet:
             q |= Q(data__sessionId__in=list(session_ids))
         return qs.filter(q)
 
-    if collection in {"attendance/students", "attendance/sign-ins"}:
-        # Not part of lecturer export scope; keep empty for API tokens.
-        return qs.none()
+    if collection == "attendance/sign-ins":
+        if not list_ids:
+            return qs.none()
+        return qs.filter(data__listId__in=list(list_ids))
+
+    if collection == "attendance/students":
+        student_ids = lecturer_roster_student_ids(list_ids)
+        if not student_ids:
+            return qs.none()
+        return qs.filter(
+            Q(doc_id__in=list(student_ids))
+            | Q(data__studentId__in=list(student_ids))
+            | Q(data__registrationNumber__in=list(student_ids))
+        )
 
     return qs.none()
 
