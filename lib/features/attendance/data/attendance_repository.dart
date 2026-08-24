@@ -5979,6 +5979,7 @@ class AttendanceRepository extends ChangeNotifier {
   Future<List<AttendanceSession>> _fetchJoinCodeSessionsFromServer(
     String normalizedCode, {
     int limit = 16,
+    bool includeLocalSessions = true,
   }) async {
     final byId = <String, AttendanceSession>{};
 
@@ -6013,11 +6014,13 @@ class AttendanceRepository extends ChangeNotifier {
       }
     }
 
-    for (final session in AttendanceStore.sessions) {
-      if (normalizeSessionCodeInput(session.sessionCode) != normalizedCode) {
-        continue;
+    if (includeLocalSessions) {
+      for (final session in AttendanceStore.sessions) {
+        if (normalizeSessionCodeInput(session.sessionCode) != normalizedCode) {
+          continue;
+        }
+        byId.putIfAbsent(session.id, () => session);
       }
-      byId.putIfAbsent(session.id, () => session);
     }
 
     final out = byId.values.toList()
@@ -6514,15 +6517,12 @@ class AttendanceRepository extends ChangeNotifier {
     );
   }
 
-  /// Online sign-in: local store first, then server fetch with retries.
+  /// Online sign-in: live server fetch with retries (does not use local store).
   Future<AttendanceSession?> resolveActiveSessionByCodeForSignIn(
     String rawCode,
   ) async {
     final code = normalizeSessionCodeInput(rawCode);
     if (!isValidJoinCodeFormat(code)) return null;
-
-    var session = validateSessionCode(code);
-    if (session != null && session.isOpenForCheckIn) return session;
 
     if (!AppConnectivity.instance.hasNetworkInterface) {
       return null;
@@ -6533,9 +6533,13 @@ class AttendanceRepository extends ChangeNotifier {
       );
     }
 
+    AttendanceSession? session;
     const attempts = 3;
     for (var i = 0; i < attempts; i++) {
-      final byCode = resolveSessionByCode(rawCode);
+      final byCode = resolveSessionByCode(
+        rawCode,
+        allowLocalFallback: false,
+      );
       final byTime = resolveSessionByCodeAtTime(
         rawCode: rawCode,
         capturedAt: DateTime.now(),
@@ -6562,7 +6566,11 @@ class AttendanceRepository extends ChangeNotifier {
     if (!isValidJoinCodeFormat(code)) return false;
     if (!AppConnectivity.instance.hasNetworkInterface) return false;
     try {
-      final sessions = await _fetchJoinCodeSessionsFromServer(code, limit: 16);
+      final sessions = await _fetchJoinCodeSessionsFromServer(
+        code,
+        limit: 16,
+        includeLocalSessions: false,
+      );
       if (sessions.isEmpty) return false;
       if (sessions.any((s) => s.isOpenForCheckIn)) return false;
       final newest = sessions.first;
@@ -6574,20 +6582,29 @@ class AttendanceRepository extends ChangeNotifier {
   }
 
   /// Fetches session documents matching [rawCode] from Firestore and merges them
-  /// into [AttendanceStore]. Use when [validateSessionCode] is null after
-  /// [loadAll] (session started after load, or first targeted fetch).
-  Future<AttendanceSession?> resolveSessionByCode(String rawCode) async {
+  /// into [AttendanceStore]. Student sign-in should pass [allowLocalFallback]
+  /// false so a stale cached session cannot beat the live server result.
+  Future<AttendanceSession?> resolveSessionByCode(
+    String rawCode, {
+    bool allowLocalFallback = true,
+  }) async {
     final code = normalizeSessionCodeInput(rawCode);
     if (!isValidJoinCodeFormat(code)) return null;
     try {
-      final sessions = await _fetchJoinCodeSessionsFromServer(code, limit: 16);
+      final sessions = await _fetchJoinCodeSessionsFromServer(
+        code,
+        limit: 16,
+        includeLocalSessions: allowLocalFallback,
+      );
       final best = _pickActiveJoinSession(sessions);
       if (best != null) {
         await _ensureListLoaded(best.listId);
         return best;
       }
+      if (!allowLocalFallback) return null;
       return AttendanceStore.sessionByCodeOpenForCheckIn(code);
     } catch (_) {
+      if (!allowLocalFallback) return null;
       return AttendanceStore.sessionByCodeOpenForCheckIn(code);
     }
   }
@@ -6826,8 +6843,9 @@ class AttendanceRepository extends ChangeNotifier {
 
   /// Matches a session code to a live session and its attendance list.
   ///
-  /// Checks local store first, then Firestore when online. Used before check-in
-  /// and when replaying queued codes after a lecturer uploads an offline session.
+  /// Live student entry always queries the server (no local-store match).
+  /// Queued replay with [capturedAt] still resolves against the original
+  /// capture time, including ended sessions.
   Future<({AttendanceSession? session, AttendanceList? list})>
       resolveSessionAndListForStudentCode(
     String rawCode, {
@@ -6845,32 +6863,16 @@ class AttendanceRepository extends ChangeNotifier {
         capturedAt: capturedAt,
       );
     } else {
-      session = validateSessionCode(rawCode);
-      if (session != null && session.isOpenForCheckIn) {
-        var list = AttendanceStore.listById(session.listId);
-        list ??= await resolveListById(session.listId);
-        return (session: session, list: list);
-      }
       final hasNet = AppConnectivity.instance.isOnline ||
           AppConnectivity.instance.hasNetworkInterface;
-      if ((session == null || !session.isOpenForCheckIn) && hasNet) {
+      if (hasNet) {
         if (!AppConnectivity.instance.isOnline) {
           await AppConnectivity.instance.ensureReachable(
             timeout: const Duration(seconds: 2),
           );
         }
         PendingSessionCodeSync.ensureWatchingSessionPublishForCodes([rawCode]);
-        for (var attempt = 0; attempt < 3; attempt++) {
-          if (attempt > 0) {
-            await Future<void>.delayed(Duration(milliseconds: 200 * attempt));
-          }
-          final found =
-              await resolveActiveSessionByCodeForSignIn(rawCode);
-          if (found != null) {
-            session = found;
-            break;
-          }
-        }
+        session = await resolveActiveSessionByCodeForSignIn(rawCode);
       }
     }
 

@@ -54,11 +54,8 @@ class SessionCodeAutoCheckIn {
     final code = normalizeSessionCodeInput(rawCode);
     if (!isValidJoinCodeFormat(code)) return false;
     await AttendanceRepository.instance.loadAll(force: false);
-    var session = AttendanceRepository.instance.validateSessionCode(code);
-    if (session == null && AppConnectivity.instance.isOnline) {
-      session = await AttendanceRepository.instance
-          .resolveActiveSessionByCodeForSignIn(code);
-    }
+    final session = await AttendanceRepository.instance
+        .resolveActiveSessionByCodeForSignIn(code);
     return session?.remoteLearning == true;
   }
 
