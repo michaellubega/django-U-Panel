@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:u_panel/core/auth/auth_repository.dart';
+import 'package:u_panel/core/auth/user_role.dart';
 
 void main() {
   group('AuthRepository.applyAuthUserRoleHints', () {
@@ -61,6 +62,33 @@ void main() {
       };
       expect(AuthRepository.adminDocIsKiuAdministrator(data), isTrue);
       expect(AuthRepository.adminDocGrantsRole(data), isTrue);
+    });
+
+    test('Django vc role sets oversight without admin write flags', () {
+      UserRole? oversight;
+      var admin = true;
+      var qa = true;
+
+      AuthRepository.applyAuthUserRoleHints(
+        <String, dynamic>{
+          'role': 'vc',
+          'is_oversight': true,
+          'is_admin': false,
+        },
+        preserveKiuAdminFromDocs: false,
+        setKiuAdmin: (_) {},
+        setAdmin: (v) => admin = v,
+        setQaStaff: (v) => qa = v,
+        setLecturer: (_) {},
+        setOnboardingComplete: (_) {},
+        setOversightRole: (v) => oversight = v,
+      );
+
+      expect(oversight, UserRole.vc);
+      expect(admin, isTrue);
+      expect(qa, isTrue);
+      expect(AuthRepository.adminDocOversightRole({'adminRole': 'dean'}),
+          UserRole.dean);
     });
   });
 }

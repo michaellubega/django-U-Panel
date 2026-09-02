@@ -9,6 +9,7 @@ import 'qa_staff_list_screen.dart';
 import 'register_administrator_screen.dart';
 import 'register_kiu_administrator_screen.dart';
 import 'register_staff_screen.dart';
+import 'register_oversight_screen.dart';
 
 /// Admin hub for lecturer/QA staff accounts (Dashboard, drawer, or sidebar).
 class StaffAdminHubScreen extends StatelessWidget {
@@ -82,6 +83,20 @@ class _DesktopSplitLayout extends StatelessWidget {
                 compact: false,
               ),
               const _GrantAdministratorSection(gapBefore: 20),
+              const SizedBox(height: 12),
+              _DirectoryTile(
+                icon: Icons.account_balance_rounded,
+                title: 'Leadership (VC, DQA, Dean, HOD)',
+                subtitle: 'Read-only QAAT-style dashboards',
+                tint: AppTheme.secondary,
+                onTap: () {
+                  Navigator.of(context).push<bool>(
+                    MaterialPageRoute<bool>(
+                      builder: (_) => const RegisterOversightScreen(),
+                    ),
+                  );
+                },
+              ),
             ],
           ),
         ),
@@ -167,6 +182,20 @@ class _CompactColumnLayout extends StatelessWidget {
           compact: true,
         ),
         const _GrantAdministratorSection(gapBefore: 12),
+        const SizedBox(height: 12),
+        _DirectoryTile(
+          icon: Icons.account_balance_rounded,
+          title: 'Leadership (VC, DQA, Dean, HOD)',
+          subtitle: 'Read-only QAAT-style dashboards',
+          tint: AppTheme.secondary,
+          onTap: () {
+            Navigator.of(context).push<bool>(
+              MaterialPageRoute<bool>(
+                builder: (_) => const RegisterOversightScreen(),
+              ),
+            );
+          },
+        ),
         const SizedBox(height: 28),
         Text(
           'Browse',

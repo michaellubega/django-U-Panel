@@ -168,7 +168,11 @@ class AttendanceRepository extends ChangeNotifier {
     if (!a.isLoggedIn) return false;
     if (a.isSyntheticStaffAuthIdentity || a.isStaffAuthIdentity) return false;
     if (a.roleCheckDone &&
-        (a.isAdmin || a.isQaStaff || a.isKiuAdmin || a.isLecturer)) {
+        (a.isAdmin ||
+            a.isQaStaff ||
+            a.isKiuAdmin ||
+            a.isLecturer ||
+            a.hasOversightReadAccess)) {
       return false;
     }
     return a.isStudentAuthIdentity &&
@@ -180,7 +184,13 @@ class AttendanceRepository extends ChangeNotifier {
     final a = AuthRepository.instance;
     if (!a.isLoggedIn) return false;
     if (a.isSyntheticStaffAuthIdentity || a.isStaffAuthIdentity) return false;
-    if (a.isAdmin || a.isQaStaff || a.isKiuAdmin || a.isLecturer) return false;
+    if (a.isAdmin ||
+        a.isQaStaff ||
+        a.isKiuAdmin ||
+        a.isLecturer ||
+        a.hasOversightReadAccess) {
+      return false;
+    }
     if (a.roleCheckDone) {
       if (a.isStudentProfile) return true;
       return a.isStudentAuthIdentity &&
@@ -864,7 +874,7 @@ class AttendanceRepository extends ChangeNotifier {
     final a = AuthRepository.instance;
     if (!a.isLoggedIn) return const {};
 
-    if (a.isAdmin || a.isQaStaff || a.isKiuAdmin) {
+    if (a.isAdmin || a.isQaStaff || a.isKiuAdmin || a.hasOversightReadAccess) {
       return const {};
     }
 
@@ -2783,7 +2793,7 @@ class AttendanceRepository extends ChangeNotifier {
   /// QA/admin sees every list; lecturers and KIU admins are uid-scoped.
   bool _usesFullStaffListLoad() {
     final auth = AuthRepository.instance;
-    return auth.adminCheckDone && auth.isAdmin;
+    return auth.adminCheckDone && (auth.isAdmin || auth.hasOversightReadAccess);
   }
 
   /// Scope for fast list-only refresh; null means load the full staff collection.
@@ -3780,7 +3790,7 @@ class AttendanceRepository extends ChangeNotifier {
       return withLocalEnrollment(lists.map((l) => l.id).toSet());
     }
 
-    if (auth.adminCheckDone && auth.isAdmin) {
+    if (auth.adminCheckDone && (auth.isAdmin || auth.hasOversightReadAccess)) {
       try {
         final snap = await _firestore
             .collection(ApiCollections.attendanceLists)
@@ -4120,7 +4130,7 @@ class AttendanceRepository extends ChangeNotifier {
     }
 
     final auth = AuthRepository.instance;
-    if (auth.adminCheckDone && auth.isAdmin) {
+    if (auth.adminCheckDone && (auth.isAdmin || auth.hasOversightReadAccess)) {
       await _executeLoadAllForStaff(
         force,
         loadGeneration,

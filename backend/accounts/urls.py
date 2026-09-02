@@ -7,6 +7,7 @@ from .views import (
     PasswordChangeView,
     PasswordResetConfirmView,
     PasswordResetView,
+    ProvisionOversightView,
     PushRegisterView,
     RegisterView,
     RequestVerificationView,
@@ -16,6 +17,7 @@ from .views import (
 urlpatterns = [
     path("auth/login/", LoginView.as_view(), name="auth-login"),
     path("auth/register/", RegisterView.as_view(), name="auth-register"),
+    path("auth/provision-oversight/", ProvisionOversightView.as_view(), name="auth-provision-oversight"),
     path("auth/logout/", LogoutView.as_view(), name="auth-logout"),
     path("auth/me/", MeView.as_view(), name="auth-me"),
     path("auth/password-reset/", PasswordResetView.as_view(), name="auth-password-reset"),

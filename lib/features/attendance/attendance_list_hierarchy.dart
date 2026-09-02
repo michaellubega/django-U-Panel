@@ -66,7 +66,7 @@ List<AttendanceList> attendanceListsForCurrentStaff() {
   final sorted = List<AttendanceList>.from(AttendanceStore.lists)
     ..sort(compareAttendanceListsNewestFirst);
   if (!auth.showsStaffAttendanceUi) return [];
-  if (auth.adminCheckDone && auth.isAdmin) {
+  if (auth.adminCheckDone && (auth.isAdmin || auth.hasOversightReadAccess)) {
     return filterListsForHierarchy(sorted);
   }
   final uid = auth.currentUserId?.trim();

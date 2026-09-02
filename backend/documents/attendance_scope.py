@@ -2,7 +2,8 @@
 
 Live attendance data lives in documents.ApiDocument (not SQL attendance.*).
 
-Admin roles for this feature: administrator, qa_staff, and kiu_admin.
+Admin roles for this feature: administrator, qa_staff, kiu_admin, and
+read-only oversight roles (vc, dvc, dqa, dean, hod).
 Flutter treats kiu_admin as full staff for attendance bulk watches
 (see lib/features/attendance/data/attendance_repository.dart
 sessionIdsForRtdRecordWatch — isKiuAdmin skips lecturer-limited RTD and uses
@@ -36,6 +37,21 @@ ATTENDANCE_ADMIN_ROLES: frozenset[str] = frozenset(
         User.Role.ADMINISTRATOR,
         User.Role.QA_STAFF,
         User.Role.KIU_ADMIN,
+        User.Role.VC,
+        User.Role.DVC,
+        User.Role.DQA,
+        User.Role.DEAN,
+        User.Role.HOD,
+    }
+)
+
+ATTENDANCE_OVERSIGHT_ROLES: frozenset[str] = frozenset(
+    {
+        User.Role.VC,
+        User.Role.DVC,
+        User.Role.DQA,
+        User.Role.DEAN,
+        User.Role.HOD,
     }
 )
 
@@ -67,6 +83,11 @@ def is_attendance_api_service_user(user) -> bool:
 
 def is_attendance_admin(user) -> bool:
     return getattr(user, "role", None) in ATTENDANCE_ADMIN_ROLES
+
+
+def is_attendance_oversight(user) -> bool:
+    """Leadership roles may GET attendance but must not write capture data."""
+    return getattr(user, "role", None) in ATTENDANCE_OVERSIGHT_ROLES
 
 
 def is_attendance_lecturer_scope(user) -> bool:

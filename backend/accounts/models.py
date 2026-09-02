@@ -24,6 +24,16 @@ class User(AbstractUser):
 
         KIU_ADMIN = "kiu_admin", "KIU administrator"
 
+        VC = "vc", "Vice-Chancellor"
+
+        DVC = "dvc", "Deputy Vice-Chancellor"
+
+        DQA = "dqa", "Director of Quality Assurance"
+
+        DEAN = "dean", "Dean"
+
+        HOD = "hod", "Head of Department"
+
 
 
     role = models.CharField(
@@ -91,6 +101,26 @@ class User(AbstractUser):
     def is_student(self) -> bool:
 
         return self.role == self.Role.STUDENT
+
+
+
+    @property
+
+    def is_oversight(self) -> bool:
+
+        return self.role in {
+
+            self.Role.VC,
+
+            self.Role.DVC,
+
+            self.Role.DQA,
+
+            self.Role.DEAN,
+
+            self.Role.HOD,
+
+        }
 
 
 

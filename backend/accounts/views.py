@@ -10,7 +10,12 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from .models import PushDevice, User
-from .serializers import PushDeviceSerializer, RegisterSerializer, UserSerializer
+from .serializers import (
+    ProvisionOversightSerializer,
+    PushDeviceSerializer,
+    RegisterSerializer,
+    UserSerializer,
+)
 from .services.email_verification import (
     EmailVerificationError,
     queue_verification_email,
@@ -102,6 +107,26 @@ class RegisterView(APIView):
                 )
         return Response(
             {"token": token.key, "user": UserSerializer(user).data},
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class ProvisionOversightView(APIView):
+    """Create VC / DVC / DQA / Dean / HOD accounts. Does not change attendance writes."""
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        if request.user.role != User.Role.ADMINISTRATOR:
+            return Response(
+                {"detail": "Only administrators can provision oversight accounts."},
+                status=status.HTTP_403_FORBIDDEN,
+            )
+        serializer = ProvisionOversightSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        user = serializer.save()
+        return Response(
+            {"user": UserSerializer(user).data},
             status=status.HTTP_201_CREATED,
         )
 

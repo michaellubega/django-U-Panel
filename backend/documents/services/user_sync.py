@@ -35,7 +35,21 @@ def sync_user_profile(user: User) -> None:
         user_data["pendingRegistrationNumber"] = reg
     _upsert(USERS, uid, user_data)
 
-    if user.is_administrator:
+    if user.is_oversight:
+        _upsert(
+            ADMINS,
+            uid,
+            {
+                "isAdmin": False,
+                "isOversight": True,
+                "adminRole": user.role,
+                "fullName": user.full_name,
+                "email": user.email,
+                "staffNumber": user.staff_number,
+                "registrationNumber": user.registration_number,
+            },
+        )
+    elif user.is_administrator:
         if user.role == User.Role.KIU_ADMIN:
             admin_data = {
                 "isKiuAdmin": True,

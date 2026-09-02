@@ -41,6 +41,7 @@ class UserSerializer(serializers.ModelSerializer):
     is_kiu_admin = serializers.SerializerMethodField()
     is_lecturer = serializers.SerializerMethodField()
     is_student = serializers.SerializerMethodField()
+    is_oversight = serializers.SerializerMethodField()
 
     class Meta:
         model = User
@@ -60,6 +61,7 @@ class UserSerializer(serializers.ModelSerializer):
             "is_kiu_admin",
             "is_lecturer",
             "is_student",
+            "is_oversight",
         )
         read_only_fields = fields
 
@@ -77,6 +79,9 @@ class UserSerializer(serializers.ModelSerializer):
 
     def get_is_student(self, obj: User) -> bool:
         return obj.is_student
+
+    def get_is_oversight(self, obj: User) -> bool:
+        return obj.is_oversight
 
 
 class RegisterSerializer(serializers.ModelSerializer):
@@ -199,6 +204,50 @@ class RegisterSerializer(serializers.ModelSerializer):
                     "email_verified_at_link": user.email_verified,
                 },
             )
+        return user
+
+
+_OVERSIGHT_ROLES = frozenset(
+    {
+        User.Role.VC,
+        User.Role.DVC,
+        User.Role.DQA,
+        User.Role.DEAN,
+        User.Role.HOD,
+    }
+)
+
+
+class ProvisionOversightSerializer(serializers.Serializer):
+    """Admin-only: create a read-only leadership account (VC / DQA / Dean / HOD)."""
+
+    email = serializers.EmailField()
+    password = serializers.CharField(write_only=True, min_length=6)
+    full_name = serializers.CharField(max_length=255)
+    role = serializers.ChoiceField(choices=sorted(_OVERSIGHT_ROLES))
+    staff_number = serializers.CharField(required=False, allow_blank=True)
+
+    def validate_email(self, value: str) -> str:
+        email = (value or "").strip().lower()
+        if User.objects.filter(email=email).exists():
+            raise serializers.ValidationError(
+                "An account already exists for that email."
+            )
+        return email
+
+    def create(self, validated_data):
+        email = validated_data["email"]
+        staff = (validated_data.get("staff_number") or "").strip().upper()
+        user = User.objects.create_user(
+            username=email,
+            email=email,
+            password=validated_data["password"],
+            full_name=validated_data["full_name"],
+            staff_number=staff,
+            registration_number=staff,
+            role=validated_data["role"],
+            email_verified=True,
+        )
         return user
 
 

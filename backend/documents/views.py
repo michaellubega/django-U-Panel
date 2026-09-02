@@ -10,6 +10,7 @@ from .attendance_scope import (
     document_allowed_on_get,
     is_attendance_api_service_user,
     is_attendance_collection,
+    is_attendance_oversight,
 )
 from .filters import apply_document_filters, apply_limit, serialize_document
 from .models import ApiDocument
@@ -34,12 +35,17 @@ def _dispatch_check_in(doc: ApiDocument) -> None:
 
 
 def _reject_service_write(request, collection: str) -> Response | None:
-    """Attendance API service accounts are read-only."""
+    """Attendance API service accounts and oversight roles are read-only."""
     if not is_attendance_collection(collection):
         return None
     if is_attendance_api_service_user(request.user):
         return Response(
             {"detail": "Attendance API service tokens are read-only."},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+    if is_attendance_oversight(request.user):
+        return Response(
+            {"detail": "Oversight accounts can read attendance but cannot change it."},
             status=status.HTTP_403_FORBIDDEN,
         )
     return None

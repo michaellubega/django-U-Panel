@@ -46,7 +46,8 @@ class AttendanceRemoteListWatch {
     if (AttendanceRepository.isStudentScopedUser()) {
       _lecturerDualWatch = false;
       _attachStudentSignInWatch(db);
-    } else if (auth.adminCheckDone && auth.isAdmin) {
+    } else if (auth.adminCheckDone &&
+        (auth.isAdmin || auth.hasOversightReadAccess)) {
       _lecturerDualWatch = false;
       _attachCollectionWatch(
         db,

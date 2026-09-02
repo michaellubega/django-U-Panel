@@ -17,6 +17,7 @@ class AuthSessionSnapshot {
     this.isQaStaff = false,
     this.isKiuAdmin = false,
     this.isLecturer = false,
+    this.oversightRole,
     this.staffNumber,
     this.isStudent,
     this.cachedAt,
@@ -31,6 +32,8 @@ class AuthSessionSnapshot {
   final bool isQaStaff;
   final bool isKiuAdmin;
   final bool isLecturer;
+  /// API role for VC / DVC / DQA / Dean / HOD (`vc`, `dqa`, …).
+  final String? oversightRole;
   final String? staffNumber;
   final bool? isStudent;
   final DateTime? cachedAt;
@@ -46,6 +49,7 @@ class AuthSessionSnapshot {
         'isQaStaff': isQaStaff,
         'isKiuAdmin': isKiuAdmin,
         'isLecturer': isLecturer,
+        if (oversightRole != null) 'oversightRole': oversightRole,
         if (staffNumber != null) 'staffNumber': staffNumber,
         if (isStudent != null) 'isStudent': isStudent,
       };
@@ -71,6 +75,7 @@ class AuthSessionSnapshot {
       isQaStaff: flag('isQaStaff'),
       isKiuAdmin: flag('isKiuAdmin'),
       isLecturer: flag('isLecturer'),
+      oversightRole: text('oversightRole'),
       staffNumber: text('staffNumber'),
       isStudent: json.containsKey('isStudent') ? flag('isStudent') : null,
       cachedAt:

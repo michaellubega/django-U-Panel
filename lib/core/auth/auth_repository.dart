@@ -186,7 +186,21 @@ class AuthRepository extends ChangeNotifier {
   /// True when an [admins] row grants QA/full admin or KIU campus admin.
   static bool adminDocGrantsRole(Map<String, dynamic>? data) {
     if (data == null) return false;
-    return adminDocIsKiuAdministrator(data) || _adminFlagFromData(data);
+    return adminDocIsKiuAdministrator(data) ||
+        _adminFlagFromData(data) ||
+        adminDocOversightRole(data) != null;
+  }
+
+  static UserRole? adminDocOversightRole(Map<String, dynamic>? data) {
+    if (data == null) return null;
+    final role = UserRoleX.fromApi(
+      (data[adminRoleField] as String?) ?? (data['role'] as String?),
+    );
+    if (role != null && role.hasOversightReadAccess) return role;
+    if (data['isOversight'] == true || data['is_oversight'] == true) {
+      return role;
+    }
+    return null;
   }
 
   /// KIU campus administrators — not QA operational staff unless explicitly granted.
@@ -318,6 +332,7 @@ class AuthRepository extends ChangeNotifier {
   bool _adminCheckDone = false;
 
   bool _isLecturer = false;
+  UserRole? _oversightRole;
   bool _lecturerCheckDone = false;
   String? _cachedStaffNumber;
 
@@ -356,6 +371,13 @@ class AuthRepository extends ChangeNotifier {
 
   bool get isLecturer => _isLecturer;
   bool get lecturerCheckDone => _lecturerCheckDone;
+
+  /// VC / DVC / DQA / Dean / HOD — read attendance, cannot change capture.
+  bool get isOversight =>
+      _oversightRole != null || resolvedRole.hasOversightReadAccess;
+
+  bool get hasOversightReadAccess =>
+      isOversight || resolvedRole.hasOversightReadAccess;
 
   /// Signed in with a KIU staff mailbox (@kiu.ac.ug etc.), not a student domain.
   bool get isStaffAuthIdentity {
@@ -414,6 +436,9 @@ class AuthRepository extends ChangeNotifier {
 
   /// Resolved role for navigation: API grants (admins / lecturers) win.
   UserRole get resolvedRole {
+    if (_oversightRole != null) {
+      return _oversightRole!;
+    }
     if (_adminCheckDone && _isKiuAdmin) {
       return UserRole.kiuAdmin;
     }
@@ -808,6 +833,7 @@ class AuthRepository extends ChangeNotifier {
     required void Function(bool value) setLecturer,
     required void Function(bool value) setOnboardingComplete,
     void Function(String? title)? setJobTitle,
+    void Function(UserRole? value)? setOversightRole,
   }) {
     if (json == null) return;
     final role = (json['role'] as String?)?.trim().toLowerCase();
@@ -815,6 +841,16 @@ class AuthRepository extends ChangeNotifier {
     final apiQaStaff = json['is_qa_staff'] == true || role == 'qa_staff';
     final apiFullAdmin = role == 'administrator';
     final apiLecturer = json['is_lecturer'] == true || role == 'lecturer';
+    final apiOversight = json['is_oversight'] == true
+        ? UserRoleX.fromApi(role)
+        : UserRoleX.fromApi(role)?.hasOversightReadAccess == true
+            ? UserRoleX.fromApi(role)
+            : null;
+    if (apiOversight != null && apiOversight.hasOversightReadAccess) {
+      setOversightRole?.call(apiOversight);
+    } else if (json.containsKey('role') || json.containsKey('is_oversight')) {
+      setOversightRole?.call(null);
+    }
 
     if (apiKiuAdmin) {
       setKiuAdmin(true);
@@ -864,6 +900,7 @@ class AuthRepository extends ChangeNotifier {
       setQaStaff: (v) => _isQaStaff = v,
       setLecturer: (v) => _isLecturer = v,
       setOnboardingComplete: (v) => _kiuAdminOnboardingComplete = v,
+      setOversightRole: (v) => _oversightRole = v,
       setJobTitle: (title) {
         if (title != null) _cachedKiuAdminJobTitle = title;
       },
@@ -898,6 +935,7 @@ class AuthRepository extends ChangeNotifier {
 
   static bool _adminDocIsQaStaff(Map<String, dynamic>? data) {
     if (data == null) return false;
+    if (adminDocOversightRole(data) != null) return false;
     if (adminDocIsKiuAdministrator(data)) return false;
     final role = (data[adminRoleField] as String?)?.trim().toLowerCase();
     if (role == adminRoleQaStaff) return true;
@@ -1210,7 +1248,9 @@ class AuthRepository extends ChangeNotifier {
     if (user == null) return false;
     final email = user.email ?? '';
     if (!KiuStaffAuthEmail.isStaffMailbox(email)) return false;
-    if (_isKiuAdmin || _kiuAdminOnboardingComplete) return false;
+    if (_isKiuAdmin || _kiuAdminOnboardingComplete || _oversightRole != null) {
+      return false;
+    }
     final raw = user.raw;
     if (raw != null) {
       final role = (raw['role'] as String?)?.trim().toLowerCase();
@@ -1219,7 +1259,12 @@ class AuthRepository extends ChangeNotifier {
           role == 'kiu_admin' ||
           role == 'lecturer' ||
           role == 'qa_staff' ||
-          role == 'administrator') {
+          role == 'administrator' ||
+          role == 'vc' ||
+          role == 'dvc' ||
+          role == 'dqa' ||
+          role == 'dean' ||
+          role == 'hod') {
         return false;
       }
     }
@@ -1514,6 +1559,10 @@ class AuthRepository extends ChangeNotifier {
     _isKiuAdmin = snapshot.isKiuAdmin;
     _adminCheckDone = true;
     _isLecturer = snapshot.isLecturer;
+    _oversightRole = UserRoleX.fromApi(snapshot.oversightRole);
+    if (_oversightRole != null && !_oversightRole!.hasOversightReadAccess) {
+      _oversightRole = null;
+    }
     _cachedStaffNumber = snapshot.staffNumber;
     _lecturerCheckDone = true;
     _apiRoleCheckDenied = false;
@@ -1633,6 +1682,7 @@ class AuthRepository extends ChangeNotifier {
           isQaStaff: _isQaStaff,
           isKiuAdmin: _isKiuAdmin,
           isLecturer: _isLecturer,
+          oversightRole: _oversightRole?.apiValue,
           staffNumber: _cachedStaffNumber,
           isStudent: isStudentAuthIdentity && isStudentProfile,
           cachedAt: DateTime.now().toUtc(),
@@ -1659,6 +1709,7 @@ class AuthRepository extends ChangeNotifier {
     _kiuAdminOnboardingComplete = false;
     _adminCheckDone = true;
     _isLecturer = false;
+    _oversightRole = null;
     _lecturerCheckDone = true;
     _cachedStaffNumber = null;
     _cachedIsStudentProfile = null;
@@ -2275,8 +2326,14 @@ class AuthRepository extends ChangeNotifier {
       final data = snap.data();
       _apiRoleCheckDenied = false;
       _isKiuAdmin = snap.exists && adminDocIsKiuAdministrator(data);
+      _oversightRole = snap.exists ? adminDocOversightRole(data) : _oversightRole;
       _isAdmin = snap.exists && _adminFlagFromData(data);
       _isQaStaff = snap.exists && _adminDocIsQaStaff(data);
+      if (_oversightRole != null) {
+        _isAdmin = false;
+        _isQaStaff = false;
+        _isKiuAdmin = false;
+      }
       if (_isQaStaff && !_isAdmin) {
         _isAdmin = true;
       }
@@ -2324,6 +2381,9 @@ class AuthRepository extends ChangeNotifier {
         _isAdmin = false;
         _isQaStaff = false;
         _isKiuAdmin = false;
+        if (!_isApiPermissionDenied(e)) {
+          _oversightRole = null;
+        }
       }
     }
     _stripStaffRolesForStudentMailbox();
@@ -3714,6 +3774,48 @@ class AuthRepository extends ChangeNotifier {
       roleLabel: 'QA staff',
       requireFullAdministrator: false,
     );
+  }
+
+  /// Admin-only: create a read-only VC / DQA / Dean / HOD account.
+  Future<StaffRegistrationResult> registerOversightAccount({
+    required String fullName,
+    required UserRole role,
+    required String email,
+    required String password,
+    String? staffNumber,
+  }) async {
+    final gate = await _requireFullAdministrator(skipRefreshIfKnown: true);
+    if (gate != null) return (error: gate, staffNumber: null);
+    if (!role.hasOversightReadAccess) {
+      return (error: 'Choose a leadership role.', staffNumber: null);
+    }
+    final name = fullName.trim();
+    final mail = email.trim().toLowerCase();
+    if (name.isEmpty) return (error: 'Enter the person\'s name.', staffNumber: null);
+    if (mail.isEmpty || !mail.contains('@')) {
+      return (error: 'Enter a valid email.', staffNumber: null);
+    }
+    if (password.trim().length < 6) {
+      return (error: 'Password must be at least 6 characters.', staffNumber: null);
+    }
+    try {
+      await ApiClient.instance.postJson(
+        '/api/auth/provision-oversight/',
+        <String, dynamic>{
+          'email': mail,
+          'password': password.trim(),
+          'full_name': name,
+          'role': role.apiValue,
+          if (staffNumber != null && staffNumber.trim().isNotEmpty)
+            'staff_number': staffNumber.trim(),
+        },
+      );
+      return (error: null, staffNumber: staffNumber?.trim());
+    } on ApiException catch (e) {
+      return (error: e.message ?? e.code, staffNumber: null);
+    } catch (e) {
+      return (error: e.toString(), staffNumber: null);
+    }
   }
 
   /// Creates a full administrator (KIU-#### sign-in, same flow as [registerQaStaffAccount]).

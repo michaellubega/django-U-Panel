@@ -12,6 +12,7 @@ import '../auth/user_role.dart';
 import '../../features/dashboard/dashboard_screen.dart';
 import '../../features/dashboard/kiu_admin_dashboard_screen.dart';
 import '../../features/dashboard/lecturer_dashboard_screen.dart';
+import '../../features/oversight/qaat_oversight_dashboard.dart';
 import '../../features/attendance/attendance_list_hierarchy.dart';
 import '../../features/attendance/attendance_screen.dart';
 import '../../features/attendance/data/attendance_offline_sync.dart';
@@ -247,6 +248,11 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
       case UserRole.qaStaff:
       case UserRole.lecturer:
       case UserRole.kiuAdmin:
+      case UserRole.vc:
+      case UserRole.dvc:
+      case UserRole.dqa:
+      case UserRole.dean:
+      case UserRole.hod:
         return AppSection.dashboard;
       case UserRole.student:
         return AppSection.attendance;
@@ -365,6 +371,11 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
       case UserRole.qaStaff:
       case UserRole.lecturer:
       case UserRole.kiuAdmin:
+      case UserRole.vc:
+      case UserRole.dvc:
+      case UserRole.dqa:
+      case UserRole.dean:
+      case UserRole.hod:
         break;
     }
     if (!AppConnectivity.instance.isOnline) return;
@@ -778,6 +789,17 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
           AppSection.reports,
           AppSection.settings,
         ];
+      case UserRole.vc:
+      case UserRole.dvc:
+      case UserRole.dqa:
+      case UserRole.dean:
+      case UserRole.hod:
+        return const [
+          AppSection.dashboard,
+          AppSection.reports,
+          AppSection.notices,
+          AppSection.settings,
+        ];
       case UserRole.lecturer:
         return const [
           AppSection.dashboard,
@@ -810,6 +832,17 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
         return const [
           AppSection.dashboard,
           AppSection.attendance,
+          AppSection.notices,
+          AppSection.settings,
+        ];
+      case UserRole.vc:
+      case UserRole.dvc:
+      case UserRole.dqa:
+      case UserRole.dean:
+      case UserRole.hod:
+        return const [
+          AppSection.dashboard,
+          AppSection.reports,
           AppSection.notices,
           AppSection.settings,
         ];
@@ -862,6 +895,12 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
           case UserRole.admin:
           case UserRole.qaStaff:
             return DashboardScreen(shellSection: section);
+          case UserRole.vc:
+          case UserRole.dvc:
+          case UserRole.dqa:
+          case UserRole.dean:
+          case UserRole.hod:
+            return QaatOversightDashboard(shellSection: section);
           case UserRole.lecturer:
             return LecturerDashboardScreen(shellSection: section);
           case UserRole.kiuAdmin:
@@ -874,10 +913,10 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
       case AppSection.notices:
         return NoticesScreen(shellSection: section);
       case AppSection.reports:
-        if (!role.hasStaffOperationalAccess) {
+        if (!role.hasStaffOperationalAccess && !role.hasOversightReadAccess) {
           return const _StaffUnavailablePlaceholder(
             title: 'Reports',
-            message: 'Reports are available to QA staff only.',
+            message: 'Reports are available to QA staff and oversight roles.',
           );
         }
         return ReportsScreen(shellSection: section);
@@ -889,6 +928,11 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
             return KiuAdminSettingsScreen(shellSection: section);
           case UserRole.admin:
           case UserRole.qaStaff:
+          case UserRole.vc:
+          case UserRole.dvc:
+          case UserRole.dqa:
+          case UserRole.dean:
+          case UserRole.hod:
           case UserRole.student:
             return SettingsScreen(shellSection: section);
         }

@@ -28,6 +28,8 @@ import '../campus_presence/data/campus_presence_repository.dart';
 import '../campus_presence/models/campus_presence_models.dart';
 import 'dashboard_shared_widgets.dart';
 import 'live_sessions_list_screen.dart';
+import '../oversight/oversight_metrics.dart';
+import '../oversight/qaat_oversight_dashboard.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key, this.shellSection = AppSection.dashboard});
@@ -351,6 +353,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             ?.copyWith(color: AppTheme.error),
                       ),
                     ],
+                    const SizedBox(height: 12),
+                    const _QaatQualityOverviewCard(),
                     const SizedBox(height: 12),
                     if (_loading && !AttendanceRepository.instance.hasCachedStore)
                       const Padding(
@@ -1331,6 +1335,111 @@ class _ListRow extends StatelessWidget {
                 fontSize: DashboardCardText.captionSize,
               ),
             ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _QaatQualityOverviewCard extends StatelessWidget {
+  const _QaatQualityOverviewCard();
+
+  @override
+  Widget build(BuildContext context) {
+    final snap = OversightMetrics.compute();
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+      decoration: QaatVisuals.cardDecoration(),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  'Quality overview',
+                  style: TextStyle(
+                    fontWeight: FontWeight.w700,
+                    fontSize: 16,
+                    color: QaatVisuals.ink,
+                  ),
+                ),
+              ),
+              TextButton(
+                onPressed: () {
+                  Navigator.of(context).push<void>(
+                    MaterialPageRoute<void>(
+                      builder: (_) => const Scaffold(
+                        body: SafeArea(child: QaatOversightDashboard()),
+                      ),
+                    ),
+                  );
+                },
+                child: const Text('Open full view'),
+              ),
+            ],
+          ),
+          const Text(
+            'Same attendance already captured — QAAT-style leadership KPIs.',
+            style: TextStyle(fontSize: 12, color: QaatVisuals.muted),
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              _MiniKpi('Scheduled', '${snap.scheduledSessions}'),
+              _MiniKpi('Actual', '${snap.actualSessions}'),
+              _MiniKpi('Present', '${snap.studentsPresent}'),
+              _MiniKpi('Avg', '${snap.avgAttendancePct.toStringAsFixed(0)}%'),
+              _MiniKpi(
+                'Unstarted',
+                '${snap.ghostLectureCount}',
+                alert: snap.ghostLectureCount > 0,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MiniKpi extends StatelessWidget {
+  const _MiniKpi(this.label, this.value, {this.alert = false});
+
+  final String label;
+  final String value;
+  final bool alert;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 104,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: alert ? QaatVisuals.ineligible : QaatVisuals.border,
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            value,
+            style: TextStyle(
+              fontWeight: FontWeight.w700,
+              fontSize: 18,
+              color: alert ? QaatVisuals.ineligible : QaatVisuals.ink,
+            ),
+          ),
+          Text(
+            label,
+            style: const TextStyle(fontSize: 11, color: QaatVisuals.muted),
           ),
         ],
       ),

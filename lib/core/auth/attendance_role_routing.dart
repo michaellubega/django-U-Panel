@@ -34,6 +34,7 @@ abstract final class AttendanceRoleRouting {
   }) {
     if (!showsStaffAttendanceUi) return false;
     if (adminCheckDone && isKiuAdmin) return true;
+    if (resolvedRole.hasOversightReadAccess) return false;
     if (adminCheckDone && isAdmin) return false;
     if (isLecturer && !isAdmin) return true;
     if (isStaffAuthIdentity || isSyntheticStaffAuthIdentity) return true;
