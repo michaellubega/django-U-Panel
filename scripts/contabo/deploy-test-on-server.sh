@@ -166,16 +166,36 @@ text = ensure_csv(
     ],
 )
 
-if "upanel_test" not in text and "DATABASE_URL=" in text:
-    text = text.replace("@db:5432/upanel", "@db:5432/upanel_test")
+# Always pin the test stack to its own Postgres service (compose project
+# upanel-test, service db, database upanel_test). Prod-seeded .env.test often
+# still has DATABASE_URL=...@db:5432/upanel, a remote host, sqlite, or a
+# password embedded that drifted from POSTGRES_PASSWORD.
+# Compose interpolates ${POSTGRES_PASSWORD} into web/worker/beat DATABASE_URL
+# and into the db container — keep the template form so they stay in sync.
+text = set_key(
+    text,
+    "DATABASE_URL",
+    "postgres://upanel:${POSTGRES_PASSWORD}@db:5432/upanel_test",
+)
+# Never fall back to SQLite inside the test containers.
+text = re.sub(r"(?m)^DJANGO_USE_SQLITE=.*\n?", "", text)
 
 p.write_text(text, encoding="utf-8")
 print(f"    PUBLIC_API_URL={public_url}")
+print("    DATABASE_URL=postgres://upanel:${POSTGRES_PASSWORD}@db:5432/upanel_test")
 PY
 
 if ! grep -qE '^POSTGRES_PASSWORD=.+' .env.test; then
   echo "ERROR: POSTGRES_PASSWORD missing in ${APP_DIR}/.env.test" >&2
   exit 1
+fi
+
+if grep -qE '^POSTGRES_PASSWORD=[[:space:]]*$' .env.test; then
+  echo "ERROR: POSTGRES_PASSWORD is empty in ${APP_DIR}/.env.test" >&2
+  exit 1
+fi
+if grep -qE '^POSTGRES_PASSWORD=(generate-a-strong-test-password|generate-a-strong-password)[[:space:]]*$' .env.test; then
+  echo "WARN: POSTGRES_PASSWORD still looks like the example placeholder — fine if the volume was init'd with it." >&2
 fi
 
 echo "==> Ensure shared Docker network ${EDGE_NETWORK}"
@@ -213,6 +233,33 @@ echo "==> Rebuild + start test stack (project ${COMPOSE_PROJECT})"
 "${COMPOSE[@]}" build --no-cache web nginx
 "${COMPOSE[@]}" up -d --build --force-recreate nginx
 "${COMPOSE[@]}" up -d --build
+
+echo "==> Verify Django ↔ Postgres (upanel_test)"
+db_ok=0
+for _try in 1 2 3 4 5 6 7 8 9 10; do
+  if "${COMPOSE[@]}" exec -T web python manage.py check --database default >/dev/null 2>&1; then
+    db_ok=1
+    break
+  fi
+  sleep 3
+done
+if [[ "${db_ok}" -ne 1 ]]; then
+  echo "ERROR: web cannot authenticate to Postgres (upanel_test)." >&2
+  echo "  Common cause: POSTGRES_PASSWORD in .env.test changed after the volume was first created." >&2
+  echo "  Postgres keeps the password from the initial volume init." >&2
+  echo "  Fix A — align .env.test POSTGRES_PASSWORD with the original volume password, then:" >&2
+  echo "    ${COMPOSE[*]} up -d --force-recreate web worker beat" >&2
+  echo "  Fix B — wipe TEST volumes only (does NOT touch production /opt/upanel data):" >&2
+  echo "    cd ${APP_DIR}" >&2
+  echo "    ${COMPOSE[*]} down -v" >&2
+  echo "    ${COMPOSE[*]} up -d --build" >&2
+  echo "    ${COMPOSE[*]} exec -T web python manage.py migrate --noinput" >&2
+  echo "  Logs: ${COMPOSE[*]} logs --tail=100 db web" >&2
+  "${COMPOSE[@]}" ps || true
+  "${COMPOSE[@]}" logs --tail=40 db web || true
+  exit 1
+fi
+
 "${COMPOSE[@]}" exec -T web python manage.py migrate --noinput
 
 echo "==> Wire production nginx to proxy ${PUBLIC_HOST} → ${TEST_NGINX_ALIAS}:80 (${EDGE_NETWORK})"
