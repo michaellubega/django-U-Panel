@@ -63,6 +63,28 @@ Expected: `{"status": "ok", "service": "upanel-api"}`
 
 ---
 
+## Test environment (`/opt/test`, port 8080)
+
+Isolated from production (`/opt/upanel` on port 80). Separate Docker project, volumes, and Postgres DB.
+
+```bash
+# On Contabo as root — deploys branch michael/oversight-dashboards-qaat-81ad by default
+bash /opt/test/scripts/contabo/deploy-test-on-server.sh
+# Or first time from any path after cloning:
+#   cd /opt/test && BRANCH=michael/oversight-dashboards-qaat-81ad bash scripts/contabo/deploy-test-on-server.sh
+```
+
+From your Mac:
+
+```bash
+ssh -p 443 -i ~/.ssh/id_ed25519 root@169.58.135.136 \
+  'bash -s' < scripts/contabo/deploy-test-on-server.sh
+```
+
+Then open **http://169.58.135.136:8080/app/** (API health: `/api/health/`).
+
+---
+
 ## Step 2 — Create Django admin user
 
 ```bash
