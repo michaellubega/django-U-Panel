@@ -1,11 +1,12 @@
 # Isolated test stack for Contabo (/opt/test).
 # Does NOT bind host port 80 — production at /opt/upanel keeps that.
+# Public URL: https://test.orion13.us (prod nginx proxies Host → this stack :8080)
 #
 # Usage on the server:
 #   cd /opt/test
 #   docker compose -p upanel-test -f docker-compose.test.yml --env-file .env.test up -d --build
 #
-# Reach the app at: http://SERVER_IP:8080/
+# Direct IP access: http://SERVER_IP:8080/
 
 services:
   db:
@@ -94,7 +95,7 @@ services:
   nginx:
     build:
       context: .
-      dockerfile: config/nginx/Dockerfile
+      dockerfile: config/nginx/Dockerfile.test
     restart: unless-stopped
     ports:
       - "${TEST_HTTP_PORT:-8080}:80"

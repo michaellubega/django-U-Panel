@@ -63,9 +63,11 @@ Expected: `{"status": "ok", "service": "upanel-api"}`
 
 ---
 
-## Test environment (`/opt/test`, port 8080)
+## Test environment (`/opt/test` → https://test.orion13.us)
 
-Isolated from production (`/opt/upanel` on port 80). Separate Docker project, volumes, and Postgres DB.
+Isolated from production (`/opt/upanel`). Separate Docker project, volumes, and Postgres DB on host port **8080**. Production nginx on **:80** proxies `Host: test.orion13.us` to that stack (Cloudflare Flexible SSL).
+
+**DNS (once in Cloudflare):** A record `test` → `169.58.135.136`, Proxied, SSL mode Flexible (same as `kiu`).
 
 ```bash
 # On Contabo as root — deploys branch michael/oversight-dashboards-qaat-81ad by default
@@ -81,7 +83,13 @@ ssh -p 443 -i ~/.ssh/id_ed25519 root@169.58.135.136 \
   'bash -s' < scripts/contabo/deploy-test-on-server.sh
 ```
 
-Then open **http://169.58.135.136:8080/app/** (API health: `/api/health/`).
+Then open **https://test.orion13.us/app/** (API health: `/api/health/`). Direct IP fallback: `http://169.58.135.136:8080/app/`.
+
+Point a local Flutter build at the test API:
+
+```bash
+flutter run --dart-define=UPANEL_API_BASE_URL=https://test.orion13.us
+```
 
 ---
 

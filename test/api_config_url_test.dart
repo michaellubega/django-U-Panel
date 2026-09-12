@@ -73,6 +73,10 @@ void main() {
         resolveUPanelApiBaseUrl(compiled: 'http://kiu.orion13.us'),
         'https://kiu.orion13.us',
       );
+      expect(
+        resolveUPanelApiBaseUrl(compiled: 'http://test.orion13.us'),
+        'https://test.orion13.us',
+      );
     });
 
     test('iOS defaults to the production API when dart-define is empty', () {

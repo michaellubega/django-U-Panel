@@ -68,6 +68,7 @@ String normalizeApiBaseUrl(
       (host == 'kiu.orion13.us' ||
           host == 'www.kiu.orion13.us' ||
           host == 'api.kiu.orion13.us' ||
+          host == 'test.orion13.us' ||
           host.endsWith('.kiu.orion13.us'))) {
     v = uri.replace(scheme: 'https').toString();
     if (v.endsWith('/')) v = v.substring(0, v.length - 1);
