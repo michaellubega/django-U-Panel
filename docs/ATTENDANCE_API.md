@@ -5,7 +5,7 @@ Long-lived **Django REST Framework tokens** for reading U-Panel attendance data.
 Live attendance is stored as schemaless JSON documents (`documents.ApiDocument`), **not** the unused SQL tables in `backend/attendance/models.py`.
 
 **Production base URL:** `https://kiu.orion13.us`  
-**Test base URL:** `https://test.orion13.us` (Contabo `/opt/test`, host port **8080**; IP fallback `http://169.58.135.136:8080`)
+**Test base URL:** `https://test.orion13.us` (Contabo `/opt/test`, host **TEST_HTTP_PORT**, often **8085**; IP fallback `http://169.58.135.136:8085`)
 
 In-app **oversight** roles (`vc`, `dvc`, `dqa`, `dean`, `hod`) use normal Flutter login tokens with the same **admin-wide attendance GET** scope and **write-blocked** attendance mutations. Dedicated service tokens below remain the preferred path for external KIU-QAAT systems.
 
@@ -140,7 +140,7 @@ curl -sS -H "Authorization: Token $TOKEN" \
   "https://kiu.orion13.us/api/attendance/export/?from=2026-03-01&to=2026-03-31&limit=5000"
 ```
 
-Against the Contabo **test** stack, use `https://test.orion13.us` (or `http://169.58.135.136:8080`) as the host.
+Against the Contabo **test** stack, use `https://test.orion13.us` (or `http://169.58.135.136:8085` / your `TEST_HTTP_PORT`) as the host.
 
 #### Response shape
 

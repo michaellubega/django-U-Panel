@@ -1,7 +1,12 @@
 #!/usr/bin/env bash
 # Deploy a feature branch into the Contabo test tree at /opt/test.
-# Isolated from production (/opt/upanel) — separate compose project, volumes, port 8080.
-# Public hostname: https://test.orion13.us (prod nginx on :80 proxies Host → :8080).
+# Isolated from production (/opt/upanel) — separate compose project, volumes, host port.
+# Public hostname: https://test.orion13.us (prod nginx on :80 proxies Host → TEST_HTTP_PORT).
+#
+# Host port (TEST_HTTP_PORT): shell env if set → else existing .env.test → else 8080.
+# Prefer 8085 when :8080 is already taken on the VPS:
+#   TEST_HTTP_PORT=8085 bash scripts/contabo/deploy-test-on-server.sh
+# Or set TEST_HTTP_PORT=8085 in /opt/test/.env.test (persists across deploys).
 #
 # Run ON the Contabo server as root:
 #   bash scripts/contabo/deploy-test-on-server.sh
@@ -19,16 +24,16 @@ BRANCH="${BRANCH:-michael/oversight-dashboards-qaat-81ad}"
 REPO_URL="${UPANEL_REPO_URL:-https://github.com/michaellubega/django-U-Panel.git}"
 COMPOSE_PROJECT="${UPANEL_TEST_COMPOSE_PROJECT:-upanel-test}"
 PROD_DIR="${UPANEL_APP_DIR:-/opt/upanel}"
-HTTP_PORT="${TEST_HTTP_PORT:-8080}"
 PUBLIC_HOST="${UPANEL_TEST_PUBLIC_HOST:-test.orion13.us}"
 PUBLIC_URL="https://${PUBLIC_HOST}"
+# Resolved after .env.test exists (shell → .env.test → 8080). Placeholder for early logs.
+HTTP_PORT="(resolving…)"
 
 COMPOSE=(docker compose -p "${COMPOSE_PROJECT}" -f docker-compose.test.yml --env-file .env.test)
 
 echo "==> Test deploy"
 echo "    dir:    ${APP_DIR}"
 echo "    branch: ${BRANCH}"
-echo "    port:   ${HTTP_PORT}"
 echo "    public: ${PUBLIC_URL}"
 echo "    project:${COMPOSE_PROJECT}"
 
@@ -73,7 +78,24 @@ if [[ ! -f .env.test ]]; then
   fi
 fi
 
-echo "==> Normalize .env.test for ${PUBLIC_URL}"
+# Resolve host bind port: explicit shell TEST_HTTP_PORT wins; otherwise keep
+# whatever is already in .env.test; only default to 8080 when neither is set.
+# Never overwrite an existing .env.test TEST_HTTP_PORT with a blind shell default.
+if [[ -n "${TEST_HTTP_PORT:-}" ]]; then
+  HTTP_PORT="${TEST_HTTP_PORT}"
+  echo "==> HTTP port: ${HTTP_PORT} (from shell TEST_HTTP_PORT)"
+else
+  ENV_PORT="$(grep -E '^TEST_HTTP_PORT=' .env.test 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r' | tr -d '\"' | tr -d "'" | tr -d ' ' || true)"
+  if [[ -n "${ENV_PORT}" ]]; then
+    HTTP_PORT="${ENV_PORT}"
+    echo "==> HTTP port: ${HTTP_PORT} (from .env.test TEST_HTTP_PORT — preserved)"
+  else
+    HTTP_PORT=8080
+    echo "==> HTTP port: ${HTTP_PORT} (default; set TEST_HTTP_PORT=8085 if :8080 is taken)"
+  fi
+fi
+
+echo "==> Normalize .env.test for ${PUBLIC_URL} (TEST_HTTP_PORT=${HTTP_PORT})"
 PUBLIC_HOST="${PUBLIC_HOST}" PUBLIC_URL="${PUBLIC_URL}" HTTP_PORT="${HTTP_PORT}" python3 - <<'PY'
 import os
 import re
@@ -182,7 +204,20 @@ echo "==> Rebuild + start test stack (project ${COMPOSE_PROJECT})"
 echo "==> Wire production nginx to proxy ${PUBLIC_HOST} → 127.0.0.1:${HTTP_PORT}"
 if [[ -d "${PROD_DIR}" && -f "${PROD_DIR}/docker-compose.prod.yml" ]]; then
   mkdir -p "${PROD_DIR}/config/nginx"
-  cp -a "${APP_DIR}/config/nginx/upanel-docker.conf" "${PROD_DIR}/config/nginx/upanel-docker.conf"
+  # Rewrite proxy_pass to the active TEST_HTTP_PORT before copying into prod
+  # (committed conf may still show :8080 as an example).
+  NGINX_SRC="${APP_DIR}/config/nginx/upanel-docker.conf"
+  NGINX_DST="${PROD_DIR}/config/nginx/upanel-docker.conf"
+  sed -E "s|proxy_pass http://host\\.docker\\.internal:[0-9]+;|proxy_pass http://host.docker.internal:${HTTP_PORT};|" \
+    "${NGINX_SRC}" > "${NGINX_DST}.tmp"
+  # Keep a matching rewrite in /opt/test so the tree documents the live port.
+  cp -a "${NGINX_DST}.tmp" "${APP_DIR}/config/nginx/upanel-docker.conf"
+  mv "${NGINX_DST}.tmp" "${NGINX_DST}"
+  if ! grep -q "host.docker.internal:${HTTP_PORT}" "${NGINX_DST}"; then
+    echo "ERROR: failed to set proxy_pass to host.docker.internal:${HTTP_PORT} in ${NGINX_DST}" >&2
+    exit 1
+  fi
+  echo "    nginx proxy_pass → host.docker.internal:${HTTP_PORT}"
   # Ensure host.docker.internal is available for the proxy hop.
   if ! grep -q 'host.docker.internal:host-gateway' "${PROD_DIR}/docker-compose.prod.yml"; then
     python3 - <<PY

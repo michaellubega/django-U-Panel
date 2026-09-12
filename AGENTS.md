@@ -37,6 +37,6 @@ Git hooks strip Cursor co-author trailers automatically when hooks are enabled.
 | URL | https://kiu.orion13.us | https://test.orion13.us |
 | Path | `/opt/upanel` | `/opt/test` |
 | Deploy | `deploy-web-on-server.sh` / compose prod | `deploy-test-on-server.sh` |
-| Port | :80 (Cloudflare Flexible) | host :8080 (prod nginx proxies Host) |
+| Port | :80 (Cloudflare Flexible) | host TEST_HTTP_PORT (default :8080; often :8085) |
 
 Details: `docs/SERVER_SETUP.md`, `docs/WEB_DEPLOYMENT.md`, `docs/CLOUDFLARE_DNS_SETUP.md`.

@@ -255,7 +255,7 @@ End users do **not** need the items below. This section is for staff who deploy 
 
 | Item | Detail |
 |------|--------|
-| **API backend** | Django REST on Contabo — production https://kiu.orion13.us (`/opt/upanel`); test https://test.orion13.us (`/opt/test`, port **8080**) |
+| **API backend** | Django REST on Contabo — production https://kiu.orion13.us (`/opt/upanel`); test https://test.orion13.us (`/opt/test`, **TEST_HTTP_PORT**, often **8085**) |
 | **App version** | **1.0.0+1** (see `pubspec.yaml`) |
 | **Build tools** | Flutter **3.35.x**, Dart **3.x**; Android SDK API 24+; Xcode for iOS 13+; **Visual Studio 2022** with **Desktop development with C++** and **x64** toolchains for Windows |
 | **Android package** | `com.u_panel` (Play Store) |

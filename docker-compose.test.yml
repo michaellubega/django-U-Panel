@@ -1,13 +1,15 @@
 # Isolated test stack for Contabo (/opt/test).
 # Does NOT bind host port 80 — production at /opt/upanel keeps that.
-# Public URL: https://test.orion13.us (prod nginx proxies Host → this stack :8080)
+# Public URL: https://test.orion13.us (prod nginx proxies Host → TEST_HTTP_PORT)
 # Prefer: bash scripts/contabo/deploy-test-on-server.sh
+# Port: TEST_HTTP_PORT in .env.test (default 8080; use 8085 if taken):
+#   TEST_HTTP_PORT=8085 bash scripts/contabo/deploy-test-on-server.sh
 #
 # Manual:
 #   cd /opt/test
 #   docker compose -p upanel-test -f docker-compose.test.yml --env-file .env.test up -d --build
 #
-# Direct IP access: http://SERVER_IP:8080/
+# Direct IP access: http://SERVER_IP:${TEST_HTTP_PORT}/
 
 services:
   db:

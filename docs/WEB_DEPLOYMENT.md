@@ -5,9 +5,9 @@
 | **Web app (production)** | https://kiu.orion13.us/app/ |
 | **Landing + downloads** | https://kiu.orion13.us/ |
 | **Web app (test)** | https://test.orion13.us/app/ |
-| **Test IP fallback** | http://169.58.135.136:8080/app/ |
+| **Test IP fallback** | http://169.58.135.136:8085/app/ (or `:8080` if that is your `TEST_HTTP_PORT`) |
 
-Production lives under `/opt/upanel`. The Contabo **test** stack is a separate tree at `/opt/test` (compose project `upanel-test`, host **:8080**); see [SERVER_SETUP.md](SERVER_SETUP.md).
+Production lives under `/opt/upanel`. The Contabo **test** stack is a separate tree at `/opt/test` (compose project `upanel-test`, host **TEST_HTTP_PORT**, often **:8085** when `:8080` is taken); see [SERVER_SETUP.md](SERVER_SETUP.md).
 
 ## How production updates (two steps)
 
@@ -117,7 +117,7 @@ The script:
 1. Checks out the requested branch under `/opt/test`
 2. Normalizes `.env.test` (`PUBLIC_API_URL=https://test.orion13.us`, CORS/CSRF, return URL)
 3. Builds Flutter web with that API base and serves it from the test nginx
-4. Rebuilds production nginx so `Host: test.orion13.us` continues to proxy to `:8080`
+4. Rewrites production nginx `proxy_pass` to `host.docker.internal:${TEST_HTTP_PORT}` and rebuilds so `Host: test.orion13.us` proxies to the active test port (default `:8080`; often `:8085`)
 
 Local Flutter against test:
 

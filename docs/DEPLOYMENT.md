@@ -5,7 +5,7 @@ Two Contabo paths are in use today. Prefer **Docker Compose on the VPS** for day
 | Path | Where | Docs |
 |------|-------|------|
 | **Production (Compose)** | `/opt/upanel` → https://kiu.orion13.us | [SERVER_SETUP.md](SERVER_SETUP.md), [WEB_DEPLOYMENT.md](WEB_DEPLOYMENT.md) |
-| **Test (Compose)** | `/opt/test` → https://test.orion13.us (host **:8080**) | [SERVER_SETUP.md](SERVER_SETUP.md#test-environment-opttest--httpstestorion13us) · `scripts/contabo/deploy-test-on-server.sh` |
+| **Test (Compose)** | `/opt/test` → https://test.orion13.us (host **TEST_HTTP_PORT**, default **:8080**, often **:8085**) | [SERVER_SETUP.md](SERVER_SETUP.md#test-environment-opttest--httpstestorion13us) · `scripts/contabo/deploy-test-on-server.sh` |
 | **Kamal** | Same VPS pattern via `config/deploy.yml` | Sections below |
 
 ---
@@ -123,7 +123,7 @@ The default nginx config serves HTTP on port 80. To add TLS:
 3. Extend `config/nginx/upanel.conf` with an `:443` server block
 4. `kamal accessory reboot nginx`
 
-On Contabo production today, **Cloudflare Flexible SSL** terminates HTTPS at the edge and the origin listens on **:80** (see [CLOUDFLARE_DNS_SETUP.md](CLOUDFLARE_DNS_SETUP.md)). The test hostname uses the same pattern, with prod nginx proxying to `:8080`.
+On Contabo production today, **Cloudflare Flexible SSL** terminates HTTPS at the edge and the origin listens on **:80** (see [CLOUDFLARE_DNS_SETUP.md](CLOUDFLARE_DNS_SETUP.md)). The test hostname uses the same pattern, with prod nginx proxying to `TEST_HTTP_PORT` (default `:8080`, often `:8085`).
 
 ## Architecture
 
@@ -134,7 +134,7 @@ Internet → Cloudflare → nginx (:80/:443) → Gunicorn web (:8000, localhost 
                                         upanel-redis (cache + Celery queues)
                                         worker / beat (Celery)
 
-Test: Host test.orion13.us → prod nginx → host.docker.internal:8080 (upanel-test)
+Test: Host test.orion13.us → prod nginx → host.docker.internal:${TEST_HTTP_PORT} (upanel-test)
 ```
 
 Kamal's built-in proxy is **disabled** (`proxy: false`); nginx is the sole gateway.

@@ -59,7 +59,7 @@ Without `DATABASE_URL`, SQLite (`db.sqlite3`) is used for bare dev.
 
 Day-to-day production: `/opt/upanel` → https://kiu.orion13.us — [docs/SERVER_SETUP.md](../docs/SERVER_SETUP.md), [docs/WEB_DEPLOYMENT.md](../docs/WEB_DEPLOYMENT.md).
 
-**Test stack** (isolated): `/opt/test` → https://test.orion13.us (host **:8080**) — `scripts/contabo/deploy-test-on-server.sh`.
+**Test stack** (isolated): `/opt/test` → https://test.orion13.us (host **TEST_HTTP_PORT**, often **:8085**) — `scripts/contabo/deploy-test-on-server.sh`.
 
 ## Production deploy (Kamal)
 

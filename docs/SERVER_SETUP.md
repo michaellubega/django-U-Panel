@@ -5,7 +5,7 @@ Server: **169.58.135.136** · SSH: **port 443** (move to 22 before HTTPS — see
 | Stack | Public URL | Disk | Compose | Host HTTP |
 |-------|------------|------|---------|-----------|
 | **Production** | https://kiu.orion13.us | `/opt/upanel` | `docker-compose.prod.yml` + `.env.production` | **:80** (Cloudflare Flexible) |
-| **Test** | https://test.orion13.us | `/opt/test` | `docker-compose.test.yml` + `.env.test` (project `upanel-test`) | **:8080** (prod nginx proxies `Host: test.orion13.us` → `:8080`) |
+| **Test** | https://test.orion13.us | `/opt/test` | `docker-compose.test.yml` + `.env.test` (project `upanel-test`) | **TEST_HTTP_PORT** (default **:8080**; use **:8085** if taken — prod nginx proxies `Host: test.orion13.us` → that port) |
 
 ```bash
 ssh -p 443 -i ~/.ssh/id_ed25519 root@169.58.135.136
@@ -70,17 +70,22 @@ Expected: `{"status": "ok", "service": "upanel-api"}`
 
 ## Test environment (`/opt/test` → https://test.orion13.us)
 
-Isolated from production (`/opt/upanel`). Separate Docker project (`upanel-test`), volumes, and Postgres DB. Listens on host port **8080**. Production nginx on **:80** proxies `Host: test.orion13.us` into that stack (Cloudflare Flexible SSL). Prefer the hostname over raw `:8080` for browsers and Flutter.
+Isolated from production (`/opt/upanel`). Separate Docker project (`upanel-test`), volumes, and Postgres DB. Listens on host port **TEST_HTTP_PORT** (default **8080**; prefer **8085** when `:8080` is occupied). Production nginx on **:80** proxies `Host: test.orion13.us` into that stack (Cloudflare Flexible SSL). Prefer the hostname over the raw host port for browsers and Flutter.
 
-`scripts/contabo/deploy-test-on-server.sh` normalizes `.env.test` (`PUBLIC_API_URL`, CORS/CSRF, `APP_RETURN_URL`), builds Flutter web against that API base, brings up the test compose stack, and rebuilds the **production** nginx hop so the proxy stays wired.
+`scripts/contabo/deploy-test-on-server.sh` resolves the port as: shell `TEST_HTTP_PORT` if set → else existing `.env.test` value → else `8080`. It does **not** overwrite an existing `.env.test` `TEST_HTTP_PORT` when the shell env is unset. It also rewrites the prod nginx `proxy_pass` to `host.docker.internal:${TEST_HTTP_PORT}`, normalizes `.env.test` (`PUBLIC_API_URL`, CORS/CSRF, `APP_RETURN_URL`), builds Flutter web against that API base, and brings up the test compose stack.
 
 **DNS (once in Cloudflare):** A record `test` → `169.58.135.136`, Proxied, SSL mode Flexible (same as `kiu`). See [CLOUDFLARE_DNS_SETUP.md](CLOUDFLARE_DNS_SETUP.md).
 
 ```bash
 # On Contabo as root — default BRANCH is set in the script (override with BRANCH=...)
 bash /opt/test/scripts/contabo/deploy-test-on-server.sh
+
+# When :8080 is taken (recommended on this VPS):
+TEST_HTTP_PORT=8085 bash /opt/test/scripts/contabo/deploy-test-on-server.sh
+# Or set TEST_HTTP_PORT=8085 in /opt/test/.env.test — later deploys preserve it.
+
 # Or first time after cloning into /opt/test:
-#   cd /opt/test && BRANCH=<feature-branch> bash scripts/contabo/deploy-test-on-server.sh
+#   cd /opt/test && BRANCH=<feature-branch> TEST_HTTP_PORT=8085 bash scripts/contabo/deploy-test-on-server.sh
 ```
 
 From your Mac:
@@ -90,7 +95,7 @@ ssh -p 443 -i ~/.ssh/id_ed25519 root@169.58.135.136 \
   'bash -s' < scripts/contabo/deploy-test-on-server.sh
 ```
 
-Then open **https://test.orion13.us/app/** (API health: `/api/health/`). Direct IP fallback: `http://169.58.135.136:8080/app/`.
+Then open **https://test.orion13.us/app/** (API health: `/api/health/`). Direct IP fallback: `http://169.58.135.136:8085/app/` (or whatever `TEST_HTTP_PORT` you chose; default was `:8080`).
 
 Point a local Flutter build at the test API:
 
@@ -200,11 +205,11 @@ flutter run -d <device-id> --dart-define=UPANEL_API_BASE_URL=https://kiu.orion13
 flutter run --dart-define=UPANEL_API_BASE_URL=https://test.orion13.us
 ```
 
-Until Cloudflare HTTPS is ready for a given host, use HTTP IP (prod `:80` / test `:8080`):
+Until Cloudflare HTTPS is ready for a given host, use HTTP IP (prod `:80` / test `TEST_HTTP_PORT`, often `:8085`):
 
 ```bash
 flutter run --dart-define=UPANEL_API_BASE_URL=http://169.58.135.136
-flutter run --dart-define=UPANEL_API_BASE_URL=http://169.58.135.136:8080
+flutter run --dart-define=UPANEL_API_BASE_URL=http://169.58.135.136:8085
 ```
 
 ---
