@@ -92,11 +92,23 @@ services:
     restart: unless-stopped
     ports:
       - "80:80"
+    # host.docker.internal kept as a fallback; test.orion13.us uses Docker DNS
+    # via the shared upanel-edge network (proxy_pass → upanel-test-nginx:80).
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    networks:
+      - default
+      - upanel-edge
     depends_on:
       - web
 
 volumes:
   postgres_data:
   redis_data:
+
+# Shared with docker-compose.test.yml so prod nginx can reach test nginx by
+# Docker DNS (upanel-test-nginx) instead of host.docker.internal / host ports.
+networks:
+  upanel-edge:
+    external: true
+    name: upanel-edge

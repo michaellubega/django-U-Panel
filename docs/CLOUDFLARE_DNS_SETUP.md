@@ -32,7 +32,7 @@ Remove any `kiu` CNAME to `michaellubega.github.io` (VPS serves the app instead 
 
 **SSL/TLS** → **Flexible** (same for `kiu` and `test`)
 
-`test.orion13.us` hits production nginx on **:80**, which proxies to the isolated test stack on **TEST_HTTP_PORT** (`/opt/test`, default `:8080`, often `:8085`). Deploy with `scripts/contabo/deploy-test-on-server.sh` — see [SERVER_SETUP.md](SERVER_SETUP.md).
+`test.orion13.us` hits production nginx on **:80**, which proxies over Docker network **`upanel-edge`** to **`upanel-test-nginx:80`** (`/opt/test`). Host **TEST_HTTP_PORT** (default `:8080`, often `:8085`) is only for direct IP access. Deploy with `scripts/contabo/deploy-test-on-server.sh` — see [SERVER_SETUP.md](SERVER_SETUP.md).
 
 ### 4. Server (SSH)
 

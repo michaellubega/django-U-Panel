@@ -9,7 +9,7 @@ Download the **Android APK** and **Windows installer** from GitHub (landing page
 | Environment | Public URL | Server path | Notes |
 |-------------|------------|-------------|--------|
 | **Production** | https://kiu.orion13.us | `/opt/upanel` | Live stack (compose project `upanel`) |
-| **Test** | https://test.orion13.us | `/opt/test` | Isolated stack (`upanel-test`), host **TEST_HTTP_PORT** (default 8080; often 8085); IP fallback `http://169.58.135.136:8085` |
+| **Test** | https://test.orion13.us | `/opt/test` | Isolated stack (`upanel-test`); hostname via Docker network `upanel-edge` → `upanel-test-nginx`; host **TEST_HTTP_PORT** (default 8080; often 8085) for IP fallback `http://169.58.135.136:8085` |
 
 Contabo deploy: [docs/SERVER_SETUP.md](docs/SERVER_SETUP.md) · web publish: [docs/WEB_DEPLOYMENT.md](docs/WEB_DEPLOYMENT.md) · Cloudflare DNS: [docs/CLOUDFLARE_DNS_SETUP.md](docs/CLOUDFLARE_DNS_SETUP.md).
 

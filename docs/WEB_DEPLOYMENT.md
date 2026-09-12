@@ -117,7 +117,7 @@ The script:
 1. Checks out the requested branch under `/opt/test`
 2. Normalizes `.env.test` (`PUBLIC_API_URL=https://test.orion13.us`, CORS/CSRF, return URL)
 3. Builds Flutter web with that API base and serves it from the test nginx
-4. Rewrites production nginx `proxy_pass` to `host.docker.internal:${TEST_HTTP_PORT}` and rebuilds so `Host: test.orion13.us` proxies to the active test port (default `:8080`; often `:8085`)
+4. Ensures shared Docker network `upanel-edge`, copies prod nginx conf with `proxy_pass http://upanel-test-nginx:80;` (Docker DNS), attaches prod nginx to that network, and rebuilds — hostname traffic no longer depends on `host.docker.internal` / `TEST_HTTP_PORT` (port still used for direct IP; default `:8080`, often `:8085`)
 
 Local Flutter against test:
 

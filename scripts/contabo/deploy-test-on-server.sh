@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 # Deploy a feature branch into the Contabo test tree at /opt/test.
 # Isolated from production (/opt/upanel) — separate compose project, volumes, host port.
-# Public hostname: https://test.orion13.us (prod nginx on :80 proxies Host → TEST_HTTP_PORT).
+# Public hostname: https://test.orion13.us
+#
+# Hostname path (preferred): prod nginx on :80 proxies Host: test.orion13.us →
+# Docker DNS alias upanel-test-nginx:80 on shared external network upanel-edge.
+# That hop does NOT use host.docker.internal or TEST_HTTP_PORT.
 #
 # Host port (TEST_HTTP_PORT): shell env if set → else existing .env.test → else 8080.
+# Used only for direct IP access (curl http://127.0.0.1:PORT / http://SERVER_IP:PORT).
 # Prefer 8085 when :8080 is already taken on the VPS:
 #   TEST_HTTP_PORT=8085 bash scripts/contabo/deploy-test-on-server.sh
 # Or set TEST_HTTP_PORT=8085 in /opt/test/.env.test (persists across deploys).
@@ -26,6 +31,8 @@ COMPOSE_PROJECT="${UPANEL_TEST_COMPOSE_PROJECT:-upanel-test}"
 PROD_DIR="${UPANEL_APP_DIR:-/opt/upanel}"
 PUBLIC_HOST="${UPANEL_TEST_PUBLIC_HOST:-test.orion13.us}"
 PUBLIC_URL="https://${PUBLIC_HOST}"
+EDGE_NETWORK="${UPANEL_EDGE_NETWORK:-upanel-edge}"
+TEST_NGINX_ALIAS="${UPANEL_TEST_NGINX_ALIAS:-upanel-test-nginx}"
 # Resolved after .env.test exists (shell → .env.test → 8080). Placeholder for early logs.
 HTTP_PORT="(resolving…)"
 
@@ -36,6 +43,7 @@ echo "    dir:    ${APP_DIR}"
 echo "    branch: ${BRANCH}"
 echo "    public: ${PUBLIC_URL}"
 echo "    project:${COMPOSE_PROJECT}"
+echo "    edge:   ${EDGE_NETWORK} → ${TEST_NGINX_ALIAS}:80"
 
 mkdir -p "${APP_DIR}"
 cd "${APP_DIR}"
@@ -81,14 +89,15 @@ fi
 # Resolve host bind port: explicit shell TEST_HTTP_PORT wins; otherwise keep
 # whatever is already in .env.test; only default to 8080 when neither is set.
 # Never overwrite an existing .env.test TEST_HTTP_PORT with a blind shell default.
+# This port is for direct IP access only — hostname uses Docker network DNS.
 if [[ -n "${TEST_HTTP_PORT:-}" ]]; then
   HTTP_PORT="${TEST_HTTP_PORT}"
-  echo "==> HTTP port: ${HTTP_PORT} (from shell TEST_HTTP_PORT)"
+  echo "==> HTTP port: ${HTTP_PORT} (from shell TEST_HTTP_PORT; direct IP only)"
 else
   ENV_PORT="$(grep -E '^TEST_HTTP_PORT=' .env.test 2>/dev/null | head -1 | cut -d= -f2- | tr -d '\r' | tr -d '\"' | tr -d "'" | tr -d ' ' || true)"
   if [[ -n "${ENV_PORT}" ]]; then
     HTTP_PORT="${ENV_PORT}"
-    echo "==> HTTP port: ${HTTP_PORT} (from .env.test TEST_HTTP_PORT — preserved)"
+    echo "==> HTTP port: ${HTTP_PORT} (from .env.test TEST_HTTP_PORT — preserved; direct IP only)"
   else
     HTTP_PORT=8080
     echo "==> HTTP port: ${HTTP_PORT} (default; set TEST_HTTP_PORT=8085 if :8080 is taken)"
@@ -169,6 +178,10 @@ if ! grep -qE '^POSTGRES_PASSWORD=.+' .env.test; then
   exit 1
 fi
 
+echo "==> Ensure shared Docker network ${EDGE_NETWORK}"
+docker network create "${EDGE_NETWORK}" 2>/dev/null || true
+docker network inspect "${EDGE_NETWORK}" >/dev/null
+
 echo "==> Build Flutter web for this branch (API → ${PUBLIC_URL})"
 if command -v flutter >/dev/null 2>&1; then
   flutter pub get
@@ -201,52 +214,78 @@ echo "==> Rebuild + start test stack (project ${COMPOSE_PROJECT})"
 "${COMPOSE[@]}" up -d --build
 "${COMPOSE[@]}" exec -T web python manage.py migrate --noinput
 
-echo "==> Wire production nginx to proxy ${PUBLIC_HOST} → 127.0.0.1:${HTTP_PORT}"
+echo "==> Wire production nginx to proxy ${PUBLIC_HOST} → ${TEST_NGINX_ALIAS}:80 (${EDGE_NETWORK})"
 if [[ -d "${PROD_DIR}" && -f "${PROD_DIR}/docker-compose.prod.yml" ]]; then
   mkdir -p "${PROD_DIR}/config/nginx"
-  # Rewrite proxy_pass to the active TEST_HTTP_PORT before copying into prod
-  # (committed conf may still show :8080 as an example).
   NGINX_SRC="${APP_DIR}/config/nginx/upanel-docker.conf"
   NGINX_DST="${PROD_DIR}/config/nginx/upanel-docker.conf"
-  sed -E "s|proxy_pass http://host\\.docker\\.internal:[0-9]+;|proxy_pass http://host.docker.internal:${HTTP_PORT};|" \
-    "${NGINX_SRC}" > "${NGINX_DST}.tmp"
-  # Keep a matching rewrite in /opt/test so the tree documents the live port.
-  cp -a "${NGINX_DST}.tmp" "${APP_DIR}/config/nginx/upanel-docker.conf"
-  mv "${NGINX_DST}.tmp" "${NGINX_DST}"
-  if ! grep -q "host.docker.internal:${HTTP_PORT}" "${NGINX_DST}"; then
-    echo "ERROR: failed to set proxy_pass to host.docker.internal:${HTTP_PORT} in ${NGINX_DST}" >&2
+  cp -a "${NGINX_SRC}" "${NGINX_DST}"
+  if ! grep -q "proxy_pass http://${TEST_NGINX_ALIAS}:80;" "${NGINX_DST}"; then
+    echo "ERROR: ${NGINX_DST} missing proxy_pass http://${TEST_NGINX_ALIAS}:80;" >&2
     exit 1
   fi
-  echo "    nginx proxy_pass → host.docker.internal:${HTTP_PORT}"
-  # Ensure host.docker.internal is available for the proxy hop.
-  if ! grep -q 'host.docker.internal:host-gateway' "${PROD_DIR}/docker-compose.prod.yml"; then
-    python3 - <<PY
+  echo "    nginx proxy_pass → ${TEST_NGINX_ALIAS}:80 (Docker DNS on ${EDGE_NETWORK})"
+
+  # Ensure /opt/upanel's compose attaches nginx to upanel-edge even if prod
+  # checkout is still on an older commit without the network block.
+  EDGE_NETWORK="${EDGE_NETWORK}" PROD_COMPOSE="${PROD_DIR}/docker-compose.prod.yml" python3 - <<'PY'
+import os
+import re
 from pathlib import Path
-p = Path("${PROD_DIR}/docker-compose.prod.yml")
+
+edge = os.environ["EDGE_NETWORK"]
+p = Path(os.environ["PROD_COMPOSE"])
 text = p.read_text(encoding="utf-8")
-needle = "  nginx:\n"
-if "host.docker.internal:host-gateway" not in text and needle in text:
-    # Insert extra_hosts under nginx service ports block if missing.
-    import re
-    m = re.search(r"(?ms)^  nginx:\n(?:.*?\n)*?(?=^  [a-z]|\Z)", text)
-    if m:
-        block = m.group(0)
-        if "extra_hosts:" not in block:
-            block2 = block.replace(
-                '    ports:\n      - "80:80"\n',
-                '    ports:\n      - "80:80"\n    extra_hosts:\n      - "host.docker.internal:host-gateway"\n',
-                1,
-            )
-            text = text[: m.start()] + block2 + text[m.end() :]
-            p.write_text(text, encoding="utf-8")
-            print("    added extra_hosts to production docker-compose.prod.yml")
+changed = False
+
+# Ensure nginx service lists the edge network (keep default for web).
+nginx_m = re.search(r"(?ms)^  nginx:\n(?:.*?\n)*?(?=^  [a-z]|\Z)", text)
+if not nginx_m:
+    raise SystemExit("ERROR: nginx service not found in production docker-compose.prod.yml")
+block = nginx_m.group(0)
+if f"upanel-edge" not in block and edge not in block:
+    # Insert networks under nginx before depends_on (or at end of service).
+    if "    networks:\n" in block:
+        block2 = block.replace(
+            "    networks:\n",
+            f"    networks:\n      - {edge}\n",
+            1,
+        )
+        if block2 == block:
+            block2 = block.rstrip("\n") + f"\n    networks:\n      - default\n      - {edge}\n"
+    elif "    depends_on:\n" in block:
+        block2 = block.replace(
+            "    depends_on:\n",
+            f"    networks:\n      - default\n      - {edge}\n    depends_on:\n",
+            1,
+        )
+    else:
+        block2 = block.rstrip("\n") + f"\n    networks:\n      - default\n      - {edge}\n"
+    text = text[: nginx_m.start()] + block2 + text[nginx_m.end() :]
+    changed = True
+    print(f"    attached prod nginx to {edge}")
+
+# Ensure top-level external network declaration.
+if re.search(rf"(?m)^  {re.escape(edge)}:\s*$", text) is None and f"name: {edge}" not in text:
+    if not re.search(r"(?m)^networks:\s*$", text):
+        if text and not text.endswith("\n"):
+            text += "\n"
+        text += "\nnetworks:\n"
+    text += f"  {edge}:\n    external: true\n    name: {edge}\n"
+    changed = True
+    print(f"    declared external network {edge} in production compose")
+
+if changed:
+    p.write_text(text, encoding="utf-8")
+else:
+    print(f"    production compose already joins {edge}")
 PY
-  fi
+
   (
     cd "${PROD_DIR}"
     docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build nginx
   )
-  echo "    production nginx rebuilt (kiu unchanged; ${PUBLIC_HOST} → :${HTTP_PORT})"
+  echo "    production nginx rebuilt (kiu unchanged; ${PUBLIC_HOST} → ${TEST_NGINX_ALIAS}:80)"
 else
   echo "WARN: ${PROD_DIR} missing — skipped hostname proxy. Direct IP :${HTTP_PORT} still works." >&2
 fi
@@ -263,6 +302,21 @@ fi
 HOST_STATUS=$(curl -s -o /dev/null -w '%{http_code}' -H "Host: ${PUBLIC_HOST}" "http://127.0.0.1/api/health/" || true)
 echo " Host ${PUBLIC_HOST} via :80 → HTTP ${HOST_STATUS:-000}"
 
+# From inside prod nginx: Docker DNS to test nginx on upanel-edge.
+PROD_NGINX_CID="$(
+  cd "${PROD_DIR}" 2>/dev/null \
+    && docker compose -f docker-compose.prod.yml --env-file .env.production ps -q nginx 2>/dev/null \
+    || true
+)"
+if [[ -n "${PROD_NGINX_CID}" ]]; then
+  if docker exec "${PROD_NGINX_CID}" wget -q -O - "http://${TEST_NGINX_ALIAS}/api/health/" >/dev/null 2>&1; then
+    echo " Prod nginx → ${TEST_NGINX_ALIAS}/api/health/ OK (Docker DNS)"
+  else
+    echo "WARN: prod nginx cannot reach ${TEST_NGINX_ALIAS} on ${EDGE_NETWORK}." >&2
+    echo "      Check: docker network inspect ${EDGE_NETWORK}" >&2
+  fi
+fi
+
 echo ""
 echo "Test deploy OK."
 echo "  Branch:  $(git log -1 --oneline)"
@@ -270,6 +324,7 @@ echo "  Public:  ${PUBLIC_URL}/app/"
 echo "  API:     ${PUBLIC_URL}/api/health/"
 echo "  Admin:   ${PUBLIC_URL}/admin/"
 echo "  Direct:  http://169.58.135.136:${HTTP_PORT}/app/"
+echo "  Edge:    ${EDGE_NETWORK} → ${TEST_NGINX_ALIAS}:80"
 echo ""
 echo "DNS once (Cloudflare): A  test  →  169.58.135.136  (Proxied, SSL Flexible)."
 echo "Production app at https://kiu.orion13.us was not replaced — only nginx gained the test hostname proxy."

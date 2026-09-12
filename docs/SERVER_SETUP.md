@@ -5,7 +5,7 @@ Server: **169.58.135.136** · SSH: **port 443** (move to 22 before HTTPS — see
 | Stack | Public URL | Disk | Compose | Host HTTP |
 |-------|------------|------|---------|-----------|
 | **Production** | https://kiu.orion13.us | `/opt/upanel` | `docker-compose.prod.yml` + `.env.production` | **:80** (Cloudflare Flexible) |
-| **Test** | https://test.orion13.us | `/opt/test` | `docker-compose.test.yml` + `.env.test` (project `upanel-test`) | **TEST_HTTP_PORT** (default **:8080**; use **:8085** if taken — prod nginx proxies `Host: test.orion13.us` → that port) |
+| **Test** | https://test.orion13.us | `/opt/test` | `docker-compose.test.yml` + `.env.test` (project `upanel-test`) | Hostname via Docker network **`upanel-edge`** → `upanel-test-nginx:80`; host **TEST_HTTP_PORT** (default **:8080**, often **:8085**) for direct IP only |
 
 ```bash
 ssh -p 443 -i ~/.ssh/id_ed25519 root@169.58.135.136
@@ -70,9 +70,13 @@ Expected: `{"status": "ok", "service": "upanel-api"}`
 
 ## Test environment (`/opt/test` → https://test.orion13.us)
 
-Isolated from production (`/opt/upanel`). Separate Docker project (`upanel-test`), volumes, and Postgres DB. Listens on host port **TEST_HTTP_PORT** (default **8080**; prefer **8085** when `:8080` is occupied). Production nginx on **:80** proxies `Host: test.orion13.us` into that stack (Cloudflare Flexible SSL). Prefer the hostname over the raw host port for browsers and Flutter.
+Isolated from production (`/opt/upanel`). Separate Docker project (`upanel-test`), volumes, and Postgres DB.
 
-`scripts/contabo/deploy-test-on-server.sh` resolves the port as: shell `TEST_HTTP_PORT` if set → else existing `.env.test` value → else `8080`. It does **not** overwrite an existing `.env.test` `TEST_HTTP_PORT` when the shell env is unset. It also rewrites the prod nginx `proxy_pass` to `host.docker.internal:${TEST_HTTP_PORT}`, normalizes `.env.test` (`PUBLIC_API_URL`, CORS/CSRF, `APP_RETURN_URL`), builds Flutter web against that API base, and brings up the test compose stack.
+**Hostname path (Cloudflare → origin :80):** production nginx and test nginx both join external Docker network **`upanel-edge`**. Prod nginx `proxy_pass http://upanel-test-nginx:80;` (Docker DNS alias) — **not** `host.docker.internal` or a host port. That avoids 502s when the host bind is `127.0.0.1`-only or the wrong port is left in conf.
+
+**Direct IP path:** host port **TEST_HTTP_PORT** (default **8080**; prefer **8085** when `:8080` is occupied). Prefer the hostname for browsers and Flutter.
+
+`scripts/contabo/deploy-test-on-server.sh` resolves the port as: shell `TEST_HTTP_PORT` if set → else existing `.env.test` value → else `8080`. It does **not** overwrite an existing `.env.test` `TEST_HTTP_PORT` when the shell env is unset. It creates `upanel-edge` if missing, brings up the test stack on that network, copies the Docker-DNS nginx conf into `/opt/upanel`, ensures prod compose joins `upanel-edge`, rebuilds prod nginx, and normalizes `.env.test` / Flutter web as before.
 
 **DNS (once in Cloudflare):** A record `test` → `169.58.135.136`, Proxied, SSL mode Flexible (same as `kiu`). See [CLOUDFLARE_DNS_SETUP.md](CLOUDFLARE_DNS_SETUP.md).
 
@@ -80,7 +84,7 @@ Isolated from production (`/opt/upanel`). Separate Docker project (`upanel-test`
 # On Contabo as root — default BRANCH is set in the script (override with BRANCH=...)
 bash /opt/test/scripts/contabo/deploy-test-on-server.sh
 
-# When :8080 is taken (recommended on this VPS):
+# When :8080 is taken (recommended on this VPS) — still needed for direct IP:
 TEST_HTTP_PORT=8085 bash /opt/test/scripts/contabo/deploy-test-on-server.sh
 # Or set TEST_HTTP_PORT=8085 in /opt/test/.env.test — later deploys preserve it.
 
@@ -96,6 +100,15 @@ ssh -p 443 -i ~/.ssh/id_ed25519 root@169.58.135.136 \
 ```
 
 Then open **https://test.orion13.us/app/** (API health: `/api/health/`). Direct IP fallback: `http://169.58.135.136:8085/app/` (or whatever `TEST_HTTP_PORT` you chose; default was `:8080`).
+
+**Sanity checks on Contabo** (after deploy):
+
+```bash
+curl -sS http://127.0.0.1:8085/api/health/   # or your TEST_HTTP_PORT
+curl -sS -H 'Host: test.orion13.us' http://127.0.0.1/api/health/
+docker compose -f /opt/upanel/docker-compose.prod.yml --env-file /opt/upanel/.env.production \
+  exec nginx wget -q -O - http://upanel-test-nginx/api/health/
+```
 
 Point a local Flutter build at the test API:
 

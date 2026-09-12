@@ -1,11 +1,15 @@
 # Isolated test stack for Contabo (/opt/test).
 # Does NOT bind host port 80 — production at /opt/upanel keeps that.
-# Public URL: https://test.orion13.us (prod nginx proxies Host → TEST_HTTP_PORT)
+# Public URL: https://test.orion13.us
+#   Prod nginx (Host: test.orion13.us) → Docker DNS upanel-test-nginx:80
+#   via shared external network upanel-edge (not host.docker.internal).
 # Prefer: bash scripts/contabo/deploy-test-on-server.sh
-# Port: TEST_HTTP_PORT in .env.test (default 8080; use 8085 if taken):
+# Host port TEST_HTTP_PORT (default 8080; use 8085 if taken) is for direct IP
+# access only — the hostname path does not depend on it:
 #   TEST_HTTP_PORT=8085 bash scripts/contabo/deploy-test-on-server.sh
 #
 # Manual:
+#   docker network create upanel-edge 2>/dev/null || true
 #   cd /opt/test
 #   docker compose -p upanel-test -f docker-compose.test.yml --env-file .env.test up -d --build
 #
@@ -100,11 +104,24 @@ services:
       context: .
       dockerfile: config/nginx/Dockerfile.test
     restart: unless-stopped
+    # Direct IP / curl fallback only. Hostname traffic uses upanel-edge DNS.
     ports:
       - "${TEST_HTTP_PORT:-8080}:80"
+    networks:
+      default:
+      upanel-edge:
+        aliases:
+          - upanel-test-nginx
     depends_on:
       - web
 
 volumes:
   test_postgres_data:
   test_redis_data:
+
+# Shared with docker-compose.prod.yml — create once:
+#   docker network create upanel-edge
+networks:
+  upanel-edge:
+    external: true
+    name: upanel-edge
