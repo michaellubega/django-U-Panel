@@ -51,7 +51,15 @@ services:
     env_file:
       - .env.test
     environment:
+      # Discrete POSTGRES_* win in Django settings (URL-safe). Also override any
+      # prod-seeded DATABASE_URL from env_file (wrong db name / host / sqlite).
+      POSTGRES_USER: upanel
+      POSTGRES_DB: upanel_test
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       DATABASE_URL: postgres://upanel:${POSTGRES_PASSWORD}@db:5432/upanel_test
+      DJANGO_USE_SQLITE: "0"
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/1
       CELERY_RESULT_BACKEND: redis://redis:6379/2
@@ -70,7 +78,13 @@ services:
     env_file:
       - .env.test
     environment:
+      POSTGRES_USER: upanel
+      POSTGRES_DB: upanel_test
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       DATABASE_URL: postgres://upanel:${POSTGRES_PASSWORD}@db:5432/upanel_test
+      DJANGO_USE_SQLITE: "0"
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/1
       CELERY_RESULT_BACKEND: redis://redis:6379/2
@@ -89,7 +103,13 @@ services:
     env_file:
       - .env.test
     environment:
+      POSTGRES_USER: upanel
+      POSTGRES_DB: upanel_test
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       DATABASE_URL: postgres://upanel:${POSTGRES_PASSWORD}@db:5432/upanel_test
+      DJANGO_USE_SQLITE: "0"
       REDIS_URL: redis://redis:6379/0
       CELERY_BROKER_URL: redis://redis:6379/1
       CELERY_RESULT_BACKEND: redis://redis:6379/2

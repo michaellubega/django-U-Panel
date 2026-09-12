@@ -76,6 +76,27 @@ ASGI_APPLICATION = "upanel.asgi.application"
 # --- Database (PostgreSQL via DATABASE_URL, SQLite fallback for bare dev) ---
 _use_sqlite = os.environ.get("DJANGO_USE_SQLITE", "").lower() in ("1", "true", "yes")
 _database_url = os.environ.get("DATABASE_URL", "").strip()
+_pg_password = os.environ.get("POSTGRES_PASSWORD", "").strip()
+_pg_user = os.environ.get("POSTGRES_USER", "upanel").strip() or "upanel"
+_pg_db = os.environ.get("POSTGRES_DB", "").strip()
+_pg_host = os.environ.get("POSTGRES_HOST", "db").strip() or "db"
+_pg_port = os.environ.get("POSTGRES_PORT", "5432").strip() or "5432"
+# Prefer discrete POSTGRES_* when password + db name are set (Compose test/prod).
+# Avoids broken URLs when the password contains @ : / # ? or a literal
+# ${POSTGRES_PASSWORD} left unexpanded by env_file.
+if _pg_password and _pg_db and not _use_sqlite:
+    from urllib.parse import quote_plus
+
+    _database_url = (
+        f"postgres://{quote_plus(_pg_user)}:{quote_plus(_pg_password)}"
+        f"@{_pg_host}:{_pg_port}/{_pg_db}"
+    )
+elif _database_url and _pg_password and "${POSTGRES_PASSWORD}" in _database_url:
+    from urllib.parse import quote_plus
+
+    _database_url = _database_url.replace(
+        "${POSTGRES_PASSWORD}", quote_plus(_pg_password), 1
+    )
 if _database_url and not _use_sqlite:
     DATABASES = {
         "default": dj_database_url.parse(
