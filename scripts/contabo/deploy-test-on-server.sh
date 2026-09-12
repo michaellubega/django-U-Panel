@@ -202,13 +202,26 @@ echo "==> Ensure shared Docker network ${EDGE_NETWORK}"
 docker network create "${EDGE_NETWORK}" 2>/dev/null || true
 docker network inspect "${EDGE_NETWORK}" >/dev/null
 
-echo "==> Build Flutter web for this branch (API → ${PUBLIC_URL})"
+echo "==> Build Flutter web for this branch (API → ${PUBLIC_URL}, same-origin)"
 if command -v flutter >/dev/null 2>&1; then
   flutter pub get
   BUILD_NUM="$(grep -E '^version:' pubspec.yaml | sed -E 's/.*\+([0-9]+).*/\1/')"
   VERSION_LABEL="$(grep -E '^version:' pubspec.yaml | sed -E 's/version: ([0-9.]+).*/\1/')"
-  API_BASE="$(grep -E '^PUBLIC_API_URL=' .env.test | head -1 | cut -d= -f2- | tr -d '\r')"
+  # Prefer PUBLIC_URL (https://test.orion13.us). Never bake http://IP — HTTPS pages
+  # would mixed-content-block and AppConnectivity shows "No internet connection".
+  # web/index.html also sets window.upanelApiBaseUrl to same-origin at runtime.
+  API_BASE="$(grep -E '^PUBLIC_API_URL=' .env.test | head -1 | cut -d= -f2- | tr -d '\r' | tr -d '\"' | tr -d "'")"
   API_BASE="${API_BASE:-${PUBLIC_URL}}"
+  case "${API_BASE}" in
+    http://169.58.135.136*|http://127.0.0.1*|http://localhost*)
+      echo "WARN: PUBLIC_API_URL=${API_BASE} is cleartext — forcing ${PUBLIC_URL} for web build" >&2
+      API_BASE="${PUBLIC_URL}"
+      ;;
+  esac
+  if [[ -z "${API_BASE}" || "${API_BASE}" == "http://"* && "${API_BASE}" != *"orion13.us"* ]]; then
+    API_BASE="${PUBLIC_URL}"
+  fi
+  echo "    dart-define UPANEL_API_BASE_URL=${API_BASE}"
   flutter build web --release \
     --dart-define=UPANEL_API_BASE_URL="${API_BASE}" \
     --dart-define=APP_BUILD_NUMBER="${BUILD_NUM}" \
@@ -228,6 +241,20 @@ if [[ ! -f website/app/index.html ]]; then
   echo "ERROR: website/app/index.html missing after web build." >&2
   exit 1
 fi
+
+# Runtime bootstrap must same-origin *.orion13.us (including test). Fail loud if stale.
+if ! grep -q 'isOrionHost' website/app/index.html || \
+   ! grep -q "host.endsWith('.orion13.us')" website/app/index.html; then
+  echo "ERROR: website/app/index.html missing same-origin Orion API bootstrap." >&2
+  echo "  Expected isOrionHost() / endsWith('.orion13.us') so https://test.orion13.us" >&2
+  echo "  does not call http://169.58.135.136 (mixed content → offline banner)." >&2
+  exit 1
+fi
+if grep -q "return 'http://169.58.135.136'" website/app/index.html; then
+  echo "ERROR: website/app/index.html still hardcodes http://169.58.135.136 as API default." >&2
+  exit 1
+fi
+echo "    index.html API bootstrap: same-origin for *.orion13.us OK"
 
 echo "==> Rebuild + start test stack (project ${COMPOSE_PROJECT})"
 "${COMPOSE[@]}" build --no-cache web nginx

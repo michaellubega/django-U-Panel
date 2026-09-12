@@ -88,7 +88,7 @@ if ! sync_from_gh_pages; then
     BUILD_NUM="$(grep -E '^version:' pubspec.yaml | sed -E 's/.*\+([0-9]+).*/\1/')"
     VERSION_LABEL="$(grep -E '^version:' pubspec.yaml | sed -E 's/version: ([0-9.]+).*/\1/')"
     flutter build web --release \
-      --dart-define=UPANEL_API_BASE_URL="${UPANEL_API_BASE_URL:-http://169.58.135.136}" \
+      --dart-define=UPANEL_API_BASE_URL="${UPANEL_API_BASE_URL:-https://kiu.orion13.us}" \
       --dart-define=APP_BUILD_NUMBER="${BUILD_NUM}" \
       --dart-define=APP_VERSION_LABEL="${VERSION_LABEL}" \
       --base-href=/app/

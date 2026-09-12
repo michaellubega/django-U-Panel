@@ -29,22 +29,28 @@
         return url.replace(/\/$/, '');
       }
 
+      function isOrionHost() {
+        return (
+          host === 'orion13.us' ||
+          host === 'www.orion13.us' ||
+          host.endsWith('.orion13.us')
+        );
+      }
+
+      // Same-origin on Contabo HTTPS hosts (kiu / test / api). Empty on
+      // localhost so Flutter --dart-define=UPANEL_API_BASE_URL applies.
+      // Never default HTTPS pages to http://IP — browsers block mixed content
+      // and the app then shows "No internet connection".
       function defaultApiBase() {
-        if (host === '169.58.135.136') return 'http://169.58.135.136';
-        if (host === 'api.kiu.orion13.us' || host === 'api.orion13.us') return origin;
-        if (host === 'kiu.orion13.us' || host === 'www.kiu.orion13.us') {
-          return origin;
-        }
-        return 'http://169.58.135.136';
+        if (host === '169.58.135.136') return origin;
+        if (isOrionHost()) return origin;
+        return '';
       }
 
       function apiCandidates() {
-        if (host === 'kiu.orion13.us' || host === 'www.kiu.orion13.us') {
-          return [origin];
-        }
-        if (host === '169.58.135.136') return ['http://169.58.135.136'];
-        if (host === 'api.kiu.orion13.us' || host === 'api.orion13.us') return [origin];
-        return ['http://169.58.135.136'];
+        if (host === '169.58.135.136') return [origin];
+        if (isOrionHost()) return [origin];
+        return [];
       }
 
       function probeApiBase(base) {
@@ -456,29 +462,14 @@
     });
 
     (function upanelEarlyBoot() {
-      var host = location.hostname;
-      var needsProbe =
-        host === 'kiu.orion13.us' || host === 'www.kiu.orion13.us';
-
-      function startBoot() {
-        if (window.upanelApiProbeFailed) {
-          window.upanelShowApiSetupHelp();
-          return;
-        }
-        window.upanelClearLegacyServiceWorkers().finally(function () {
-          window.upanelBootFlutter();
-          window.upanelScheduleBootTimeout();
-        });
-      }
-
-      if (!needsProbe || !window.upanelResolveApiBaseUrl) {
-        startBoot();
+      // Contabo HTTPS hosts use same-origin API (set above). Boot Flutter.
+      if (window.upanelApiProbeFailed) {
+        window.upanelShowApiSetupHelp();
         return;
       }
-
-      window.upanelSetBootStatus('Connecting to server…');
-      window.upanelResolveApiBaseUrl().then(function () {
-        startBoot();
+      window.upanelClearLegacyServiceWorkers().finally(function () {
+        window.upanelBootFlutter();
+        window.upanelScheduleBootTimeout();
       });
     })();
   </script>
