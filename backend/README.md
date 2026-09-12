@@ -55,6 +55,12 @@ celery -A upanel beat -l info
 
 Without `DATABASE_URL`, SQLite (`db.sqlite3`) is used for bare dev.
 
+## Production deploy (Contabo)
+
+Day-to-day production: `/opt/upanel` → https://kiu.orion13.us — [docs/SERVER_SETUP.md](../docs/SERVER_SETUP.md), [docs/WEB_DEPLOYMENT.md](../docs/WEB_DEPLOYMENT.md).
+
+**Test stack** (isolated): `/opt/test` → https://test.orion13.us (host **:8080**) — `scripts/contabo/deploy-test-on-server.sh`.
+
 ## Production deploy (Kamal)
 
 See [docs/DEPLOYMENT.md](../docs/DEPLOYMENT.md) for VPS deployment with Kamal, nginx, Redis, and Celery.
@@ -67,6 +73,9 @@ flutter run ^
   --dart-define=UPANEL_API_BASE_URL=http://127.0.0.1:8000 ^
   --dart-define=SENTRY_DSN=https://...@sentry.io/... ^
   --dart-define=ONESIGNAL_APP_ID=your-app-id
+
+# Contabo test
+flutter run --dart-define=UPANEL_API_BASE_URL=https://test.orion13.us
 ```
 
 ## Stack mapping (Firebase → new)
@@ -83,7 +92,8 @@ flutter run ^
 
 | App | Purpose |
 |-----|---------|
-| `accounts` | Users, roles, push device registration |
+| `accounts` | Users, roles (incl. oversight: vc/dvc/dqa/dean/hod), push device registration |
 | `attendance` | Lists, sessions, records, check-in attempts |
 | `notices` | Notices + Celery push on publish |
 | `campus` | Geofence and campus presence |
+| `documents` | Schemaless API docs + attendance GET scoping / export |

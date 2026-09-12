@@ -1,7 +1,7 @@
 # U-Panel — Student Check-In Report (Online & Offline)
 
 **Version 1.0.0** · Last updated: June 2026  
-**Audience:** KIU staff, QA, administrators, and technical reviewers  
+**Audience:** KIU staff, QA, administrators, leadership (oversight), and technical reviewers  
 **App:** U-Panel (Kampala International University)
 
 This document describes how **student attendance check-ins** work in U-Panel in both **online** and **offline** conditions: validation rules, local queues, cloud storage, device limits, and automatic sync when connectivity returns.

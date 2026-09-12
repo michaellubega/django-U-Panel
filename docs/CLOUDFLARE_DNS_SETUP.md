@@ -26,10 +26,13 @@ Wait 10–30 minutes.
 |------|------|---------|-------|
 | **A** | `kiu` | `169.58.135.136` | **Proxied** (orange cloud) |
 | **A** | `api.kiu` | `169.58.135.136` | **Proxied** (orange cloud) |
+| **A** | `test` | `169.58.135.136` | **Proxied** (orange cloud) |
 
 Remove any `kiu` CNAME to `michaellubega.github.io` (VPS serves the app instead of GitHub Pages).
 
-**SSL/TLS** → **Flexible**
+**SSL/TLS** → **Flexible** (same for `kiu` and `test`)
+
+`test.orion13.us` hits production nginx on **:80**, which proxies to the isolated test stack on **:8080** (`/opt/test`). Deploy with `scripts/contabo/deploy-test-on-server.sh` — see [SERVER_SETUP.md](SERVER_SETUP.md).
 
 ### 4. Server (SSH)
 
@@ -48,16 +51,18 @@ bash scripts/contabo/deploy-web-on-server.sh
 ```bash
 curl -s https://kiu.orion13.us/api/health/
 curl -s https://api.kiu.orion13.us/api/health/
+curl -s https://test.orion13.us/api/health/
 ```
 
 Expected: `{"status": "ok", "service": "upanel-api"}`
 
-Open **https://kiu.orion13.us/app/** and sign in.
+Open **https://kiu.orion13.us/app/** (production) or **https://test.orion13.us/app/** (test) and sign in.
 
 Native clients:
 
 ```bash
-flutter run -d <device-id> --dart-define=API_URL=https://api.kiu.orion13.us
+flutter run -d <device-id> --dart-define=UPANEL_API_BASE_URL=https://kiu.orion13.us
+flutter run --dart-define=UPANEL_API_BASE_URL=https://test.orion13.us
 ```
 
 ---
@@ -78,7 +83,8 @@ Or deploy `cloudflare/worker-api-proxy.js` on routes `kiu.orion13.us/api/*` and 
 
 ## Temporary (no DNS)
 
-**http://169.58.135.136/app/** — login works today over HTTP.
+- **Production:** http://169.58.135.136/app/
+- **Test:** http://169.58.135.136:8080/app/
 
 ---
 

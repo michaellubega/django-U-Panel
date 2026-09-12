@@ -1,3 +1,15 @@
+# Deploying U-Panel
+
+Two Contabo paths are in use today. Prefer **Docker Compose on the VPS** for day-to-day production and test. Kamal remains documented below for the older registry-based flow.
+
+| Path | Where | Docs |
+|------|-------|------|
+| **Production (Compose)** | `/opt/upanel` → https://kiu.orion13.us | [SERVER_SETUP.md](SERVER_SETUP.md), [WEB_DEPLOYMENT.md](WEB_DEPLOYMENT.md) |
+| **Test (Compose)** | `/opt/test` → https://test.orion13.us (host **:8080**) | [SERVER_SETUP.md](SERVER_SETUP.md#test-environment-opttest--httpstestorion13us) · `scripts/contabo/deploy-test-on-server.sh` |
+| **Kamal** | Same VPS pattern via `config/deploy.yml` | Sections below |
+
+---
+
 # Deploying U-Panel with Kamal
 
 Production stack:
@@ -37,7 +49,7 @@ Replace placeholders:
 
 - `YOUR_SERVER_IP` — VPS public IP (3 places: web/worker/beat hosts + accessories)
 - `api.orion13.us` — API hostname (nginx + `DJANGO_ALLOWED_HOSTS`); add an **A record** → your VPS IP
-- `https://kiu.orion13.us` — Flutter/web client origin for CORS (existing GitHub Pages site)
+- `https://kiu.orion13.us` — Flutter/web client origin for CORS (existing Contabo / Pages site)
 
 ### 2. Configure secrets
 
@@ -97,9 +109,9 @@ kamal app exec -i web "python manage.py seed_qa_demo_user"
 Point the app at your public API:
 
 ```powershell
-flutter run -d <device-id> --dart-define=API_URL=https://api.kiu.orion13.us
-# equivalent:
-flutter run --dart-define=UPANEL_API_BASE_URL=https://api.kiu.orion13.us
+flutter run -d <device-id> --dart-define=UPANEL_API_BASE_URL=https://kiu.orion13.us
+# Contabo test stack:
+flutter run --dart-define=UPANEL_API_BASE_URL=https://test.orion13.us
 ```
 
 ## HTTPS
@@ -111,14 +123,18 @@ The default nginx config serves HTTP on port 80. To add TLS:
 3. Extend `config/nginx/upanel.conf` with an `:443` server block
 4. `kamal accessory reboot nginx`
 
+On Contabo production today, **Cloudflare Flexible SSL** terminates HTTPS at the edge and the origin listens on **:80** (see [CLOUDFLARE_DNS_SETUP.md](CLOUDFLARE_DNS_SETUP.md)). The test hostname uses the same pattern, with prod nginx proxying to `:8080`.
+
 ## Architecture
 
 ```
-Internet → nginx (:80/:443) → Gunicorn web (:8000, localhost only)
-                                    ↓
-                              upanel-db (Postgres)
-                              upanel-redis (cache + Celery queues)
-                              worker / beat (Celery)
+Internet → Cloudflare → nginx (:80/:443) → Gunicorn web (:8000, localhost only)
+                                              ↓
+                                        upanel-db (Postgres)
+                                        upanel-redis (cache + Celery queues)
+                                        worker / beat (Celery)
+
+Test: Host test.orion13.us → prod nginx → host.docker.internal:8080 (upanel-test)
 ```
 
 Kamal's built-in proxy is **disabled** (`proxy: false`); nginx is the sole gateway.

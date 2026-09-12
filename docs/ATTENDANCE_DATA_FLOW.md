@@ -29,7 +29,7 @@ How attendance UI, repositories, in-memory cache, Firebase backends, and offline
 
 ## Related docs
 
-- [Attendance read API (KIU-QAAT)](ATTENDANCE_API.md) — token scopes, export endpoint, Contabo token command.
+- [Attendance read API (KIU-QAAT)](ATTENDANCE_API.md) — token scopes, export endpoint, Contabo token command; in-app oversight roles share admin-wide GET / write-blocked attendance.
 - [U-Panel architecture catalog](U_PANEL_ARCHITECTURE.md) — broader patterns (repository, offline queues, coordinators).
 - [Online check-in report](ONLINE_CHECK_IN_REPORT.md) — student check-in paths and sequence diagrams.
 - [U-Panel algorithms](U_PANEL_ALGORITHMS.md) — roll stats, reconciliation, and sync ordering.

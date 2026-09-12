@@ -24,6 +24,8 @@ powershell -File scripts\build-windows-installer.ps1 `
   -PublishDownloads
 ```
 
+For a build aimed at the Contabo **test** API, use `-ApiBaseUrl https://test.orion13.us` instead.
+
 ## Output
 
 | File | Purpose |

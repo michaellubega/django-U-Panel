@@ -2,12 +2,13 @@
 
 **Version 1.0.0** · Last updated for current U-Panel builds
 
-This guide explains what phones, computers, browsers, and internet you need to use **U-Panel** at Kampala International University (KIU). It is written for **students, lecturers, QA staff, and administrators** — not for programmers.
+This guide explains what phones, computers, browsers, and internet you need to use **U-Panel** at Kampala International University (KIU). It is written for **students, lecturers, QA staff, administrators, and leadership (VC, DVC, DQA, Dean, HOD)** — not for programmers.
 
 | If you are… | Start here |
 |-------------|------------|
 | **Student or lecturer** | [What every user needs](#what-every-user-needs), then your device section ([phone](#android-phones-and-tablets), [computer](#windows-pc), or [browser](#web-in-a-browser)) |
 | **QA or admin staff** | Same as above; a **tablet or laptop with a wide screen** makes attendance lists and reports easier |
+| **Leadership (VC, DVC, DQA, Dean, HOD)** | Same device needs as staff; you get a **read-only** quality overview (no session capture). Prefer a wide screen. |
 | **IT or technical staff** | [For installers and developers](#for-installers-and-developers) — setup, builds, and Django API |
 
 For how the product works day to day, see [PROJECT_OVERVIEW.md](./PROJECT_OVERVIEW.md). For cloud setup steps, see [backend/README.md](../backend/README.md).
@@ -254,12 +255,11 @@ End users do **not** need the items below. This section is for staff who deploy 
 
 | Item | Detail |
 |------|--------|
-| **Cloud** | Firebase project: Authentication, Cloud Firestore, Cloud Storage, Cloud Messaging |
+| **API backend** | Django REST on Contabo — production https://kiu.orion13.us (`/opt/upanel`); test https://test.orion13.us (`/opt/test`, port **8080**) |
 | **App version** | **1.0.0+1** (see `pubspec.yaml`) |
 | **Build tools** | Flutter **3.35.x**, Dart **3.x**; Android SDK API 24+; Xcode for iOS 13+; **Visual Studio 2022** with **Desktop development with C++** and **x64** toolchains for Windows |
-| **Android package** | `com.u_panel` (Play Store / Firebase) |
-| **Setup** | [README.md](../README.md), [FIREBASE_SETUP.md](../FIREBASE_SETUP.md) |
-| **Firestore rules** | Deploy after rule changes: `firebase deploy --only firestore:rules` |
+| **Android package** | `com.u_panel` (Play Store) |
+| **Setup** | [README.md](../README.md), [SERVER_SETUP.md](./SERVER_SETUP.md), [DEPLOYMENT.md](./DEPLOYMENT.md) |
 
 ### Build outputs by CPU architecture
 

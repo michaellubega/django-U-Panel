@@ -23,7 +23,7 @@ Open in any browser (double-click or drag into a tab). Includes:
 4. **Product** — feature surfaces and attendance lifecycle strip; notice → push pipeline.
 5. **Architecture** — client + cloud + automation layered diagram (Flutter vs Firebase).
 6. **Stack** — Flutter, Firebase, Functions, device/offline, ship targets.
-7. **Roles** — Student vs QA-Staff surfaces.
+7. **Roles** — Student vs QA-Staff surfaces; leadership oversight (VC, DVC, DQA, Dean, HOD) is read-only QAAT-style dashboards (attendance capture unchanged).
 8. **Value** — three outcome pillars.
 9. **Next** — roadmap waves (Now → Later).
 10. **Close** — one-line takeaway and footer.

@@ -29,3 +29,14 @@ Optional one-time setup (recommended on dev machines and Cloud Agent VMs):
 - Do not add redundant `Co-authored-by` lines when you are the sole author.
 
 Git hooks strip Cursor co-author trailers automatically when hooks are enabled.
+
+## Contabo environments (quick reference)
+
+| | Production | Test |
+|--|------------|------|
+| URL | https://kiu.orion13.us | https://test.orion13.us |
+| Path | `/opt/upanel` | `/opt/test` |
+| Deploy | `deploy-web-on-server.sh` / compose prod | `deploy-test-on-server.sh` |
+| Port | :80 (Cloudflare Flexible) | host :8080 (prod nginx proxies Host) |
+
+Details: `docs/SERVER_SETUP.md`, `docs/WEB_DEPLOYMENT.md`, `docs/CLOUDFLARE_DNS_SETUP.md`.

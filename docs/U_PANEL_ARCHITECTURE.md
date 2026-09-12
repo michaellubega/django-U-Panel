@@ -89,10 +89,11 @@ flowchart TB
 | **attendance** | `lib/features/attendance/` | Core attendance UI, check-in, roll, offline queue screens |
 | **attendance/data** | `lib/features/attendance/data/` | `AttendanceRepository`, offline sync, pending queues |
 | **attendance/models** | `lib/features/attendance/models/` | Domain models + **`AttendanceStore`** |
-| **dashboard** | `lib/features/dashboard/` | Role-specific home (student, lecturer, KIU admin, QA/admin) |
+| **dashboard** | `lib/features/dashboard/` | Role-specific home (student, lecturer, KIU admin, QA/admin; oversight roles redirect to QAAT view) |
+| **oversight** | `lib/features/oversight/` | Read-only QAAT-style dashboards for VC, DVC, DQA, Dean, HOD (KPIs, eligibility, unstarted sessions) |
 | **notices** | `lib/features/notices/` | Notice feed, create notice |
 | **reports** | `lib/features/reports/` | Analytics / roll exports (web print/download splits) |
-| **settings** | `lib/features/settings/` | Profile, staff admin hub, registration flows |
+| **settings** | `lib/features/settings/` | Profile, staff admin hub, registration flows, oversight (leadership) provisioning |
 | **campus_presence** | `lib/features/campus_presence/` | KIU admin geofenced campus check-in/out |
 | **lesson_insights** | `lib/features/lesson_insights/` | QA analytics computed from `AttendanceStore` |
 | **role_select** | `lib/features/role_select/` | **Legacy/dev** manual role picker (deprecated path) |
@@ -269,11 +270,14 @@ sequenceDiagram
 
 | Role | Resolution (`AuthRepository.resolvedRole`) | Nav sections (`AppShell._navSectionsForRole`) |
 |------|---------------------------------------------|------------------------------------------------|
-| **admin** | `admins` + `isAdmin`, not QA | Dashboard, Attendance, Notices, Reports, Settings |
+| **admin** | `admins` + `isAdmin`, not QA | Dashboard, Attendance, Notices, Reports, Settings (+ Quality overview entry) |
 | **qaStaff** | `admins` + `adminRole: qa_staff` or staff number | Same as admin |
+| **vc / dvc / dqa / dean / hod** | Django `role` / `is_oversight` (or admin doc `adminRole`) | Dashboard (QAAT read-only home), Reports, Notices, Settings — **no** attendance capture tools |
 | **kiuAdmin** | `isKiuAdmin` on admin doc | Dashboard, Attendance, Notices, Settings (no Reports) |
 | **lecturer** | `lecturers/{uid}.isLecturer` | Same as KIU admin nav |
 | **student** | Default when not staff/lecturer | Attendance, Notices, Settings |
+
+**Oversight:** `UserRole.hasOversightReadAccess` — read-only attendance GET (admin-wide scope); session/list writes stay off. Provision via `POST /api/auth/provision-oversight/` (full administrator). UI: `lib/features/oversight/qaat_oversight_dashboard.dart`.
 
 **UI guards:**
 - `AdminGate` (`lib/core/widgets/admin_gate.dart`) — wraps QA-only screens
@@ -507,11 +511,11 @@ From `pubspec.yaml`:
 
 | Asset | Path |
 |-------|------|
-| Firebase setup | `FIREBASE_SETUP.md` |
-| Security rules | `firestore.rules` |
-| Cloud Functions | `functions/index.js` |
+| Contabo production / test | `docs/SERVER_SETUP.md`, `docs/WEB_DEPLOYMENT.md`, `docs/CLOUDFLARE_DNS_SETUP.md` |
+| Environments | Production https://kiu.orion13.us (`/opt/upanel`); test https://test.orion13.us (`/opt/test`) |
+| Attendance read API | `docs/ATTENDANCE_API.md` |
 | System requirements | `docs/SYSTEM_REQUIREMENTS.md` |
-| Composite indexes | `firestore.indexes.json` (referenced in Functions header) |
+| Legacy Firebase notes | `firestore.rules`, `functions/` (historical; live path is Django on Contabo) |
 
 ---
 

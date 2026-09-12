@@ -2,6 +2,11 @@
 
 Server: **169.58.135.136** · SSH: **port 443** (move to 22 before HTTPS — see below)
 
+| Stack | Public URL | Disk | Compose | Host HTTP |
+|-------|------------|------|---------|-----------|
+| **Production** | https://kiu.orion13.us | `/opt/upanel` | `docker-compose.prod.yml` + `.env.production` | **:80** (Cloudflare Flexible) |
+| **Test** | https://test.orion13.us | `/opt/test` | `docker-compose.test.yml` + `.env.test` (project `upanel-test`) | **:8080** (prod nginx proxies `Host: test.orion13.us` → `:8080`) |
+
 ```bash
 ssh -p 443 -i ~/.ssh/id_ed25519 root@169.58.135.136
 ```
@@ -65,15 +70,17 @@ Expected: `{"status": "ok", "service": "upanel-api"}`
 
 ## Test environment (`/opt/test` → https://test.orion13.us)
 
-Isolated from production (`/opt/upanel`). Separate Docker project, volumes, and Postgres DB on host port **8080**. Production nginx on **:80** proxies `Host: test.orion13.us` to that stack (Cloudflare Flexible SSL).
+Isolated from production (`/opt/upanel`). Separate Docker project (`upanel-test`), volumes, and Postgres DB. Listens on host port **8080**. Production nginx on **:80** proxies `Host: test.orion13.us` into that stack (Cloudflare Flexible SSL). Prefer the hostname over raw `:8080` for browsers and Flutter.
 
-**DNS (once in Cloudflare):** A record `test` → `169.58.135.136`, Proxied, SSL mode Flexible (same as `kiu`).
+`scripts/contabo/deploy-test-on-server.sh` normalizes `.env.test` (`PUBLIC_API_URL`, CORS/CSRF, `APP_RETURN_URL`), builds Flutter web against that API base, brings up the test compose stack, and rebuilds the **production** nginx hop so the proxy stays wired.
+
+**DNS (once in Cloudflare):** A record `test` → `169.58.135.136`, Proxied, SSL mode Flexible (same as `kiu`). See [CLOUDFLARE_DNS_SETUP.md](CLOUDFLARE_DNS_SETUP.md).
 
 ```bash
-# On Contabo as root — deploys branch michael/oversight-dashboards-qaat-81ad by default
+# On Contabo as root — default BRANCH is set in the script (override with BRANCH=...)
 bash /opt/test/scripts/contabo/deploy-test-on-server.sh
-# Or first time from any path after cloning:
-#   cd /opt/test && BRANCH=michael/oversight-dashboards-qaat-81ad bash scripts/contabo/deploy-test-on-server.sh
+# Or first time after cloning into /opt/test:
+#   cd /opt/test && BRANCH=<feature-branch> bash scripts/contabo/deploy-test-on-server.sh
 ```
 
 From your Mac:
@@ -183,16 +190,21 @@ ufw enable
 
 ---
 
-## Step 6 — Point Flutter app to production API
+## Step 6 — Point Flutter app at Contabo
 
 ```bash
-flutter run -d <device-id> --dart-define=API_URL=https://api.kiu.orion13.us
+# Production
+flutter run -d <device-id> --dart-define=UPANEL_API_BASE_URL=https://kiu.orion13.us
+
+# Test stack
+flutter run --dart-define=UPANEL_API_BASE_URL=https://test.orion13.us
 ```
 
-Until HTTPS is ready, use:
+Until Cloudflare HTTPS is ready for a given host, use HTTP IP (prod `:80` / test `:8080`):
 
 ```bash
 flutter run --dart-define=UPANEL_API_BASE_URL=http://169.58.135.136
+flutter run --dart-define=UPANEL_API_BASE_URL=http://169.58.135.136:8080
 ```
 
 ---

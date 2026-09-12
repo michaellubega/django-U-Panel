@@ -370,14 +370,15 @@ attendanceRecords.any(r =>
    - `_refreshIsLecturer`: read `lecturers/{uid}`; `isLecturer` from `isLecturer: true`.
 
 **Resolved role priority:**
-1. Admin check done + `isAdmin` → `qaStaff` or `admin`
+1. Oversight role from API / admin doc (`vc`, `dvc`, `dqa`, `dean`, `hod`) → that `UserRole`
 2. Admin check done + `isKiuAdmin` → `kiuAdmin`
-3. Lecturer check done + `isLecturer` → `lecturer`
-4. Else → `student`
+3. Admin check done + `isAdmin` → `qaStaff` or `admin`
+4. Lecturer check done + `isLecturer` → `lecturer`
+5. Else → `student` (or lecturer for staff identity heuristics)
 
 **Gate:** `roleCheckDone = adminCheckDone && lecturerCheckDone`.
 
-**Outputs:** `UserRole`, capability flags (`hasStaffOperationalAccess`, `hasLecturerAttendanceAccess`).
+**Outputs:** `UserRole`, capability flags (`hasStaffOperationalAccess`, `hasLecturerAttendanceAccess`, `hasOversightReadAccess`, `usesQaatOversightHome`).
 
 ---
 

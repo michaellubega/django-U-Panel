@@ -2,8 +2,12 @@
 
 | What | URL |
 |------|-----|
-| **Web app** | https://kiu.orion13.us/app/ |
+| **Web app (production)** | https://kiu.orion13.us/app/ |
 | **Landing + downloads** | https://kiu.orion13.us/ |
+| **Web app (test)** | https://test.orion13.us/app/ |
+| **Test IP fallback** | http://169.58.135.136:8080/app/ |
+
+Production lives under `/opt/upanel`. The Contabo **test** stack is a separate tree at `/opt/test` (compose project `upanel-test`, host **:8080**); see [SERVER_SETUP.md](SERVER_SETUP.md).
 
 ## How production updates (two steps)
 
@@ -97,3 +101,28 @@ CORS_ALLOWED_ORIGINS=https://kiu.orion13.us,http://169.58.135.136
 ```
 
 Restart: `docker compose -f docker-compose.prod.yml --env-file .env.production up -d`
+
+## Test environment web deploy
+
+Do **not** use `deploy-web-on-server.sh` for the test hostname. That script updates production `/opt/upanel`.
+
+On Contabo:
+
+```bash
+bash /opt/test/scripts/contabo/deploy-test-on-server.sh
+```
+
+The script:
+
+1. Checks out the requested branch under `/opt/test`
+2. Normalizes `.env.test` (`PUBLIC_API_URL=https://test.orion13.us`, CORS/CSRF, return URL)
+3. Builds Flutter web with that API base and serves it from the test nginx
+4. Rebuilds production nginx so `Host: test.orion13.us` continues to proxy to `:8080`
+
+Local Flutter against test:
+
+```bash
+flutter run --dart-define=UPANEL_API_BASE_URL=https://test.orion13.us
+```
+
+**Cloudflare:** A `test` → `169.58.135.136`, Proxied, SSL Flexible — [CLOUDFLARE_DNS_SETUP.md](CLOUDFLARE_DNS_SETUP.md).

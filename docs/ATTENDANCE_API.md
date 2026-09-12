@@ -4,7 +4,10 @@ Long-lived **Django REST Framework tokens** for reading U-Panel attendance data.
 
 Live attendance is stored as schemaless JSON documents (`documents.ApiDocument`), **not** the unused SQL tables in `backend/attendance/models.py`.
 
-**Production base URL:** `https://kiu.orion13.us`
+**Production base URL:** `https://kiu.orion13.us`  
+**Test base URL:** `https://test.orion13.us` (Contabo `/opt/test`, host port **8080**; IP fallback `http://169.58.135.136:8080`)
+
+In-app **oversight** roles (`vc`, `dvc`, `dqa`, `dean`, `hod`) use normal Flutter login tokens with the same **admin-wide attendance GET** scope and **write-blocked** attendance mutations. Dedicated service tokens below remain the preferred path for external KIU-QAAT systems.
 
 ---
 
@@ -31,8 +34,11 @@ Tokens are created with `create_attendance_api_token` (below). Flutter login tok
 | `student` | `student` | Own records / check-in attempts only (`studentId` ∈ registration number, user pk, username). Lists & sessions only when referenced by those records. |
 | `lecturer` | `lecturer` | Lists they teach (`lecturerUid` or `createdBy` = user pk, or legacy `whoTaught`). Sessions, records, check-in attempts, **sign-ins**, and **student docs** for those lists. |
 | `admin` | `administrator`, `qa_staff` (and existing `kiu_admin` users for reads) | All attendance collections: lists, sessions, records, check-in-attempts, students, sign-ins. |
+| *(Flutter login)* | Oversight: `vc`, `dvc`, `dqa`, `dean`, `hod` | Same **GET** scope as admin; **POST/PATCH/DELETE** on attendance collections return **403**. |
 
 `kiu_admin` is treated as **admin-wide** for attendance GET because the Flutter client already loads attendance on the staff bulk path for that role.
+
+Oversight accounts are provisioned in-app (Settings → Staff & accounts → Leadership) via `POST /api/auth/provision-oversight/` (full administrator only). They are **not** created with `create_attendance_api_token`; use that command for machine/service readers.
 
 ### Service accounts (recommended for QAAT)
 
@@ -62,6 +68,16 @@ docker compose -f docker-compose.prod.yml --env-file .env.production up -d web w
 docker compose -f docker-compose.prod.yml --env-file .env.production exec web \
   python manage.py create_attendance_api_token --role admin --create-service-user --rotate
 ```
+
+### Contabo (test)
+
+```bash
+cd /opt/test
+docker compose -p upanel-test -f docker-compose.test.yml --env-file .env.test exec web \
+  python manage.py create_attendance_api_token --role admin --create-service-user --rotate
+```
+
+Or redeploy the whole test stack: `bash scripts/contabo/deploy-test-on-server.sh` (see [SERVER_SETUP.md](SERVER_SETUP.md)).
 
 If you see `Unknown command: 'create_attendance_api_token'`, the running image is still on an older commit — rebuild as above.
 
@@ -123,6 +139,8 @@ Records are ordered by `timestamp` descending (fallback: `updated_at`). Related 
 curl -sS -H "Authorization: Token $TOKEN" \
   "https://kiu.orion13.us/api/attendance/export/?from=2026-03-01&to=2026-03-31&limit=5000"
 ```
+
+Against the Contabo **test** stack, use `https://test.orion13.us` (or `http://169.58.135.136:8080`) as the host.
 
 #### Response shape
 
