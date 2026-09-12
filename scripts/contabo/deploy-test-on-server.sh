@@ -211,6 +211,7 @@ fi
 
 echo "==> Rebuild + start test stack (project ${COMPOSE_PROJECT})"
 "${COMPOSE[@]}" build --no-cache web nginx
+"${COMPOSE[@]}" up -d --build --force-recreate nginx
 "${COMPOSE[@]}" up -d --build
 "${COMPOSE[@]}" exec -T web python manage.py migrate --noinput
 
@@ -238,18 +239,21 @@ p = Path(os.environ["PROD_COMPOSE"])
 text = p.read_text(encoding="utf-8")
 changed = False
 
-# Ensure nginx service lists the edge network (keep default for web).
-nginx_m = re.search(r"(?ms)^  nginx:\n(?:.*?\n)*?(?=^  [a-z]|\Z)", text)
+# Match only the nginx service body (indented lines / blanks). Do NOT swallow
+# following top-level keys like volumes: / networks: when nginx is last.
+# Avoid DOTALL — otherwise ".*" crosses newlines into volumes:.
+nginx_m = re.search(r"(?m)^  nginx:\n(?:    [^\n]*\n|\n)*", text)
 if not nginx_m:
     raise SystemExit("ERROR: nginx service not found in production docker-compose.prod.yml")
 block = nginx_m.group(0)
-if f"upanel-edge" not in block and edge not in block:
+if edge not in block:
     # Insert networks under nginx before depends_on (or at end of service).
-    if "    networks:\n" in block:
-        block2 = block.replace(
-            "    networks:\n",
+    if re.search(r"(?m)^    networks:\s*$", block):
+        block2 = re.sub(
+            r"(?m)^    networks:\s*\n",
             f"    networks:\n      - {edge}\n",
-            1,
+            block,
+            count=1,
         )
         if block2 == block:
             block2 = block.rstrip("\n") + f"\n    networks:\n      - default\n      - {edge}\n"
@@ -266,7 +270,7 @@ if f"upanel-edge" not in block and edge not in block:
     print(f"    attached prod nginx to {edge}")
 
 # Ensure top-level external network declaration.
-if re.search(rf"(?m)^  {re.escape(edge)}:\s*$", text) is None and f"name: {edge}" not in text:
+if f"name: {edge}" not in text and re.search(rf"(?m)^  {re.escape(edge)}:\s*$", text) is None:
     if not re.search(r"(?m)^networks:\s*$", text):
         if text and not text.endswith("\n"):
             text += "\n"
@@ -283,7 +287,8 @@ PY
 
   (
     cd "${PROD_DIR}"
-    docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build nginx
+    # Force recreate so nginx actually joins upanel-edge (config-only up can miss it).
+    docker compose -f docker-compose.prod.yml --env-file .env.production up -d --build --force-recreate nginx
   )
   echo "    production nginx rebuilt (kiu unchanged; ${PUBLIC_HOST} → ${TEST_NGINX_ALIAS}:80)"
 else

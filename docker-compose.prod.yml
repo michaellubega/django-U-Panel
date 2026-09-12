@@ -108,6 +108,7 @@ volumes:
 
 # Shared with docker-compose.test.yml so prod nginx can reach test nginx by
 # Docker DNS (upanel-test-nginx) instead of host.docker.internal / host ports.
+# Create once on the VPS (deploy scripts do this): docker network create upanel-edge
 networks:
   upanel-edge:
     external: true

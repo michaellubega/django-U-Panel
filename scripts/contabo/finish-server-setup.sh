@@ -25,6 +25,7 @@ ufw --force enable
 ufw status
 
 echo "==> 3. Restart application stack"
+docker network create upanel-edge 2>/dev/null || true
 docker compose -f docker-compose.prod.yml --env-file .env.production up -d
 
 echo "==> 4. Health check"

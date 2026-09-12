@@ -131,6 +131,11 @@ elif [[ -z "${OLD_SHA}" ]]; then
   NGINX_BUILD_FLAGS=(--no-cache)
 fi
 
+# Shared with /opt/test (test.orion13.us). Prod compose declares it as external;
+# create once so prod-only deploys do not fail when the test stack is down.
+echo "==> Ensure shared Docker network upanel-edge"
+docker network create upanel-edge 2>/dev/null || true
+
 echo "==> Rebuild nginx image (embeds website/app) and restart stack"
 "${COMPOSE[@]}" build "${NGINX_BUILD_FLAGS[@]}" nginx
 "${COMPOSE[@]}" up -d --build web worker beat nginx
