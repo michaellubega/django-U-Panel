@@ -127,13 +127,20 @@ docker compose -p upanel-test -f docker-compose.test.yml --env-file .env.test \
 
 Sign in at https://test.orion13.us/app/ with staff ID (e.g. `KIU-VC01`) and password `qaat@kiu`.
 
-You should see a dark **KIU-QAAT · LEADERSHIP OVERSIGHT** banner and slate KPI tiles. Nav is **Dashboard · Reports · Notices · Settings** (no Attendance tab).
+You should see a dark **KIU-QAAT · LEADERSHIP OVERSIGHT** banner and slate KPI tiles. Nav is **Dashboard · Reports · Notices · Settings** (no Attendance tab). Banner shows build `v1.0.0+N` — confirm it matches `version.json`.
 
-Admin/QA keep the ops dashboard; they get a dark **KIU-QAAT** card → **Open QAAT view**.
+**Admin / QA officer** also land on this same QAAT Dashboard home (build 14+). Ops capture tools stay on **Attendance**; use **Open attendance / ops tools** on the banner.
 
-If the UI still looks like the old green ops home: hard-refresh / clear site data for `test.orion13.us`, confirm you are not on production (`kiu.orion13.us`), and confirm `grep KIU-QAAT` on `main.dart.js` as above.
+If the UI still looks like the old green ops home: hard-refresh / clear site data for `test.orion13.us`, confirm you are not on production (`kiu.orion13.us`), and confirm `grep KIU-QAAT` on `main.dart.js` as above. Live `version.json` must be **≥ 14** (older Contabo images were build 12 without QAAT chrome).
 
 Admins can also provision accounts in-app: Settings → Staff & accounts → Leadership (`POST /api/auth/provision-oversight/`).
+
+```bash
+# Fast path when Flutter is already built into git website/app:
+USE_COMMITTED_WEB=1 TEST_HTTP_PORT=8085 \
+  BRANCH=michael/oversight-dashboards-qaat-81ad \
+  bash scripts/contabo/deploy-test-on-server.sh
+```
 
 Point a local Flutter build at the test API:
 

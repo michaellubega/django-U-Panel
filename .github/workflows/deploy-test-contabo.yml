@@ -1,0 +1,73 @@
+# Redeploy Contabo test stack (/opt/test → https://test.orion13.us).
+# Requires repo secret CONTABO_SSH_PRIVATE_KEY (same as Sync web to Contabo).
+#
+# Optional secrets:
+#   CONTABO_HOST       — default 169.58.135.136
+#   CONTABO_SSH_PORT   — default 443
+#
+# Manual: Actions → Deploy Contabo test (QAAT) → Run workflow
+
+name: Deploy Contabo test (QAAT)
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: Branch to deploy under /opt/test
+        required: true
+        default: michael/oversight-dashboards-qaat-81ad
+      use_committed_web:
+        description: Skip flutter rebuild; bake committed website/app (must contain KIU-QAAT)
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  group: contabo-test-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require SSH secret
+        id: ssh_check
+        env:
+          HAS_KEY: ${{ secrets.CONTABO_SSH_PRIVATE_KEY != '' }}
+        run: |
+          if [[ "${HAS_KEY}" != "true" ]]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::CONTABO_SSH_PRIVATE_KEY is not set — cannot redeploy test.orion13.us."
+            echo "SSH to Contabo and run:"
+            echo "  TEST_HTTP_PORT=8085 BRANCH=${{ inputs.branch }} bash scripts/contabo/deploy-test-on-server.sh"
+            exit 0
+          fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy /opt/test
+        if: steps.ssh_check.outputs.skip != 'true'
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.CONTABO_HOST || '169.58.135.136' }}
+          username: root
+          key: ${{ secrets.CONTABO_SSH_PRIVATE_KEY }}
+          port: ${{ secrets.CONTABO_SSH_PORT || 443 }}
+          command_timeout: 45m
+          script: |
+            set -euo pipefail
+            export BRANCH='${{ inputs.branch }}'
+            export TEST_HTTP_PORT=8085
+            if [[ '${{ inputs.use_committed_web }}' == 'true' ]]; then
+              export USE_COMMITTED_WEB=1
+            fi
+            cd /opt/test
+            # Ensure deploy script from the target branch is present before run.
+            git fetch origin "$BRANCH"
+            git checkout -B "$BRANCH" "origin/$BRANCH"
+            git reset --hard "origin/$BRANCH"
+            bash scripts/contabo/deploy-test-on-server.sh
+            curl -sf https://test.orion13.us/api/health/ || curl -sf http://127.0.0.1:8085/api/health/
+            curl -sS https://test.orion13.us/app/main.dart.js | grep -q 'KIU-QAAT'
+            echo "QAAT bundle live on test.orion13.us"
+            docker compose -p upanel-test -f docker-compose.test.yml --env-file .env.test \
+              exec -T web python manage.py seed_oversight_demo_users || true

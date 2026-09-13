@@ -202,15 +202,7 @@ echo "==> Ensure shared Docker network ${EDGE_NETWORK}"
 docker network create "${EDGE_NETWORK}" 2>/dev/null || true
 docker network inspect "${EDGE_NETWORK}" >/dev/null
 
-echo "==> Build Flutter web for this branch (API → ${PUBLIC_URL}, same-origin)"
-if ! command -v flutter >/dev/null 2>&1; then
-  echo "ERROR: flutter not installed on server." >&2
-  echo "  QAAT oversight UI lives in Dart sources; committed website/app may be stale." >&2
-  echo "  Install Flutter on Contabo, then re-run this script so /app/main.dart.js includes KIU-QAAT." >&2
-  exit 1
-fi
-
-flutter pub get
+echo "==> Flutter web bundle for this branch (API → ${PUBLIC_URL}, same-origin)"
 BUILD_NUM="$(grep -E '^version:' pubspec.yaml | sed -E 's/.*\+([0-9]+).*/\1/')"
 VERSION_LABEL="$(grep -E '^version:' pubspec.yaml | sed -E 's/version: ([0-9.]+).*/\1/')"
 # Prefer PUBLIC_URL (https://test.orion13.us). Never bake http://IP — HTTPS pages
@@ -227,18 +219,40 @@ esac
 if [[ -z "${API_BASE}" || "${API_BASE}" == "http://"* && "${API_BASE}" != *"orion13.us"* ]]; then
   API_BASE="${PUBLIC_URL}"
 fi
-echo "    dart-define UPANEL_API_BASE_URL=${API_BASE}"
-flutter build web --release \
-  --dart-define=UPANEL_API_BASE_URL="${API_BASE}" \
-  --dart-define=APP_BUILD_NUMBER="${BUILD_NUM}" \
-  --dart-define=APP_VERSION_LABEL="${VERSION_LABEL}" \
-  --base-href=/app/
-if [[ -f scripts/finalize-web-build.sh ]]; then
-  bash scripts/finalize-web-build.sh
+
+use_committed_web=0
+if [[ "${USE_COMMITTED_WEB:-}" == "1" ]]; then
+  use_committed_web=1
+  echo "    USE_COMMITTED_WEB=1 — skip flutter build; bake git website/app"
+elif ! command -v flutter >/dev/null 2>&1; then
+  if [[ -f website/app/main.dart.js ]] && grep -q 'KIU-QAAT' website/app/main.dart.js; then
+    use_committed_web=1
+    echo "WARN: flutter not on PATH — using committed website/app (contains KIU-QAAT)." >&2
+  else
+    echo "ERROR: flutter not installed on server and website/app lacks KIU-QAAT." >&2
+    echo "  Install Flutter on Contabo, or push a rebuilt website/app, then re-run." >&2
+    exit 1
+  fi
 fi
-rm -rf website/app
-mkdir -p website/app
-cp -a build/web/. website/app/
+
+if [[ "${use_committed_web}" -eq 0 ]]; then
+  flutter pub get
+  echo "    dart-define UPANEL_API_BASE_URL=${API_BASE}"
+  flutter build web --release \
+    --dart-define=UPANEL_API_BASE_URL="${API_BASE}" \
+    --dart-define=APP_BUILD_NUMBER="${BUILD_NUM}" \
+    --dart-define=APP_VERSION_LABEL="${VERSION_LABEL}" \
+    --base-href=/app/
+  if [[ -f scripts/finalize-web-build.sh ]]; then
+    bash scripts/finalize-web-build.sh
+  fi
+  rm -rf website/app
+  mkdir -p website/app
+  cp -a build/web/. website/app/
+else
+  # Drop any untracked leftover under website/app from a prior failed build.
+  git checkout -f -- website/app 2>/dev/null || true
+fi
 
 # Fail loud if the oversight UI was tree-shaken / build used wrong tree.
 if ! grep -q 'KIU-QAAT' website/app/main.dart.js; then

@@ -894,7 +894,8 @@ class _AppShellState extends State<AppShell> with WidgetsBindingObserver {
         switch (role) {
           case UserRole.admin:
           case UserRole.qaStaff:
-            return DashboardScreen(shellSection: section);
+            // Same slate QAAT home as leadership; ops tools stay on Attendance.
+            return QaatOversightDashboard(shellSection: section);
           case UserRole.vc:
           case UserRole.dvc:
           case UserRole.dqa:

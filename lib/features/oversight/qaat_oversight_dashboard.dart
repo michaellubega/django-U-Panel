@@ -6,6 +6,7 @@ import '../../core/auth/auth_repository.dart';
 import '../../core/auth/user_role.dart';
 import '../../core/navigation/app_section.dart';
 import '../../core/navigation/app_shell.dart';
+import '../../core/version/app_build_info.dart';
 import '../attendance/data/attendance_repository.dart';
 import '../attendance/models/attendance_models.dart';
 import '../lesson_insights/qa_lesson_activity_screen.dart';
@@ -320,10 +321,28 @@ class _QaatBrandBanner extends StatelessWidget {
             children: [
               _BannerChip(roleLabel),
               const _BannerChip('Read-only · no session capture'),
+              _BannerChip(appVersionDisplay),
               if (showOpsHint)
                 const _BannerChip('Ops tools remain on Attendance'),
             ],
           ),
+          if (showOpsHint) ...[
+            const SizedBox(height: 14),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: OutlinedButton.icon(
+                onPressed: () {
+                  AppShellScope.of(context).goToSection(AppSection.attendance);
+                },
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: const Color(0xFFE2E8F0),
+                  side: const BorderSide(color: Color(0xFF64748B)),
+                ),
+                icon: const Icon(Icons.fact_check_outlined, size: 18),
+                label: const Text('Open attendance / ops tools'),
+              ),
+            ),
+          ],
         ],
       ),
     );
