@@ -2,7 +2,7 @@
 <section class="upanel-dashboard">
   <header class="upanel-hero">
     <div class="upanel-hero-copy">
-      <p class="upanel-hero-eyebrow">KIU-QA · Operations center</p>
+      <p class="upanel-hero-eyebrow">KIU · Operations center</p>
       <h1 class="upanel-hero-title">Welcome back{% if user.get_full_name or user.username %}, {{ user.get_full_name|default:user.username }}{% endif %}</h1>
       <p class="upanel-hero-sub">
         Monitor students, staff, attendance pipelines, and email verification from one place.
@@ -41,7 +41,6 @@
     <div class="upanel-stat-grid">
       <div class="upanel-stat-card">
         <a href="{% url 'admin:accounts_user_changelist' %}">
-          <div class="upanel-stat-icon">👥</div>
           <div class="upanel-stat-label">Total users</div>
           <div class="upanel-stat-value">{{ stats.total_users }}</div>
           <div class="upanel-stat-meta">+{{ stats.new_users_week }} this week</div>
@@ -49,7 +48,6 @@
       </div>
       <div class="upanel-stat-card">
         <a href="{% url 'admin:accounts_user_changelist' %}?role__exact=student">
-          <div class="upanel-stat-icon">🎓</div>
           <div class="upanel-stat-label">Students</div>
           <div class="upanel-stat-value">{{ stats.students }}</div>
           <div class="upanel-stat-meta">{{ stats.verify_pct }}% verified</div>
@@ -57,21 +55,18 @@
       </div>
       <div class="upanel-stat-card is-success">
         <a href="{% url 'admin:accounts_user_changelist' %}?email_verified__exact=1&role__exact=student">
-          <div class="upanel-stat-icon">✓</div>
           <div class="upanel-stat-label">Verified</div>
           <div class="upanel-stat-value">{{ stats.verified_students }}</div>
         </a>
       </div>
       <div class="upanel-stat-card{% if stats.pending_email %} is-warning{% endif %}">
         <a href="{% url 'admin:accounts_user_changelist' %}?email_verified__exact=0&role__exact=student">
-          <div class="upanel-stat-icon">⏳</div>
           <div class="upanel-stat-label">Pending email</div>
           <div class="upanel-stat-value">{{ stats.pending_email }}</div>
         </a>
       </div>
       <div class="upanel-stat-card">
         <a href="{% url 'admin:accounts_studentregistration_changelist' %}">
-          <div class="upanel-stat-icon">#</div>
           <div class="upanel-stat-label">Reg. numbers</div>
           <div class="upanel-stat-value">{{ stats.registrations_claimed }}</div>
         </a>
@@ -204,9 +199,9 @@
   </div>
 
   <div class="upanel-quick-actions">
-    <a class="upanel-action-btn primary" href="{% url 'admin:accounts_user_add' %}">+ Add user</a>
+    <a class="upanel-action-btn primary" href="{% url 'admin:accounts_user_add' %}">Add user</a>
     <a class="upanel-action-btn" href="{% url 'admin:accounts_user_changelist' %}?email_verified__exact=0">Review unverified</a>
     <a class="upanel-action-btn" href="{% url 'admin:documents_apidocument_changelist' %}">Browse documents</a>
-    <a class="upanel-action-btn" href="/api/health/" target="_blank" rel="noopener">API health ↗</a>
+    <a class="upanel-action-btn" href="/api/health/" target="_blank" rel="noopener">API health</a>
   </div>
 </section>

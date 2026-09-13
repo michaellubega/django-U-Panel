@@ -15,11 +15,22 @@
 
 {% block content %}
 <div class="upanel-login-shell">
+  <aside class="upanel-login-aside" aria-hidden="false">
+    <div class="upanel-login-aside-inner">
+      <img src="{% static 'admin/img/logo.png' %}" alt="" width="64" height="64" class="upanel-login-aside-logo">
+      <p class="upanel-login-kicker">Kampala International University</p>
+      <h1 class="upanel-login-aside-title">U-Panel</h1>
+      <p class="upanel-login-aside-copy">
+        Secure system administration for campus attendance, notices, and staff operations.
+      </p>
+    </div>
+  </aside>
+
   <div class="upanel-login-card">
     <div class="upanel-login-brand">
-      <img src="{% static 'admin/img/logo.png' %}" alt="" width="72" height="72" class="upanel-login-logo">
-      <h1>U-Panel Admin</h1>
-      <p>KIU campus system administration</p>
+      <img src="{% static 'admin/img/logo.png' %}" alt="" width="56" height="56" class="upanel-login-logo upanel-login-logo-mobile">
+      <h1>Sign in</h1>
+      <p>Use your Django staff credentials to continue.</p>
     </div>
 
     {% if form.errors and not form.non_field_errors %}
@@ -46,7 +57,7 @@
       <button type="submit" class="upanel-login-btn">{% translate 'Log in' %}</button>
     </form>
 
-    <p class="upanel-login-hint">Use your Django superuser credentials. QA demo: create via <code>seed_qa_demo_user</code>.</p>
+    <p class="upanel-login-hint">QA demo users: create with <code>seed_qa_demo_user</code>.</p>
   </div>
 </div>
 {% endblock %}

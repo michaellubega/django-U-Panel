@@ -108,7 +108,7 @@ def get_dashboard_context() -> dict:
 
 def configure_admin_site() -> None:
     site = admin.site
-    site.site_header = "U-Panel System Admin"
+    site.site_header = "U-Panel · KIU System Admin"
     site.site_title = "U-Panel Admin"
     site.index_title = "Operations center"
 
