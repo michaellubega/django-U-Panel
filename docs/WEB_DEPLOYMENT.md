@@ -116,8 +116,16 @@ The script:
 
 1. Checks out the requested branch under `/opt/test`
 2. Normalizes `.env.test` (`PUBLIC_API_URL=https://test.orion13.us`, CORS/CSRF, return URL)
-3. Builds Flutter web with that API base and serves it from the test nginx
+3. **Requires Flutter on the server** — builds web, copies to `website/app`, and refuses to deploy if `main.dart.js` lacks `KIU-QAAT`
 4. Ensures shared Docker network `upanel-edge`, copies prod nginx conf with `proxy_pass http://upanel-test-nginx:80;` (Docker DNS), attaches prod nginx to that network, and rebuilds — hostname traffic no longer depends on `host.docker.internal` / `TEST_HTTP_PORT` (port still used for direct IP; default `:8080`, often `:8085`)
+
+After deploy, verify the bundle and seed leadership users (see [SERVER_SETUP.md](SERVER_SETUP.md#oversight-qaat-demo-users-on-test)):
+
+```bash
+curl -sS https://test.orion13.us/app/main.dart.js | grep -o 'KIU-QAAT' | head -1
+cd /opt/test && docker compose -p upanel-test -f docker-compose.test.yml --env-file .env.test \
+  exec -T web python manage.py seed_oversight_demo_users
+```
 
 Local Flutter against test:
 

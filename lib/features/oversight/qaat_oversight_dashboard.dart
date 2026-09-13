@@ -6,37 +6,32 @@ import '../../core/auth/auth_repository.dart';
 import '../../core/auth/user_role.dart';
 import '../../core/navigation/app_section.dart';
 import '../../core/navigation/app_shell.dart';
-import '../../core/theme/app_theme.dart';
 import '../attendance/data/attendance_repository.dart';
 import '../attendance/models/attendance_models.dart';
 import '../lesson_insights/qa_lesson_activity_screen.dart';
 import 'oversight_metrics.dart';
 
-/// QAAT-inspired tokens (slate cards, muted labels) on U-Panel green chrome.
+/// QAAT leadership chrome — slate field, not the green ops dashboard.
 abstract final class QaatVisuals {
-  static const Color ink = Color(0xFF1E293B);
+  static const Color ink = Color(0xFF0F172A);
+  static const Color slate = Color(0xFF1E293B);
   static const Color muted = Color(0xFF64748B);
   static const Color card = Color(0xFFFFFFFF);
-  static const Color border = Color(0xFFE2E8F0);
-  static const Color eligible = Color(0xFF22C55E);
-  static const Color ineligible = Color(0xFFEF4444);
-  static const Color pending = Color(0xFFF59E0B);
-  static const Color page = Color(0xFFF8FAFC);
+  static const Color border = Color(0xFFCBD5E1);
+  static const Color eligible = Color(0xFF16A34A);
+  static const Color ineligible = Color(0xFFDC2626);
+  static const Color pending = Color(0xFFD97706);
+  static const Color page = Color(0xFFE8EEF5);
+  static const Color accent = Color(0xFF0F766E);
+  static const Color banner = Color(0xFF0B1220);
 
   static BoxDecoration cardDecoration({bool alert = false}) => BoxDecoration(
         color: card,
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(4),
         border: Border.all(
           color: alert ? ineligible : border,
           width: alert ? 2 : 1,
         ),
-        boxShadow: const [
-          BoxShadow(
-            color: Color(0x0F000000),
-            blurRadius: 4,
-            offset: Offset(0, 1),
-          ),
-        ],
       );
 }
 
@@ -101,9 +96,9 @@ class _QaatOversightDashboardState extends State<QaatOversightDashboard> {
       case UserRole.hod:
         return 'Department Overview';
       case UserRole.qaStaff:
-        return 'QA Officer';
+        return 'QA Officer · Quality Overview';
       case UserRole.admin:
-        return 'Administrator';
+        return 'Administrator · Quality Overview';
       default:
         return 'Quality Overview';
     }
@@ -134,66 +129,74 @@ class _QaatOversightDashboardState extends State<QaatOversightDashboard> {
     final body = RefreshIndicator(
       onRefresh: () => _refresh(force: true),
       child: ListView(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
+        padding: EdgeInsets.zero,
         children: [
-          _Header(
+          _QaatBrandBanner(
             title: _title,
             subtitle: _subtitle,
             roleLabel: _role.label,
             name: AuthRepository.instance.currentFullName,
             refreshing: _refreshing,
             onRefresh: () => unawaited(_refresh(force: true)),
+            showOpsHint: _role.hasStaffOperationalAccess,
           ),
-          const SizedBox(height: 12),
-          _ProgramFilter(
-            value: _program,
-            onChanged: (p) {
-              setState(() => _program = p);
-              _snap = OversightMetrics.compute(program: _program);
-            },
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                _ProgramFilter(
+                  value: _program,
+                  onChanged: (p) {
+                    setState(() => _program = p);
+                    _snap = OversightMetrics.compute(program: _program);
+                  },
+                ),
+                const SizedBox(height: 16),
+                if (_loading)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 48),
+                    child: Center(child: CircularProgressIndicator()),
+                  )
+                else ...[
+                  _KpiGrid(snap: _snap),
+                  const SizedBox(height: 22),
+                  const _SectionTitle('Exam eligibility summary'),
+                  const SizedBox(height: 10),
+                  _EligibilityBars(snap: _snap),
+                  if (_snap.ghostSessions.isNotEmpty) ...[
+                    const SizedBox(height: 22),
+                    const _SectionTitle(
+                      'Unstarted sessions (scheduled today)',
+                      alert: true,
+                    ),
+                    const SizedBox(height: 10),
+                    _GhostTable(rows: _snap.ghostSessions),
+                  ],
+                  if (_snap.lecturers.isNotEmpty) ...[
+                    const SizedBox(height: 22),
+                    const _SectionTitle('Lecturer activity today'),
+                    const SizedBox(height: 10),
+                    _LecturerTable(rows: _snap.lecturers),
+                  ],
+                  if (_role == UserRole.dqa ||
+                      _role == UserRole.admin ||
+                      _role == UserRole.qaStaff) ...[
+                    const SizedBox(height: 22),
+                    const _SectionTitle('Reports'),
+                    const SizedBox(height: 10),
+                    _ReportTiles(role: _role),
+                  ],
+                  if (_snap.atRisk.isNotEmpty) ...[
+                    const SizedBox(height: 22),
+                    const _SectionTitle('At-risk students (below 75%)'),
+                    const SizedBox(height: 10),
+                    _AtRiskTable(rows: _snap.atRisk),
+                  ],
+                ],
+              ],
+            ),
           ),
-          const SizedBox(height: 16),
-          if (_loading)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 48),
-              child: Center(child: CircularProgressIndicator()),
-            )
-          else ...[
-            _KpiGrid(snap: _snap),
-            const SizedBox(height: 22),
-            const _SectionTitle('Exam eligibility summary'),
-            const SizedBox(height: 10),
-            _EligibilityBars(snap: _snap),
-            if (_snap.ghostSessions.isNotEmpty) ...[
-              const SizedBox(height: 22),
-              const _SectionTitle(
-                'Unstarted sessions (scheduled today)',
-                alert: true,
-              ),
-              const SizedBox(height: 10),
-              _GhostTable(rows: _snap.ghostSessions),
-            ],
-            if (_snap.lecturers.isNotEmpty) ...[
-              const SizedBox(height: 22),
-              const _SectionTitle('Lecturer activity today'),
-              const SizedBox(height: 10),
-              _LecturerTable(rows: _snap.lecturers),
-            ],
-            if (_role == UserRole.dqa ||
-                _role == UserRole.admin ||
-                _role == UserRole.qaStaff) ...[
-              const SizedBox(height: 22),
-              const _SectionTitle('Reports'),
-              const SizedBox(height: 10),
-              _ReportTiles(role: _role),
-            ],
-            if (_snap.atRisk.isNotEmpty) ...[
-              const SizedBox(height: 22),
-              const _SectionTitle('At-risk students (below 75%)'),
-              const SizedBox(height: 10),
-              _AtRiskTable(rows: _snap.atRisk),
-            ],
-          ],
         ],
       ),
     );
@@ -202,14 +205,15 @@ class _QaatOversightDashboardState extends State<QaatOversightDashboard> {
   }
 }
 
-class _Header extends StatelessWidget {
-  const _Header({
+class _QaatBrandBanner extends StatelessWidget {
+  const _QaatBrandBanner({
     required this.title,
     required this.subtitle,
     required this.roleLabel,
     required this.name,
     required this.refreshing,
     required this.onRefresh,
+    required this.showOpsHint,
   });
 
   final String title;
@@ -218,67 +222,136 @@ class _Header extends StatelessWidget {
   final String? name;
   final bool refreshing;
   final VoidCallback onRefresh;
+  final bool showOpsHint;
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+    return Container(
+      width: double.infinity,
+      decoration: const BoxDecoration(
+        color: QaatVisuals.banner,
+        border: Border(
+          bottom: BorderSide(color: Color(0xFF334155), width: 3),
+        ),
+      ),
+      padding: const EdgeInsets.fromLTRB(16, 18, 16, 18),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
             children: [
-              if (name != null && name!.trim().isNotEmpty)
-                Text(
-                  'Welcome, ${name!.trim()}',
-                  style: const TextStyle(
-                    color: QaatVisuals.muted,
-                    fontSize: 13,
-                  ),
-                ),
-              Text(
-                title,
-                style: const TextStyle(
-                  fontSize: 22,
-                  fontWeight: FontWeight.w700,
-                  color: QaatVisuals.ink,
-                ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                subtitle,
-                style: const TextStyle(color: QaatVisuals.muted, fontSize: 13),
-              ),
-              const SizedBox(height: 8),
               Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
                 decoration: BoxDecoration(
-                  color: AppTheme.primary.withValues(alpha: 0.1),
-                  borderRadius: BorderRadius.circular(6),
+                  color: QaatVisuals.accent,
+                  borderRadius: BorderRadius.circular(2),
                 ),
-                child: Text(
-                  roleLabel,
-                  style: const TextStyle(
-                    color: AppTheme.primary,
+                child: const Text(
+                  'KIU-QAAT',
+                  style: TextStyle(
+                    color: Colors.white,
                     fontSize: 12,
-                    fontWeight: FontWeight.w600,
+                    fontWeight: FontWeight.w800,
+                    letterSpacing: 1.2,
                   ),
                 ),
+              ),
+              const SizedBox(width: 10),
+              const Text(
+                'LEADERSHIP OVERSIGHT',
+                style: TextStyle(
+                  color: Color(0xFF94A3B8),
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: 1.4,
+                ),
+              ),
+              const Spacer(),
+              TextButton(
+                onPressed: refreshing ? null : onRefresh,
+                style: TextButton.styleFrom(
+                  foregroundColor: const Color(0xFFE2E8F0),
+                ),
+                child: refreshing
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
+                      )
+                    : const Text('Refresh'),
               ),
             ],
           ),
+          const SizedBox(height: 14),
+          if (name != null && name!.trim().isNotEmpty)
+            Text(
+              'Welcome, ${name!.trim()}',
+              style: const TextStyle(
+                color: Color(0xFF94A3B8),
+                fontSize: 13,
+              ),
+            ),
+          Text(
+            title,
+            style: const TextStyle(
+              fontSize: 26,
+              fontWeight: FontWeight.w800,
+              color: Colors.white,
+              height: 1.15,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            subtitle,
+            style: const TextStyle(
+              color: Color(0xFFCBD5E1),
+              fontSize: 14,
+              height: 1.35,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              _BannerChip(roleLabel),
+              const _BannerChip('Read-only · no session capture'),
+              if (showOpsHint)
+                const _BannerChip('Ops tools remain on Attendance'),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _BannerChip extends StatelessWidget {
+  const _BannerChip(this.label);
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E293B),
+        borderRadius: BorderRadius.circular(2),
+        border: Border.all(color: const Color(0xFF475569)),
+      ),
+      child: Text(
+        label,
+        style: const TextStyle(
+          color: Color(0xFFE2E8F0),
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
         ),
-        TextButton(
-          onPressed: refreshing ? null : onRefresh,
-          child: refreshing
-              ? const SizedBox(
-                  width: 16,
-                  height: 16,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              : const Text('Refresh'),
-        ),
-      ],
+      ),
     );
   }
 }
@@ -332,8 +405,8 @@ class _KpiGrid extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final tiles = [
-      _Kpi('Scheduled sessions', '${snap.scheduledSessions}'),
-      _Kpi('Actual sessions', '${snap.actualSessions}'),
+      _Kpi('Scheduled sessions', '${snap.scheduledSessions}', accent: true),
+      _Kpi('Actual sessions', '${snap.actualSessions}', accent: true),
       _Kpi('Students present', '${snap.studentsPresent}'),
       _Kpi('Avg attendance', '${snap.avgAttendancePct.toStringAsFixed(0)}%'),
       _Kpi(
@@ -350,14 +423,14 @@ class _KpiGrid extends StatelessWidget {
     ];
     return LayoutBuilder(
       builder: (context, c) {
-        final cols = c.maxWidth >= 720 ? 3 : (c.maxWidth >= 420 ? 2 : 2);
+        final cols = c.maxWidth >= 720 ? 3 : 2;
         return GridView.count(
           crossAxisCount: cols,
           shrinkWrap: true,
           physics: const NeverScrollableScrollPhysics(),
           mainAxisSpacing: 12,
           crossAxisSpacing: 12,
-          childAspectRatio: 1.7,
+          childAspectRatio: 1.55,
           children: tiles,
         );
       },
@@ -366,33 +439,69 @@ class _KpiGrid extends StatelessWidget {
 }
 
 class _Kpi extends StatelessWidget {
-  const _Kpi(this.label, this.value, {this.alert = false, this.tooltip});
+  const _Kpi(
+    this.label,
+    this.value, {
+    this.alert = false,
+    this.accent = false,
+    this.tooltip,
+  });
 
   final String label;
   final String value;
   final bool alert;
+  final bool accent;
   final String? tooltip;
 
   @override
   Widget build(BuildContext context) {
     final card = Container(
-      padding: const EdgeInsets.fromLTRB(16, 14, 16, 12),
-      decoration: QaatVisuals.cardDecoration(alert: alert),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+      decoration: BoxDecoration(
+        color: QaatVisuals.card,
+        borderRadius: BorderRadius.circular(4),
+        border: Border.all(
+          color: alert ? QaatVisuals.ineligible : QaatVisuals.border,
+          width: alert ? 2 : 1,
+        ),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          Text(
-            value,
-            style: TextStyle(
-              fontSize: 28,
-              fontWeight: FontWeight.w700,
-              color: alert ? QaatVisuals.ineligible : QaatVisuals.ink,
-            ),
+          Container(
+            width: 4,
+            height: 48,
+            margin: const EdgeInsets.only(right: 12),
+            color: alert
+                ? QaatVisuals.ineligible
+                : (accent ? QaatVisuals.slate : QaatVisuals.accent),
           ),
-          const SizedBox(height: 4),
-          Text(
-            label,
-            style: const TextStyle(fontSize: 13, color: QaatVisuals.muted),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(
+                  label.toUpperCase(),
+                  style: const TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.6,
+                    color: QaatVisuals.muted,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  value,
+                  style: TextStyle(
+                    fontSize: 30,
+                    fontWeight: FontWeight.w800,
+                    height: 1,
+                    color: alert ? QaatVisuals.ineligible : QaatVisuals.ink,
+                  ),
+                ),
+              ],
+            ),
           ),
         ],
       ),
@@ -410,13 +519,25 @@ class _SectionTitle extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Text(
-      text,
-      style: TextStyle(
-        fontSize: 16,
-        fontWeight: FontWeight.w700,
-        color: alert ? const Color(0xFFB91C1C) : QaatVisuals.ink,
-      ),
+    return Row(
+      children: [
+        Container(
+          width: 4,
+          height: 18,
+          color: alert ? QaatVisuals.ineligible : QaatVisuals.slate,
+        ),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            text,
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w800,
+              color: alert ? const Color(0xFFB91C1C) : QaatVisuals.ink,
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
@@ -451,7 +572,7 @@ class _EligibilityBars extends StatelessWidget {
                 ),
                 Expanded(
                   child: ClipRRect(
-                    borderRadius: BorderRadius.circular(4),
+                    borderRadius: BorderRadius.circular(2),
                     child: LinearProgressIndicator(
                       value: max == 0 ? 0 : row.$2 / max,
                       minHeight: 14,
@@ -493,8 +614,7 @@ class _GhostTable extends StatelessWidget {
       headers: const ['Unit', 'Day', 'On roster'],
       headerTint: const Color(0xFFFEF2F2),
       rows: [
-        for (final r in rows)
-          [r.unitName, r.dateLabel, '${r.studentCount}'],
+        for (final r in rows) [r.unitName, r.dateLabel, '${r.studentCount}'],
       ],
     );
   }
@@ -566,7 +686,8 @@ class _SimpleTable extends StatelessWidget {
             children: [
               for (final h in headers)
                 Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                   child: Text(
                     h,
                     style: const TextStyle(
@@ -583,10 +704,16 @@ class _SimpleTable extends StatelessWidget {
               children: [
                 for (final cell in row)
                   Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 12,
+                      vertical: 10,
+                    ),
                     child: Text(
                       cell,
-                      style: const TextStyle(fontSize: 13, color: QaatVisuals.ink),
+                      style: const TextStyle(
+                        fontSize: 13,
+                        color: QaatVisuals.ink,
+                      ),
                     ),
                   ),
               ],
@@ -625,7 +752,8 @@ class _ReportTiles extends StatelessWidget {
         (
           label: 'Attendance',
           desc: 'Operational lists and live sessions',
-          onTap: () => AppShellScope.of(context).goToSection(AppSection.attendance),
+          onTap: () =>
+              AppShellScope.of(context).goToSection(AppSection.attendance),
         ),
     ];
     return LayoutBuilder(
@@ -642,7 +770,7 @@ class _ReportTiles extends StatelessWidget {
             for (final t in tiles)
               InkWell(
                 onTap: t.onTap,
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: BorderRadius.circular(4),
                 child: Ink(
                   padding: const EdgeInsets.all(16),
                   decoration: QaatVisuals.cardDecoration(),

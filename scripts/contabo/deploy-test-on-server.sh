@@ -203,39 +203,50 @@ docker network create "${EDGE_NETWORK}" 2>/dev/null || true
 docker network inspect "${EDGE_NETWORK}" >/dev/null
 
 echo "==> Build Flutter web for this branch (API → ${PUBLIC_URL}, same-origin)"
-if command -v flutter >/dev/null 2>&1; then
-  flutter pub get
-  BUILD_NUM="$(grep -E '^version:' pubspec.yaml | sed -E 's/.*\+([0-9]+).*/\1/')"
-  VERSION_LABEL="$(grep -E '^version:' pubspec.yaml | sed -E 's/version: ([0-9.]+).*/\1/')"
-  # Prefer PUBLIC_URL (https://test.orion13.us). Never bake http://IP — HTTPS pages
-  # would mixed-content-block and AppConnectivity shows "No internet connection".
-  # web/index.html also sets window.upanelApiBaseUrl to same-origin at runtime.
-  API_BASE="$(grep -E '^PUBLIC_API_URL=' .env.test | head -1 | cut -d= -f2- | tr -d '\r' | tr -d '\"' | tr -d "'")"
-  API_BASE="${API_BASE:-${PUBLIC_URL}}"
-  case "${API_BASE}" in
-    http://169.58.135.136*|http://127.0.0.1*|http://localhost*)
-      echo "WARN: PUBLIC_API_URL=${API_BASE} is cleartext — forcing ${PUBLIC_URL} for web build" >&2
-      API_BASE="${PUBLIC_URL}"
-      ;;
-  esac
-  if [[ -z "${API_BASE}" || "${API_BASE}" == "http://"* && "${API_BASE}" != *"orion13.us"* ]]; then
-    API_BASE="${PUBLIC_URL}"
-  fi
-  echo "    dart-define UPANEL_API_BASE_URL=${API_BASE}"
-  flutter build web --release \
-    --dart-define=UPANEL_API_BASE_URL="${API_BASE}" \
-    --dart-define=APP_BUILD_NUMBER="${BUILD_NUM}" \
-    --dart-define=APP_VERSION_LABEL="${VERSION_LABEL}" \
-    --base-href=/app/
-  if [[ -f scripts/finalize-web-build.sh ]]; then
-    bash scripts/finalize-web-build.sh
-  fi
-  rm -rf website/app
-  mkdir -p website/app
-  cp -a build/web/. website/app/
-else
-  echo "WARN: flutter not installed on server — using committed website/app (may be incomplete)." >&2
+if ! command -v flutter >/dev/null 2>&1; then
+  echo "ERROR: flutter not installed on server." >&2
+  echo "  QAAT oversight UI lives in Dart sources; committed website/app may be stale." >&2
+  echo "  Install Flutter on Contabo, then re-run this script so /app/main.dart.js includes KIU-QAAT." >&2
+  exit 1
 fi
+
+flutter pub get
+BUILD_NUM="$(grep -E '^version:' pubspec.yaml | sed -E 's/.*\+([0-9]+).*/\1/')"
+VERSION_LABEL="$(grep -E '^version:' pubspec.yaml | sed -E 's/version: ([0-9.]+).*/\1/')"
+# Prefer PUBLIC_URL (https://test.orion13.us). Never bake http://IP — HTTPS pages
+# would mixed-content-block and AppConnectivity shows "No internet connection".
+# web/index.html also sets window.upanelApiBaseUrl to same-origin at runtime.
+API_BASE="$(grep -E '^PUBLIC_API_URL=' .env.test | head -1 | cut -d= -f2- | tr -d '\r' | tr -d '\"' | tr -d "'")"
+API_BASE="${API_BASE:-${PUBLIC_URL}}"
+case "${API_BASE}" in
+  http://169.58.135.136*|http://127.0.0.1*|http://localhost*)
+    echo "WARN: PUBLIC_API_URL=${API_BASE} is cleartext — forcing ${PUBLIC_URL} for web build" >&2
+    API_BASE="${PUBLIC_URL}"
+    ;;
+esac
+if [[ -z "${API_BASE}" || "${API_BASE}" == "http://"* && "${API_BASE}" != *"orion13.us"* ]]; then
+  API_BASE="${PUBLIC_URL}"
+fi
+echo "    dart-define UPANEL_API_BASE_URL=${API_BASE}"
+flutter build web --release \
+  --dart-define=UPANEL_API_BASE_URL="${API_BASE}" \
+  --dart-define=APP_BUILD_NUMBER="${BUILD_NUM}" \
+  --dart-define=APP_VERSION_LABEL="${VERSION_LABEL}" \
+  --base-href=/app/
+if [[ -f scripts/finalize-web-build.sh ]]; then
+  bash scripts/finalize-web-build.sh
+fi
+rm -rf website/app
+mkdir -p website/app
+cp -a build/web/. website/app/
+
+# Fail loud if the oversight UI was tree-shaken / build used wrong tree.
+if ! grep -q 'KIU-QAAT' website/app/main.dart.js; then
+  echo "ERROR: website/app/main.dart.js missing KIU-QAAT string after flutter build." >&2
+  echo "  Oversight dashboard did not land in the web bundle — refuse to deploy stale UI." >&2
+  exit 1
+fi
+echo "    main.dart.js contains KIU-QAAT oversight UI (build ${BUILD_NUM})"
 
 if [[ ! -f website/app/index.html ]]; then
   echo "ERROR: website/app/index.html missing after web build." >&2

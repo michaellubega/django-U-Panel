@@ -1345,63 +1345,118 @@ class _ListRow extends StatelessWidget {
 class _QaatQualityOverviewCard extends StatelessWidget {
   const _QaatQualityOverviewCard();
 
+  void _openFull(BuildContext context) {
+    Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => const Scaffold(
+          body: SafeArea(child: QaatOversightDashboard()),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final snap = OversightMetrics.compute();
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
-      decoration: QaatVisuals.cardDecoration(),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Expanded(
-                child: Text(
-                  'Quality overview',
-                  style: TextStyle(
-                    fontWeight: FontWeight.w700,
-                    fontSize: 16,
-                    color: QaatVisuals.ink,
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: () => _openFull(context),
+        borderRadius: BorderRadius.circular(4),
+        child: Ink(
+          width: double.infinity,
+          decoration: BoxDecoration(
+            color: QaatVisuals.banner,
+            borderRadius: BorderRadius.circular(4),
+          ),
+          child: IntrinsicHeight(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Container(width: 5, color: QaatVisuals.accent),
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.fromLTRB(14, 16, 16, 16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 4,
+                              ),
+                              color: QaatVisuals.accent,
+                              child: const Text(
+                                'KIU-QAAT',
+                                style: TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w800,
+                                  letterSpacing: 1.1,
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            const Expanded(
+                              child: Text(
+                                'Leadership quality overview',
+                                style: TextStyle(
+                                  fontWeight: FontWeight.w800,
+                                  fontSize: 16,
+                                  color: Colors.white,
+                                ),
+                              ),
+                            ),
+                            FilledButton(
+                              style: FilledButton.styleFrom(
+                                backgroundColor: Colors.white,
+                                foregroundColor: QaatVisuals.ink,
+                              ),
+                              onPressed: () => _openFull(context),
+                              child: const Text('Open QAAT view'),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        const Text(
+                          'Slate KPIs from attendance already captured — not the ops dashboard.',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Color(0xFFCBD5E1),
+                          ),
+                        ),
+                        const SizedBox(height: 14),
+                        Wrap(
+                          spacing: 10,
+                          runSpacing: 10,
+                          children: [
+                            _MiniKpi(
+                              'Scheduled',
+                              '${snap.scheduledSessions}',
+                            ),
+                            _MiniKpi('Actual', '${snap.actualSessions}'),
+                            _MiniKpi('Present', '${snap.studentsPresent}'),
+                            _MiniKpi(
+                              'Avg',
+                              '${snap.avgAttendancePct.toStringAsFixed(0)}%',
+                            ),
+                            _MiniKpi(
+                              'Unstarted',
+                              '${snap.ghostLectureCount}',
+                              alert: snap.ghostLectureCount > 0,
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
                   ),
                 ),
-              ),
-              TextButton(
-                onPressed: () {
-                  Navigator.of(context).push<void>(
-                    MaterialPageRoute<void>(
-                      builder: (_) => const Scaffold(
-                        body: SafeArea(child: QaatOversightDashboard()),
-                      ),
-                    ),
-                  );
-                },
-                child: const Text('Open full view'),
-              ),
-            ],
+              ],
+            ),
           ),
-          const Text(
-            'Same attendance already captured — QAAT-style leadership KPIs.',
-            style: TextStyle(fontSize: 12, color: QaatVisuals.muted),
-          ),
-          const SizedBox(height: 12),
-          Wrap(
-            spacing: 10,
-            runSpacing: 10,
-            children: [
-              _MiniKpi('Scheduled', '${snap.scheduledSessions}'),
-              _MiniKpi('Actual', '${snap.actualSessions}'),
-              _MiniKpi('Present', '${snap.studentsPresent}'),
-              _MiniKpi('Avg', '${snap.avgAttendancePct.toStringAsFixed(0)}%'),
-              _MiniKpi(
-                'Unstarted',
-                '${snap.ghostLectureCount}',
-                alert: snap.ghostLectureCount > 0,
-              ),
-            ],
-          ),
-        ],
+        ),
       ),
     );
   }
@@ -1420,10 +1475,10 @@ class _MiniKpi extends StatelessWidget {
       width: 104,
       padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
-        color: const Color(0xFFF8FAFC),
-        borderRadius: BorderRadius.circular(8),
+        color: alert ? const Color(0xFF450A0A) : const Color(0xFF1E293B),
+        borderRadius: BorderRadius.circular(2),
         border: Border.all(
-          color: alert ? QaatVisuals.ineligible : QaatVisuals.border,
+          color: alert ? QaatVisuals.ineligible : const Color(0xFF475569),
         ),
       ),
       child: Column(
@@ -1432,14 +1487,17 @@ class _MiniKpi extends StatelessWidget {
           Text(
             value,
             style: TextStyle(
-              fontWeight: FontWeight.w700,
+              fontWeight: FontWeight.w800,
               fontSize: 18,
-              color: alert ? QaatVisuals.ineligible : QaatVisuals.ink,
+              color: alert ? const Color(0xFFFECACA) : Colors.white,
             ),
           ),
           Text(
             label,
-            style: const TextStyle(fontSize: 11, color: QaatVisuals.muted),
+            style: TextStyle(
+              fontSize: 11,
+              color: alert ? const Color(0xFFFECACA) : const Color(0xFF94A3B8),
+            ),
           ),
         ],
       ),

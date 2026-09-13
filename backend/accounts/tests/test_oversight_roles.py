@@ -99,3 +99,28 @@ class OversightRoleTests(TestCase):
         )
         self.assertEqual(response.status_code, 403)
         self.assertFalse(User.objects.filter(email="hod@kiu.ac.ug").exists())
+
+
+class SeedOversightDemoUsersTests(TestCase):
+    def test_seed_creates_all_oversight_roles(self):
+        from django.core.management import call_command
+
+        call_command('seed_oversight_demo_users')
+        roles = set(
+            User.objects.filter(email__endswith='@oversight.upanel.local').values_list(
+                'role', flat=True
+            )
+        )
+        self.assertEqual(
+            roles,
+            {
+                User.Role.VC,
+                User.Role.DVC,
+                User.Role.DQA,
+                User.Role.DEAN,
+                User.Role.HOD,
+            },
+        )
+        vc = User.objects.get(staff_number='KIU-VC01')
+        self.assertTrue(vc.is_oversight)
+        self.assertTrue(vc.check_password('qaat@kiu'))

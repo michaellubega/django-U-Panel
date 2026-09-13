@@ -101,6 +101,8 @@ ssh -p 443 -i ~/.ssh/id_ed25519 root@169.58.135.136 \
 
 Then open **https://test.orion13.us/app/** (API health: `/api/health/`). Direct IP fallback: `http://169.58.135.136:8085/app/` (or whatever `TEST_HTTP_PORT` you chose; default was `:8080`).
 
+**Flutter must rebuild on Contabo.** The deploy script fails if `flutter` is missing or if `website/app/main.dart.js` does not contain `KIU-QAAT` (stale Aug-era bundles look like the old ops UI).
+
 **Sanity checks on Contabo** (after deploy):
 
 ```bash
@@ -108,7 +110,30 @@ curl -sS http://127.0.0.1:8085/api/health/   # or your TEST_HTTP_PORT
 curl -sS -H 'Host: test.orion13.us' http://127.0.0.1/api/health/
 docker compose -f /opt/upanel/docker-compose.prod.yml --env-file /opt/upanel/.env.production \
   exec nginx wget -q -O - http://upanel-test-nginx/api/health/
+# Confirm the QAAT web bundle is live (must print a hit):
+curl -sS https://test.orion13.us/app/main.dart.js | grep -o 'KIU-QAAT' | head -1
+curl -sS https://test.orion13.us/app/version.json
 ```
+
+### Oversight (QAAT) demo users on test
+
+Seed read-only VC/DVC/DQA/Dean/HOD accounts on the **test** stack:
+
+```bash
+cd /opt/test
+docker compose -p upanel-test -f docker-compose.test.yml --env-file .env.test \
+  exec -T web python manage.py seed_oversight_demo_users
+```
+
+Sign in at https://test.orion13.us/app/ with staff ID (e.g. `KIU-VC01`) and password `qaat@kiu`.
+
+You should see a dark **KIU-QAAT · LEADERSHIP OVERSIGHT** banner and slate KPI tiles. Nav is **Dashboard · Reports · Notices · Settings** (no Attendance tab).
+
+Admin/QA keep the ops dashboard; they get a dark **KIU-QAAT** card → **Open QAAT view**.
+
+If the UI still looks like the old green ops home: hard-refresh / clear site data for `test.orion13.us`, confirm you are not on production (`kiu.orion13.us`), and confirm `grep KIU-QAAT` on `main.dart.js` as above.
+
+Admins can also provision accounts in-app: Settings → Staff & accounts → Leadership (`POST /api/auth/provision-oversight/`).
 
 Point a local Flutter build at the test API:
 
